@@ -16,6 +16,7 @@ build = []
 [project.scripts]
 wt-media-local-agent = "wt_media_agent.local_main:main"
 wt-media-cloud-agent = "wt_media_agent.cloud_main:main"
+wt-media-local-health = "wt_media_agent.local_api.server:main"
 
 [build-system]
 requires = ["hatchling"]

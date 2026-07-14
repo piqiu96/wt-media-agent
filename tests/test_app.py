@@ -22,7 +22,10 @@ class AgentScaffoldTests(unittest.TestCase):
     def test_local_api_health(self) -> None:
         server = LocalApiServer()
 
-        self.assertEqual(server.health(), {"status": "ok"})
+        self.assertEqual(
+            server.health(),
+            {"status": "ok", "service": "wt-media-agent", "mode": "m0"},
+        )
 
 
 if __name__ == "__main__":
