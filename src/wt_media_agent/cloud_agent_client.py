@@ -118,6 +118,39 @@ class CloudAgentClient:
         )
         return _expect_data(response)
 
+    def preflight_sensitive_task(
+        self,
+        node_id: str,
+        node_credential: str,
+        task_id: str,
+    ) -> Mapping[str, object]:
+        response = self._transport(
+            "POST",
+            f"/api/v1/local-agent/sensitive-tasks/{task_id}/preflight",
+            {"node_id": node_id},
+            {"authorization": f"Bearer {node_credential}"},
+        )
+        return _expect_data(response)
+
+    def finish_sensitive_permit(
+        self,
+        node_id: str,
+        node_credential: str,
+        permit_id: str,
+        permit_credential: str,
+        outcome: str,
+    ) -> Mapping[str, object]:
+        response = self._transport(
+            "POST",
+            f"/api/v1/local-agent/sensitive-permits/{permit_id}/finish",
+            {"outcome": outcome, "node_id": node_id},
+            {
+                "authorization": f"Bearer {node_credential}",
+                "x-profile-permit": permit_credential,
+            },
+        )
+        return _expect_data(response)
+
     def _http_transport(
         self,
         method: str,

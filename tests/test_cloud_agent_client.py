@@ -101,6 +101,27 @@ class CloudAgentClientTest(unittest.TestCase):
         self.assertEqual(calls[0][2], report)
         self.assertEqual(calls[0][3], {"authorization": "Bearer node-secret"})
 
+    def test_sensitive_preflight_and_finish_use_node_and_permit_credentials(self) -> None:
+        calls: list[tuple[str, str, Mapping[str, object], Mapping[str, str]]] = []
+
+        def transport(method: str, path: str, payload: Mapping[str, object], headers: Mapping[str, str]) -> Mapping[str, object]:
+            calls.append((method, path, payload, headers))
+            if path.endswith("/preflight"):
+                return {"data": {"outcome": "granted", "permit_id": "permit-1", "permit_credential": "permit-secret", "profile_id": "profile-1"}}
+            return {"data": {"status": payload["outcome"]}}
+
+        client = CloudAgentClient("http://cloud.test", transport=transport)
+        permit = client.preflight_sensitive_task("node-1", "node-secret", "task-1")
+        client.finish_sensitive_permit(
+            "node-1", "node-secret", str(permit["permit_id"]), str(permit["permit_credential"]), "completed"
+        )
+
+        self.assertEqual(calls[0][1], "/api/v1/local-agent/sensitive-tasks/task-1/preflight")
+        self.assertEqual(calls[0][3], {"authorization": "Bearer node-secret"})
+        self.assertEqual(calls[1][1], "/api/v1/local-agent/sensitive-permits/permit-1/finish")
+        self.assertEqual(calls[1][2], {"outcome": "completed", "node_id": "node-1"})
+        self.assertEqual(calls[1][3], {"authorization": "Bearer node-secret", "x-profile-permit": "permit-secret"})
+
     def test_claim_task_sends_agent_and_lease(self) -> None:
         transport = RecordingTransport()
         client = CloudAgentClient("http://cloud.test", transport=transport)
