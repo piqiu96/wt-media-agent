@@ -1,0 +1,11 @@
+schema_version: 1
+revision: "2026.07.14.8"
+event: profile_guard
+payload:
+  type: object
+  required: [task_id, profile_id, outcome]
+  properties:
+    task_id: {type: string}
+    profile_id: {type: string}
+    outcome: {type: string, enum: [granted, waiting, review_required, completed, result_uncertain]}
+  additionalProperties: false

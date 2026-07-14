@@ -29,7 +29,7 @@ class CloudAgentContractCompatibilityTest(unittest.TestCase):
 
     def test_newer_revision_is_compatible(self) -> None:
         metadata = current_metadata()
-        metadata["contract_revision"] = "2026.07.14.6"
+        metadata["contract_revision"] = "2026.07.14.7"
 
         self.assertTrue(is_cloud_agent_compatible(metadata))
 

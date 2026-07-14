@@ -1,5 +1,6 @@
 schema_version: 1
-revision: "2026.07.14.7"
+revision: "2026.07.14.8"
 agent_statuses: [idle, running, draining, offline]
 bitbrowser_scan_statuses: [verified, identity_unverifiable, response_error]
 runtime_statuses: [normal, abnormal, not_installed, needs_upgrade, unreachable, user_action_required]
+profile_guard_outcomes: [granted, waiting, review_required, completed, result_uncertain]

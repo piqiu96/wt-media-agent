@@ -108,19 +108,26 @@ class CloudAgentClientTest(unittest.TestCase):
             calls.append((method, path, payload, headers))
             if path.endswith("/preflight"):
                 return {"data": {"outcome": "granted", "permit_id": "permit-1", "permit_credential": "permit-secret", "profile_id": "profile-1"}}
+            if path.endswith("/renew"):
+                return {"data": {"status": "renewed", "expires_at": "2026-07-14T11:02:00Z"}}
             return {"data": {"status": payload["outcome"]}}
 
         client = CloudAgentClient("http://cloud.test", transport=transport)
         permit = client.preflight_sensitive_task("node-1", "node-secret", "task-1")
+        client.renew_sensitive_permit(
+            "node-1", "node-secret", str(permit["permit_id"]), str(permit["permit_credential"]), 60
+        )
         client.finish_sensitive_permit(
             "node-1", "node-secret", str(permit["permit_id"]), str(permit["permit_credential"]), "completed"
         )
 
         self.assertEqual(calls[0][1], "/api/v1/local-agent/sensitive-tasks/task-1/preflight")
         self.assertEqual(calls[0][3], {"authorization": "Bearer node-secret"})
-        self.assertEqual(calls[1][1], "/api/v1/local-agent/sensitive-permits/permit-1/finish")
-        self.assertEqual(calls[1][2], {"outcome": "completed", "node_id": "node-1"})
-        self.assertEqual(calls[1][3], {"authorization": "Bearer node-secret", "x-profile-permit": "permit-secret"})
+        self.assertEqual(calls[1][1], "/api/v1/local-agent/sensitive-permits/permit-1/renew")
+        self.assertEqual(calls[1][2], {"node_id": "node-1", "lease_seconds": 60})
+        self.assertEqual(calls[2][1], "/api/v1/local-agent/sensitive-permits/permit-1/finish")
+        self.assertEqual(calls[2][2], {"outcome": "completed", "node_id": "node-1"})
+        self.assertEqual(calls[2][3], {"authorization": "Bearer node-secret", "x-profile-permit": "permit-secret"})
 
     def test_claim_task_sends_agent_and_lease(self) -> None:
         transport = RecordingTransport()

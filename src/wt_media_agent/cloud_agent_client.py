@@ -151,6 +151,25 @@ class CloudAgentClient:
         )
         return _expect_data(response)
 
+    def renew_sensitive_permit(
+        self,
+        node_id: str,
+        node_credential: str,
+        permit_id: str,
+        permit_credential: str,
+        lease_seconds: int = 60,
+    ) -> Mapping[str, object]:
+        response = self._transport(
+            "POST",
+            f"/api/v1/local-agent/sensitive-permits/{permit_id}/renew",
+            {"node_id": node_id, "lease_seconds": lease_seconds},
+            {
+                "authorization": f"Bearer {node_credential}",
+                "x-profile-permit": permit_credential,
+            },
+        )
+        return _expect_data(response)
+
     def _http_transport(
         self,
         method: str,

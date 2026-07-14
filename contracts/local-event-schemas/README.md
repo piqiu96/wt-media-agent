@@ -2,6 +2,7 @@
 
 - `v1/status.yaml`: Local Agent status SSE event.
 - `v1/runtime-environment.yaml`: M2-C4 secret-safe runtime environment and verified Profile presence payload.
+- `v1/profile-guard.yaml`: M2-C5 local/Cloud Profile guard outcomes without permit credentials.
 
 Reserved for SSE event payload schemas for Desktop local pages.
 
