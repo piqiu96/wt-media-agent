@@ -57,6 +57,26 @@ class CloudAgentClient:
         )
         return _expect_data(response)
 
+    def report_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        status: str,
+        progress: int,
+        message: str = "",
+    ) -> Mapping[str, object]:
+        response = self._transport(
+            "POST",
+            f"/api/v1/cloud-agent/tasks/{task_id}/report",
+            {
+                "agent_id": agent_id,
+                "status": status,
+                "progress": progress,
+                "message": message,
+            },
+        )
+        return _expect_data(response)
+
     def _http_transport(
         self,
         method: str,

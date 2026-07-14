@@ -78,6 +78,24 @@ class CloudAgentClientTest(unittest.TestCase):
             {"agent_id": "agent-local-1", "lease_seconds": 30},
         )
 
+    def test_report_task_sends_status(self) -> None:
+        transport = RecordingTransport()
+        client = CloudAgentClient("http://cloud.test", transport=transport)
+
+        client.report_task("task-1", "agent-local-1", "running", 50, "halfway")
+
+        self.assertEqual(transport.calls[0][0], "POST")
+        self.assertEqual(transport.calls[0][1], "/api/v1/cloud-agent/tasks/task-1/report")
+        self.assertEqual(
+            transport.calls[0][2],
+            {
+                "agent_id": "agent-local-1",
+                "status": "running",
+                "progress": 50,
+                "message": "halfway",
+            },
+        )
+
     def test_missing_data_is_rejected(self) -> None:
         client = CloudAgentClient("http://cloud.test", transport=lambda method, path, payload: {})
 
