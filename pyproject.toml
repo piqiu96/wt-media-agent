@@ -1,0 +1,22 @@
+[project]
+name = "wt-media-agent"
+version = "0.1.0"
+description = "WT Media Local Agent and Cloud Agent runtime"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+core = []
+local = []
+cloud = []
+dev = []
+test = []
+build = []
+
+[project.scripts]
+wt-media-local-agent = "wt_media_agent.local_main:main"
+wt-media-cloud-agent = "wt_media_agent.cloud_main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
