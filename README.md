@@ -5,12 +5,17 @@ Local Agent and Cloud Agent runtime skeleton for the modular social media operat
 ## Responsibilities
 
 - Local Agent and Cloud Agent process entrypoints.
-- Minimal app shell and health surface.
-- Future package locations for local API, generated contracts, storage, runtimes, and executors.
+- Local health/status/events and secret-safe BitBrowser Profile scans.
+- Runtime adapters, task execution, storage, and Cloud Agent communication.
 
 ## Bootstrap
 
-This repository is scaffolded as an installable Python package under `src/wt_media_agent`. Runtime dependencies are not installed yet.
+This repository is an installable Python package under `src/wt_media_agent`. The BitBrowser adapter uses the Python standard library and calls the configured local API only when a scan is requested.
+
+BitBrowser configuration:
+
+- `WT_MEDIA_BITBROWSER_API_URL`: local service base URL, default `http://127.0.0.1:54345`.
+- `WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS`: request timeout, default `5`.
 
 ## Key Directories
 

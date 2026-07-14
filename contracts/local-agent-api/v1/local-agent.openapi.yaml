@@ -1,0 +1,84 @@
+openapi: 3.0.3
+info:
+  title: WT Media Local Agent Loopback API
+  version: 2026.07.14.6
+servers:
+  - url: http://127.0.0.1:8765
+paths:
+  /healthz:
+    get:
+      operationId: localAgentHealth
+      responses:
+        '200':
+          description: Local Agent process is running.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+  /api/v1/status:
+    get:
+      operationId: localAgentStatus
+      responses:
+        '200':
+          description: Current observable Agent state.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentStatus'}
+  /api/v1/events:
+    get:
+      operationId: localAgentEvents
+      responses:
+        '200':
+          description: Server-sent status events.
+          content:
+            text/event-stream:
+              schema: {type: string}
+  /api/v1/bit-browser/profile-scans:
+    post:
+      operationId: scanBitBrowserProfiles
+      responses:
+        '200':
+          description: Full secret-free Profile snapshot with one verified normalized owner.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileSnapshot'}
+        '409': {description: Profile ownership is empty, missing, or mixed.}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+components:
+  schemas:
+    Health:
+      type: object
+      required: [status, service, mode]
+      properties:
+        status: {type: string, enum: [ok]}
+        service: {type: string, enum: [wt-media-agent]}
+        mode: {type: string, enum: [m1]}
+    AgentStatus:
+      type: object
+      required: [agent_id, status, pending_result_count]
+      properties:
+        agent_id: {type: string}
+        status: {type: string, enum: [idle, running, draining, offline]}
+        current_task_id: {type: string, nullable: true}
+        pending_result_count: {type: integer, minimum: 0}
+    ProfileSnapshot:
+      type: object
+      required: [owner_user_id, profiles]
+      properties:
+        owner_user_id: {type: string}
+        profiles:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/BitProfile'}
+    BitProfile:
+      type: object
+      required: [bit_profile_id, owner_user_id, name, group_id, group_name, bit_updated_at]
+      properties:
+        bit_profile_id: {type: string}
+        owner_user_id: {type: string, description: Normalized from BitBrowser userId.}
+        name: {type: string}
+        seq: {type: integer, nullable: true}
+        group_id: {type: string}
+        group_name: {type: string}
+        status: {oneOf: [{type: integer}, {type: string}], nullable: true}
+        bit_updated_at: {type: string}
+      additionalProperties: false

@@ -9,3 +9,5 @@ M1 active event:
 event: status
 data: {"agent_id":"...","status":"idle","current_task_id":null,"pending_result_count":0}
 ```
+
+Formal definition: `v1/status.yaml`, revision `2026.07.14.6`.

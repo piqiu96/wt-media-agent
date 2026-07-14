@@ -1,7 +1,5 @@
 # Local Status Enums
 
-Reserved for Local Agent status enum definitions.
-
-M0 status: placeholder only; no formal enum definition is active.
-
 Local Agent status and component state enums.
+
+Formal definition: `v1/status.yaml`, revision `2026.07.14.6`.

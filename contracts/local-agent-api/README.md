@@ -7,3 +7,9 @@ M1 active endpoints:
 - `GET /healthz`
 - `GET /api/v1/status`
 - `GET /api/v1/events`
+
+M2-C3 adds:
+
+- `POST /api/v1/bit-browser/profile-scans`
+
+Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.07.14.6`.

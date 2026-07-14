@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from wt_media_agent.local_api.server import LocalApiServer
+from wt_media_agent.runtimes.bitbrowser import (
+    BitBrowserIdentityError,
+    BitBrowserResponseError,
+    BitProfile,
+    ProfileSnapshot,
+)
+
+
+class SnapshotClient:
+    def scan_profiles(self) -> ProfileSnapshot:
+        return ProfileSnapshot(
+            owner_user_id="bit-user-1",
+            profiles=(
+                BitProfile(
+                    bit_profile_id="profile-1",
+                    owner_user_id="bit-user-1",
+                    name="运营窗口",
+                    seq=1,
+                    group_id="group-1",
+                    group_name="运营组",
+                    status=1,
+                    bit_updated_at="2026-07-14 18:00:00",
+                ),
+            ),
+        )
+
+
+class ErrorClient:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def scan_profiles(self) -> ProfileSnapshot:
+        raise self.error
+
+
+class LocalProfileScanTests(unittest.TestCase):
+    def test_returns_secret_free_scan_payload(self) -> None:
+        status, payload = LocalApiServer(bitbrowser=SnapshotClient()).profile_scan_response()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["owner_user_id"], "bit-user-1")
+        self.assertEqual(payload["profiles"][0]["bit_profile_id"], "profile-1")
+        self.assertNotIn("cookie", str(payload).lower())
+        self.assertNotIn("password", str(payload).lower())
+
+    def test_maps_identity_failure_without_raw_response(self) -> None:
+        status, payload = LocalApiServer(
+            bitbrowser=ErrorClient(BitBrowserIdentityError("mixed secret diagnostic"))
+        ).profile_scan_response()
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload, {"error": {"code": "bitbrowser_identity_unverifiable"}})
+
+    def test_maps_local_api_failure(self) -> None:
+        status, payload = LocalApiServer(
+            bitbrowser=ErrorClient(BitBrowserResponseError("raw upstream failure"))
+        ).profile_scan_response()
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload, {"error": {"code": "bitbrowser_response_error"}})
+
+
+if __name__ == "__main__":
+    unittest.main()

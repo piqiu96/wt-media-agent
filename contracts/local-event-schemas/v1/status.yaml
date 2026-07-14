@@ -1,0 +1,11 @@
+schema_version: 1
+revision: "2026.07.14.6"
+event: status
+payload:
+  type: object
+  required: [agent_id, status, current_task_id, pending_result_count]
+  properties:
+    agent_id: {type: string}
+    status: {type: string, enum: [idle, running, draining, offline]}
+    current_task_id: {type: string, nullable: true}
+    pending_result_count: {type: integer, minimum: 0}

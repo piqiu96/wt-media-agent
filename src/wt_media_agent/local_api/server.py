@@ -4,17 +4,36 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional
+from typing import Optional, Protocol
 
 from wt_media_agent.local_api.state import LocalAgentState
+from wt_media_agent.runtimes.bitbrowser import (
+    BitBrowserClient,
+    BitBrowserIdentityError,
+    BitBrowserResponseError,
+    ProfileSnapshot,
+)
+
+
+class ProfileScanner(Protocol):
+    def scan_profiles(self) -> ProfileSnapshot: ...
 
 
 class LocalApiServer:
     """Exposes the M0 local process health surface."""
 
-    def __init__(self, state: Optional[LocalAgentState] = None) -> None:
+    def __init__(
+        self,
+        state: Optional[LocalAgentState] = None,
+        bitbrowser: ProfileScanner | None = None,
+    ) -> None:
         self.state = state or LocalAgentState()
+        self.bitbrowser = bitbrowser or BitBrowserClient(
+            os.getenv("WT_MEDIA_BITBROWSER_API_URL", "http://127.0.0.1:54345"),
+            timeout=float(os.getenv("WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS", "5")),
+        )
 
     def health(self) -> dict[str, str]:
         return {"status": "ok", "service": "wt-media-agent", "mode": "m1"}
@@ -24,6 +43,14 @@ class LocalApiServer:
 
     def event_stream_snapshot(self) -> str:
         return self.state.sse_snapshot()
+
+    def profile_scan_response(self) -> tuple[int, dict[str, object]]:
+        try:
+            return 200, self.bitbrowser.scan_profiles().to_dict()
+        except BitBrowserIdentityError:
+            return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserResponseError:
+            return 502, {"error": {"code": "bitbrowser_response_error"}}
 
 
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
@@ -42,10 +69,17 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 return
             self._write_json(404, {"error": "not_found"})
 
+        def do_POST(self) -> None:
+            if self.path == "/api/v1/bit-browser/profile-scans":
+                status, payload = api.profile_scan_response()
+                self._write_json(status, payload)
+                return
+            self._write_json(404, {"error": "not_found"})
+
         def log_message(self, format: str, *args: object) -> None:
             return
 
-        def _write_json(self, status: int, payload: dict[str, str]) -> None:
+        def _write_json(self, status: int, payload: dict[str, object]) -> None:
             body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json")
