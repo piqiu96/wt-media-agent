@@ -1,5 +1,9 @@
 # Local Agent API
 
-Reserved for Local Agent loopback HTTP and SSE control contracts.
+Local Agent loopback HTTP control contract owned by `wt-media-agent`.
 
-M0 status: placeholder only; no formal Local Agent API definition is active.
+M1 active endpoints:
+
+- `GET /healthz`
+- `GET /api/v1/status`
+- `GET /api/v1/events`

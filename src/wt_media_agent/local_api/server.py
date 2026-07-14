@@ -5,13 +5,25 @@ from __future__ import annotations
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Optional
+
+from wt_media_agent.local_api.state import LocalAgentState
 
 
 class LocalApiServer:
     """Exposes the M0 local process health surface."""
 
+    def __init__(self, state: Optional[LocalAgentState] = None) -> None:
+        self.state = state or LocalAgentState()
+
     def health(self) -> dict[str, str]:
-        return {"status": "ok", "service": "wt-media-agent", "mode": "m0"}
+        return {"status": "ok", "service": "wt-media-agent", "mode": "m1"}
+
+    def status(self) -> dict[str, object]:
+        return self.state.snapshot()
+
+    def event_stream_snapshot(self) -> str:
+        return self.state.sse_snapshot()
 
 
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
@@ -21,6 +33,12 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             if self.path == "/healthz":
                 self._write_json(200, api.health())
+                return
+            if self.path == "/api/v1/status":
+                self._write_json(200, api.status())
+                return
+            if self.path == "/api/v1/events":
+                self._write_sse(200, api.event_stream_snapshot())
                 return
             self._write_json(404, {"error": "not_found"})
 
@@ -34,6 +52,15 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _write_sse(self, status: int, body: str) -> None:
+            encoded = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("cache-control", "no-cache")
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
 
     return HealthHandler
 
