@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: WT Media Local Agent Loopback API
-  version: 2026.07.14.6
+  version: 2026.07.14.7
 servers:
   - url: http://127.0.0.1:8765
 paths:
@@ -37,11 +37,11 @@ paths:
       operationId: scanBitBrowserProfiles
       responses:
         '200':
-          description: Full secret-free Profile snapshot with one verified normalized owner.
+          description: Full secret-free Profile snapshot with one verified normalized BitBrowser main account.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ProfileSnapshot'}
-        '409': {description: Profile ownership is empty, missing, or mixed.}
+        '409': {description: Profile main account is empty, missing, or mixed, or Profile userId is missing.}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
 components:
   schemas:
@@ -62,19 +62,20 @@ components:
         pending_result_count: {type: integer, minimum: 0}
     ProfileSnapshot:
       type: object
-      required: [owner_user_id, profiles]
+      required: [main_user_id, profiles]
       properties:
-        owner_user_id: {type: string}
+        main_user_id: {type: string, description: Normalized from BitBrowser mainUserId.}
         profiles:
           type: array
           minItems: 1
           items: {$ref: '#/components/schemas/BitProfile'}
     BitProfile:
       type: object
-      required: [bit_profile_id, owner_user_id, name, group_id, group_name, bit_updated_at]
+      required: [bit_profile_id, main_user_id, profile_user_id, name, group_id, group_name, bit_updated_at]
       properties:
         bit_profile_id: {type: string}
-        owner_user_id: {type: string, description: Normalized from BitBrowser userId.}
+        main_user_id: {type: string, description: Normalized from BitBrowser mainUserId; must match snapshot main_user_id.}
+        profile_user_id: {type: string, description: Normalized from BitBrowser userId for Profile/sub-account audit.}
         name: {type: string}
         seq: {type: integer, nullable: true}
         group_id: {type: string}

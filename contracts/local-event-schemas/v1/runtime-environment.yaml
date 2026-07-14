@@ -1,5 +1,5 @@
 schema_version: 1
-revision: "2026.07.14.7"
+revision: "2026.07.14.9"
 event: runtime_environment
 payload:
   type: object
@@ -25,7 +25,7 @@ payload:
         free_megabytes: {type: integer, minimum: 0}
       additionalProperties: false
     bitbrowser_status: {type: string, enum: [normal, unreachable, identity_unverifiable, not_installed, needs_upgrade, user_action_required]}
-    owner_user_id: {type: string}
+    main_user_id: {type: string}
     bit_profile_ids:
       type: array
       uniqueItems: true

@@ -26,7 +26,8 @@ class BitProfile:
     """Allow-listed Profile facts safe to leave the local runtime."""
 
     bit_profile_id: str
-    owner_user_id: str
+    profile_user_id: str
+    main_user_id: str
     name: str
     seq: int | None
     group_id: str
@@ -37,14 +38,14 @@ class BitProfile:
 
 @dataclass(frozen=True)
 class ProfileSnapshot:
-    """A full, uniformly owned BitBrowser Profile snapshot."""
+    """A full BitBrowser Profile snapshot under one main account tree."""
 
-    owner_user_id: str
+    main_user_id: str
     profiles: tuple[BitProfile, ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "owner_user_id": self.owner_user_id,
+            "main_user_id": self.main_user_id,
             "profiles": [asdict(profile) for profile in self.profiles],
         }
 
@@ -92,16 +93,21 @@ class BitBrowserClient:
             raise BitBrowserIdentityError(
                 "BitBrowser identity is unverifiable because no Profiles were returned"
             )
-        owner_ids = {profile.owner_user_id for profile in profiles}
-        if "" in owner_ids:
+        profile_user_ids = {profile.profile_user_id for profile in profiles}
+        if "" in profile_user_ids:
             raise BitBrowserIdentityError(
                 "BitBrowser identity is unverifiable because a Profile has no userId"
             )
-        if len(owner_ids) != 1:
+        main_user_ids = {profile.main_user_id for profile in profiles}
+        if "" in main_user_ids:
             raise BitBrowserIdentityError(
-                "BitBrowser identity is unverifiable because mixed userId values were returned"
+                "BitBrowser identity is unverifiable because a Profile has no mainUserId"
             )
-        return ProfileSnapshot(owner_user_id=next(iter(owner_ids)), profiles=tuple(profiles))
+        if len(main_user_ids) != 1:
+            raise BitBrowserIdentityError(
+                "BitBrowser identity is unverifiable because mixed mainUserId values were returned"
+            )
+        return ProfileSnapshot(main_user_id=next(iter(main_user_ids)), profiles=tuple(profiles))
 
 
 def _response_items(response: dict[str, object]) -> list[dict[str, object]]:
@@ -132,7 +138,8 @@ def _safe_profile(item: dict[str, object]) -> BitProfile:
         status = None
     return BitProfile(
         bit_profile_id=bit_profile_id,
-        owner_user_id=_string(item.get("userId")),
+        profile_user_id=_string(item.get("userId")),
+        main_user_id=_string(item.get("mainUserId")),
         name=_string(item.get("name")),
         seq=seq,
         group_id=_string(item.get("groupId")),

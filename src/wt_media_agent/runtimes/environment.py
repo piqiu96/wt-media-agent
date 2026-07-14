@@ -52,7 +52,7 @@ class RuntimeEnvironmentReport:
     workdir_status: str
     disk: DiskFact
     bitbrowser_status: str
-    owner_user_id: str = ""
+    main_user_id: str = ""
     bit_profile_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -66,8 +66,8 @@ class RuntimeEnvironmentReport:
             "disk": asdict(self.disk),
             "bitbrowser_status": self.bitbrowser_status,
         }
-        if self.owner_user_id:
-            value["owner_user_id"] = self.owner_user_id
+        if self.main_user_id:
+            value["main_user_id"] = self.main_user_id
             value["bit_profile_ids"] = list(self.bit_profile_ids)
         return value
 
@@ -109,11 +109,11 @@ class RuntimeEnvironmentCollector:
             version=_extract_version(ffmpeg_output or ""),
         )
         bitbrowser_status = "normal"
-        owner_user_id = ""
+        main_user_id = ""
         profile_ids: tuple[str, ...] = ()
         try:
             snapshot = self._bitbrowser.scan_profiles()
-            owner_user_id = snapshot.owner_user_id
+            main_user_id = snapshot.main_user_id
             profile_ids = tuple(sorted(profile.bit_profile_id for profile in snapshot.profiles))
         except BitBrowserIdentityError:
             bitbrowser_status = "identity_unverifiable"
@@ -132,7 +132,7 @@ class RuntimeEnvironmentCollector:
                 free_megabytes=free_bytes // (1024 * 1024),
             ),
             bitbrowser_status=bitbrowser_status,
-            owner_user_id=owner_user_id,
+            main_user_id=main_user_id,
             bit_profile_ids=profile_ids,
         )
 

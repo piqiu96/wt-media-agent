@@ -14,10 +14,10 @@ from wt_media_agent.runtimes.environment import RuntimeEnvironmentCollector
 class SnapshotClient:
     def scan_profiles(self) -> ProfileSnapshot:
         return ProfileSnapshot(
-            owner_user_id="bit-user-1",
+            main_user_id="main-user-1",
             profiles=(
-                BitProfile("profile-1", "bit-user-1", "Account 1", 1, "", "", 1, ""),
-                BitProfile("profile-2", "bit-user-1", "Account 2", 2, "", "", 1, ""),
+                BitProfile("profile-1", "bit-user-1", "main-user-1", "Account 1", 1, "", "", 1, ""),
+                BitProfile("profile-2", "bit-user-2", "main-user-1", "Account 2", 2, "", "", 1, ""),
             ),
         )
 
@@ -52,7 +52,7 @@ class RuntimeEnvironmentCollectorTests(unittest.TestCase):
         self.assertEqual(report["workdir_status"], "normal")
         self.assertEqual(report["disk"], {"status": "normal", "free_megabytes": 8192})
         self.assertEqual(report["bitbrowser_status"], "normal")
-        self.assertEqual(report["owner_user_id"], "bit-user-1")
+        self.assertEqual(report["main_user_id"], "main-user-1")
         self.assertEqual(report["bit_profile_ids"], ["profile-1", "profile-2"])
         serialized = repr(report).lower()
         for forbidden in ("copyright", "/users/", "cookie", "proxy", "hostname", "127.0.0.1"):
@@ -76,7 +76,7 @@ class RuntimeEnvironmentCollectorTests(unittest.TestCase):
         self.assertEqual(report["workdir_status"], "user_action_required")
         self.assertEqual(report["disk"]["status"], "abnormal")
         self.assertEqual(report["bitbrowser_status"], "unreachable")
-        self.assertNotIn("owner_user_id", report)
+        self.assertNotIn("main_user_id", report)
         self.assertNotIn("bit_profile_ids", report)
         self.assertNotIn("127.0.0.1", repr(report))
 
@@ -87,7 +87,7 @@ class RuntimeEnvironmentCollectorTests(unittest.TestCase):
         ).collect().to_dict()
 
         self.assertEqual(report["bitbrowser_status"], "identity_unverifiable")
-        self.assertNotIn("owner_user_id", report)
+        self.assertNotIn("main_user_id", report)
         self.assertNotIn("bit_profile_ids", report)
 
 

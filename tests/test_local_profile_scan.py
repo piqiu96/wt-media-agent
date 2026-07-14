@@ -20,11 +20,12 @@ from wt_media_agent.runtimes.bitbrowser import (
 class SnapshotClient:
     def scan_profiles(self) -> ProfileSnapshot:
         return ProfileSnapshot(
-            owner_user_id="bit-user-1",
+            main_user_id="main-user-1",
             profiles=(
                 BitProfile(
                     bit_profile_id="profile-1",
-                    owner_user_id="bit-user-1",
+                    profile_user_id="bit-user-1",
+                    main_user_id="main-user-1",
                     name="运营窗口",
                     seq=1,
                     group_id="group-1",
@@ -49,8 +50,10 @@ class LocalProfileScanTests(unittest.TestCase):
         status, payload = LocalApiServer(bitbrowser=SnapshotClient()).profile_scan_response()
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["owner_user_id"], "bit-user-1")
+        self.assertEqual(payload["main_user_id"], "main-user-1")
         self.assertEqual(payload["profiles"][0]["bit_profile_id"], "profile-1")
+        self.assertEqual(payload["profiles"][0]["profile_user_id"], "bit-user-1")
+        self.assertEqual(payload["profiles"][0]["main_user_id"], "main-user-1")
         self.assertNotIn("cookie", str(payload).lower())
         self.assertNotIn("password", str(payload).lower())
 

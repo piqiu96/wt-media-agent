@@ -26,7 +26,7 @@ class FakeTransport:
         return self.responses.pop(0)
 
 
-def profile(index: int, owner: str = "bit-user-1") -> dict[str, object]:
+def profile(index: int, profile_user: str = "bit-user-1", main_user: str = "main-user-1") -> dict[str, object]:
     return {
         "id": f"profile-{index}",
         "name": f"窗口 {index}",
@@ -34,8 +34,8 @@ def profile(index: int, owner: str = "bit-user-1") -> dict[str, object]:
         "groupId": "group-1",
         "groupName": "运营组",
         "status": 1,
-        "userId": owner,
-        "mainUserId": "main-user-diagnostic",
+        "userId": profile_user,
+        "mainUserId": main_user,
         "operUserId": "operator-diagnostic",
         "updateTime": "2026-07-14 18:00:00",
         "cookie": "must-not-leave-adapter",
@@ -59,7 +59,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
         snapshot = client.scan_profiles()
 
-        self.assertEqual(snapshot.owner_user_id, "bit-user-1")
+        self.assertEqual(snapshot.main_user_id, "main-user-1")
         self.assertEqual(len(snapshot.profiles), 101)
         self.assertEqual(
             [call[1] for call in transport.calls],
@@ -68,15 +68,17 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         self.assertTrue(all(call[0].endswith("/browser/list") for call in transport.calls))
         self.assertTrue(all(call[2] == 3.5 for call in transport.calls))
 
-    def test_maps_only_user_id_to_owner_and_strips_secrets(self) -> None:
+    def test_maps_main_user_id_as_root_and_profile_user_id_as_profile_owner(self) -> None:
         transport = FakeTransport([{"success": True, "data": {"list": [profile(1)]}}])
 
         snapshot = BitBrowserClient("http://127.0.0.1:54345", transport=transport).scan_profiles()
 
         item = snapshot.profiles[0]
-        self.assertEqual(item.owner_user_id, "bit-user-1")
+        self.assertEqual(snapshot.main_user_id, "main-user-1")
+        self.assertEqual(item.main_user_id, "main-user-1")
+        self.assertEqual(item.profile_user_id, "bit-user-1")
         self.assertEqual(item.bit_profile_id, "profile-1")
-        self.assertNotEqual(item.owner_user_id, "operator-diagnostic")
+        self.assertNotEqual(item.profile_user_id, "operator-diagnostic")
         encoded = json.dumps(snapshot.to_dict(), ensure_ascii=False)
         for secret in (
             "must-not-leave-adapter",
@@ -85,20 +87,35 @@ class BitBrowserRuntimeTests(unittest.TestCase):
             "cookie",
             "password",
             "operUserId",
-            "mainUserId",
         ):
             self.assertNotIn(secret, encoded)
 
-    def test_rejects_mixed_profile_identities(self) -> None:
+    def test_accepts_mixed_profile_users_under_one_main_user(self) -> None:
         transport = FakeTransport(
-            [{"success": True, "data": {"list": [profile(1), profile(2, owner="bit-user-2")]}}]
+            [{"success": True, "data": {"list": [profile(1), profile(2, profile_user="bit-user-2")]}}]
         )
 
-        with self.assertRaisesRegex(BitBrowserIdentityError, "mixed"):
+        snapshot = BitBrowserClient("http://127.0.0.1:54345", transport=transport).scan_profiles()
+
+        self.assertEqual(snapshot.main_user_id, "main-user-1")
+        self.assertEqual([profile.profile_user_id for profile in snapshot.profiles], ["bit-user-1", "bit-user-2"])
+
+    def test_rejects_mixed_main_user_identities(self) -> None:
+        transport = FakeTransport(
+            [{"success": True, "data": {"list": [profile(1), profile(2, main_user="main-user-2")]}}]
+        )
+
+        with self.assertRaisesRegex(BitBrowserIdentityError, "mainUserId"):
             BitBrowserClient("http://127.0.0.1:54345", transport=transport).scan_profiles()
 
     def test_rejects_empty_or_missing_identity(self) -> None:
-        for items in ([], [{**profile(1), "userId": ""}], [{key: value for key, value in profile(1).items() if key != "userId"}]):
+        for items in (
+            [],
+            [{**profile(1), "userId": ""}],
+            [{key: value for key, value in profile(1).items() if key != "userId"}],
+            [{**profile(1), "mainUserId": ""}],
+            [{key: value for key, value in profile(1).items() if key != "mainUserId"}],
+        ):
             with self.subTest(items=items):
                 transport = FakeTransport([{"success": True, "data": {"list": items}}])
                 with self.assertRaises(BitBrowserIdentityError):
