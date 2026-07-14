@@ -19,3 +19,11 @@ This repository is scaffolded as an installable Python package under `src/wt_med
 - `src/wt_media_agent/runtimes`: runtime adapter placeholders.
 - `src/wt_media_agent/executors`: executor registry placeholder.
 - `contracts`: Agent-owned local contracts.
+
+## M0 Verification
+
+From this repository:
+
+```text
+scripts/verify-health.sh
+```
