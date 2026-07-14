@@ -11,7 +11,7 @@ class RecordingTransport:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, Mapping[str, object]]] = []
 
-    def __call__(self, method: str, path: str, payload: Mapping[str, object]) -> Mapping[str, object]:
+    def __call__(self, method: str, path: str, payload: Mapping[str, object], headers: Mapping[str, str]) -> Mapping[str, object]:
         self.calls.append((method, path, payload))
         return {"data": {"task_id": "task-1", "status": payload["status"], "progress": payload["progress"]}}
 
@@ -29,7 +29,7 @@ class NoopExecutorTest(unittest.TestCase):
         self.assertEqual([call[2]["progress"] for call in transport.calls], [0, 50, 100])
 
     def test_noop_executor_rejects_wrong_task_type(self) -> None:
-        executor = NoopExecutor(CloudAgentClient("http://cloud.test", transport=lambda m, p, body: {}), "agent-local-1")
+        executor = NoopExecutor(CloudAgentClient("http://cloud.test", transport=lambda m, p, body, headers: {}), "agent-local-1")
 
         with self.assertRaises(ValueError):
             executor.execute({"task_id": "task-1", "task_type": "other"})

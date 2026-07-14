@@ -1,0 +1,33 @@
+schema_version: 1
+revision: "2026.07.14.7"
+event: runtime_environment
+payload:
+  type: object
+  required: [operating_system, cpu_architecture, agent_version, python_version, ffmpeg, workdir_status, disk, bitbrowser_status]
+  properties:
+    operating_system: {type: string, enum: [macos, windows, linux, unsupported]}
+    cpu_architecture: {type: string, enum: [x86_64, arm64, unsupported]}
+    agent_version: {type: string}
+    python_version: {type: string}
+    ffmpeg:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [normal, abnormal, not_installed, needs_upgrade, unreachable, user_action_required]}
+        version: {type: string}
+      additionalProperties: false
+    workdir_status: {type: string, enum: [normal, abnormal, not_installed, needs_upgrade, unreachable, user_action_required]}
+    disk:
+      type: object
+      required: [status, free_megabytes]
+      properties:
+        status: {type: string, enum: [normal, abnormal, user_action_required]}
+        free_megabytes: {type: integer, minimum: 0}
+      additionalProperties: false
+    bitbrowser_status: {type: string, enum: [normal, unreachable, identity_unverifiable, not_installed, needs_upgrade, user_action_required]}
+    owner_user_id: {type: string}
+    bit_profile_ids:
+      type: array
+      uniqueItems: true
+      items: {type: string}
+  additionalProperties: false

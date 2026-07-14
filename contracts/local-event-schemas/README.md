@@ -1,5 +1,8 @@
 # Local Event Schemas
 
+- `v1/status.yaml`: Local Agent status SSE event.
+- `v1/runtime-environment.yaml`: M2-C4 secret-safe runtime environment and verified Profile presence payload.
+
 Reserved for SSE event payload schemas for Desktop local pages.
 
 M0 status: placeholder only; no formal event schema is active.
