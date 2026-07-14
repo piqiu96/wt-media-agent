@@ -1,0 +1,77 @@
+"""Cloud-Agent API client used by Agent runtime slices."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Callable, Mapping, Optional
+from urllib import request
+
+from wt_media_agent.cloud_agent_contract import (
+    EXPECTED_MAJOR_VERSION,
+    REQUIRED_CONTRACT_REVISION,
+)
+
+
+Transport = Callable[[str, str, Mapping[str, object]], Mapping[str, object]]
+
+
+@dataclass(frozen=True)
+class AgentIdentity:
+    agent_id: str
+    mode: str
+    version: str = "0.1.0"
+    capabilities: tuple[str, ...] = ()
+
+
+class CloudAgentClient:
+    def __init__(self, base_url: str, transport: Optional[Transport] = None) -> None:
+        self.base_url = base_url.rstrip("/")
+        self._transport = transport or self._http_transport
+
+    def register(self, identity: AgentIdentity) -> Mapping[str, object]:
+        payload = {
+            "agent_id": identity.agent_id,
+            "mode": identity.mode,
+            "version": identity.version,
+            "contract_major_version": EXPECTED_MAJOR_VERSION,
+            "contract_revision": REQUIRED_CONTRACT_REVISION,
+            "capabilities": list(identity.capabilities),
+        }
+        response = self._transport("POST", "/api/v1/cloud-agent/agents/register", payload)
+        return _expect_data(response)
+
+    def heartbeat(self, agent_id: str, status: str = "online") -> Mapping[str, object]:
+        response = self._transport(
+            "POST",
+            f"/api/v1/cloud-agent/agents/{agent_id}/heartbeat",
+            {"status": status},
+        )
+        return _expect_data(response)
+
+    def _http_transport(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        req = request.Request(
+            f"{self.base_url}{path}",
+            data=body,
+            method=method,
+            headers={"content-type": "application/json"},
+        )
+        with request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8")
+        decoded = json.loads(raw)
+        if not isinstance(decoded, Mapping):
+            raise ValueError("cloud response must be a JSON object")
+        return decoded
+
+
+def _expect_data(response: Mapping[str, object]) -> Mapping[str, object]:
+    data = response.get("data")
+    if not isinstance(data, Mapping):
+        raise ValueError("cloud response missing data object")
+    return data
