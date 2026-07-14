@@ -49,6 +49,14 @@ class CloudAgentClient:
         )
         return _expect_data(response)
 
+    def claim_task(self, agent_id: str, lease_seconds: int = 60) -> Mapping[str, object]:
+        response = self._transport(
+            "POST",
+            "/api/v1/cloud-agent/tasks/claim",
+            {"agent_id": agent_id, "lease_seconds": lease_seconds},
+        )
+        return _expect_data(response)
+
     def _http_transport(
         self,
         method: str,
