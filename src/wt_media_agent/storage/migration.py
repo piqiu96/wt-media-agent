@@ -37,6 +37,40 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        version="0002_task_checkpoints",
+        name="task_checkpoints",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS task_checkpoints (
+                task_id TEXT NOT NULL PRIMARY KEY,
+                task_type TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                checkpoint_status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT DEFAULT NULL,
+                result_json TEXT DEFAULT NULL,
+                error_code TEXT DEFAULT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                retry_count INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS offline_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT DEFAULT NULL,
+                error_code TEXT DEFAULT NULL,
+                queued_at TEXT NOT NULL,
+                delivered INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+        ),
+    ),
 )
 
 
