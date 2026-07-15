@@ -8,7 +8,8 @@ from typing import Optional
 
 API_NAME = "cloud-agent"
 EXPECTED_MAJOR_VERSION = "v1"
-REQUIRED_CONTRACT_REVISION = "2026.07.14.7"
+REQUIRED_CONTRACT_REVISION = "2026.07.15.1"
+# task_schemas locked to revision 2026.07.15.1 (M1-R1)
 
 
 def is_cloud_agent_compatible(metadata: Mapping[str, object]) -> bool:
