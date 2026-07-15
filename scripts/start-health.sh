@@ -16,8 +16,47 @@ if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
   exit 0
 fi
 
-PYTHONPATH="${PYTHONPATH:-src}" nohup "$PYTHON_BIN" -m wt_media_agent.local_api.server --host "$HOST" --port "$PORT" >"$LOG_FILE" 2>&1 &
-echo "$!" >"$PID_FILE"
+WT_MEDIA_AGENT_PYTHON_BIN="$PYTHON_BIN" \
+WT_MEDIA_AGENT_HEALTH_HOST="$HOST" \
+WT_MEDIA_AGENT_HEALTH_PORT="$PORT" \
+WT_MEDIA_AGENT_PID_FILE="$PID_FILE" \
+WT_MEDIA_AGENT_LOG_FILE="$LOG_FILE" \
+WT_MEDIA_AGENT_PYTHONPATH="${PYTHONPATH:-src}" \
+"$PYTHON_BIN" - <<'PY'
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+python_bin = os.environ["WT_MEDIA_AGENT_PYTHON_BIN"]
+host = os.environ["WT_MEDIA_AGENT_HEALTH_HOST"]
+port = os.environ["WT_MEDIA_AGENT_HEALTH_PORT"]
+pid_file = Path(os.environ["WT_MEDIA_AGENT_PID_FILE"])
+log_file = Path(os.environ["WT_MEDIA_AGENT_LOG_FILE"])
+env = os.environ.copy()
+env["PYTHONPATH"] = os.environ["WT_MEDIA_AGENT_PYTHONPATH"]
+
+with log_file.open("ab") as log:
+    child = subprocess.Popen(
+        [
+            python_bin,
+            "-m",
+            "wt_media_agent.local_api.server",
+            "--host",
+            host,
+            "--port",
+            port,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
+        start_new_session=True,
+        env=env,
+    )
+
+pid_file.write_text(f"{child.pid}\n", encoding="utf-8")
+PY
 
 for _ in {1..50}; do
   if ! kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
