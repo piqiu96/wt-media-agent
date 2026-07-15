@@ -18,5 +18,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Verify M0 Agent health
-        run: scripts/verify-health.sh
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Bootstrap Agent
+        run: scripts/bootstrap.sh
+
+      - name: Test Agent
+        run: scripts/test.sh
+
+      - name: Apply SQLite storage migrations
+        run: |
+          scripts/migrate-storage.sh --data-dir /tmp/wt-media-agent-m0-ci
+          scripts/migrate-storage.sh --data-dir /tmp/wt-media-agent-m0-ci
+
+      - name: Build Agent package
+        run: scripts/build.sh
