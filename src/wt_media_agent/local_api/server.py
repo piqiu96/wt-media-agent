@@ -129,6 +129,7 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("content-type", "text/event-stream")
             self.send_header("cache-control", "no-cache")
             self.send_header("connection", "keep-alive")
+            self._cors_headers()
             self.end_headers()
 
             # Send initial status snapshot.
@@ -187,6 +188,16 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             except (BrokenPipeError, ConnectionResetError):
                 raise
 
+        def _cors_headers(self) -> None:
+            self.send_header("access-control-allow-origin", "*")
+            self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
+            self.send_header("access-control-allow-headers", "authorization, content-type")
+
+        def do_OPTIONS(self) -> None:
+            self.send_response(204)
+            self._cors_headers()
+            self.end_headers()
+
         def log_message(self, fmt: str, *args: object) -> None:
             return
 
@@ -195,6 +206,7 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))
+            self._cors_headers()
             self.end_headers()
             self.wfile.write(body)
 
