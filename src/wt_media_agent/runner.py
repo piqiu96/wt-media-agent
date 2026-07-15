@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from wt_media_agent.cloud_agent_client import CloudAgentClient
+from wt_media_agent.constants import DEFAULT_LEASE_SECONDS, MAX_RETRIES, TASK_TYPE_NOOP
 from wt_media_agent.executors.noop import NoopExecutor
 from wt_media_agent.storage.checkpoint_store import (
     CheckpointStore,

@@ -14,7 +14,7 @@ class StorageMigrationTest(unittest.TestCase):
             first = migration.apply_migrations(db_path)
             second = migration.apply_migrations(db_path)
 
-            self.assertEqual([item.version for item in first], ["0001_base"])
+            self.assertEqual([item.version for item in first], ["0001_base", "0002_task_checkpoints"])
             self.assertEqual(second, [])
 
             with sqlite3.connect(db_path) as db:
@@ -26,13 +26,15 @@ class StorageMigrationTest(unittest.TestCase):
                 }
                 self.assertIn("schema_migrations", tables)
                 self.assertIn("agent_metadata", tables)
+                self.assertIn("task_checkpoints", tables)
+                self.assertIn("offline_results", tables)
                 versions = [
                     row[0]
                     for row in db.execute(
                         "SELECT version FROM schema_migrations ORDER BY version"
                     )
                 ]
-                self.assertEqual(versions, ["0001_base"])
+                self.assertEqual(versions, ["0001_base", "0002_task_checkpoints"])
 
 
 if __name__ == "__main__":

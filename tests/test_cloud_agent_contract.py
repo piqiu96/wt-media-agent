@@ -27,9 +27,9 @@ class CloudAgentContractCompatibilityTest(unittest.TestCase):
     def test_cloud_response_envelope_is_compatible(self) -> None:
         self.assertTrue(is_cloud_response_compatible({"data": current_metadata()}))
 
-    def test_newer_revision_is_compatible(self) -> None:
+    def test_current_revision_is_compatible(self) -> None:
         metadata = current_metadata()
-        metadata["contract_revision"] = "2026.07.14.7"
+        metadata["contract_revision"] = "2026.07.15.1"
 
         self.assertTrue(is_cloud_agent_compatible(metadata))
 
