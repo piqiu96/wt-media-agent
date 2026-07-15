@@ -30,5 +30,19 @@ BitBrowser configuration:
 From this repository:
 
 ```text
+scripts/bootstrap.sh
+scripts/test.sh
+scripts/build.sh
+scripts/migrate-storage.sh --data-dir /tmp/wt-media-agent-m0
 scripts/verify-health.sh
 ```
+
+For local health process management in a terminal:
+
+```text
+WT_MEDIA_AGENT_HEALTH_PORT=18765 scripts/start-health.sh
+WT_MEDIA_AGENT_HEALTH_PORT=18765 scripts/health.sh
+scripts/stop-health.sh
+```
+
+The storage migration command initializes `local-agent.sqlite3` under `WT_MEDIA_AGENT_DATA_DIR`, `--data-dir`, or an explicit `--db-path`. It records applied versions in `schema_migrations` and skips already applied migrations on repeat runs.

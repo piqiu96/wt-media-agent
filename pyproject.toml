@@ -17,6 +17,7 @@ build = []
 wt-media-local-agent = "wt_media_agent.local_main:main"
 wt-media-cloud-agent = "wt_media_agent.cloud_main:main"
 wt-media-local-health = "wt_media_agent.local_api.server:main"
+wt-media-agent-storage-migrate = "wt_media_agent.storage.migration:main"
 
 [build-system]
 requires = ["hatchling"]

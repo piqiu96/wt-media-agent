@@ -1,0 +1,11 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "wt-media-agent"
+version = "0.2.2"
+source = { editable = "." }
+
+[package.metadata]
+provides-extras = ["core", "local", "cloud", "dev", "test", "build"]
