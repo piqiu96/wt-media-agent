@@ -123,6 +123,29 @@ class BitBrowserClient:
         """Delete a browser profile."""
         self._check_success(self._post("/browser/delete", {"id": profile_id}))
 
+    def group_list(self) -> list[dict[str, object]]:
+        """List all profile groups."""
+        result = self._check_success(self._post("/group/list", {}))
+        groups = result.get("list", []) if isinstance(result, dict) else []
+        return groups if isinstance(groups, list) else []
+
+    def read_cookies(self, profile_id: str) -> list[dict[str, object]]:
+        """Read all cookies from an open profile's browser context."""
+        result = self._check_success(self._post("/browser/cookie", {"id": profile_id}))
+        cookies = result if isinstance(result, dict) else {}
+        for key in ("cookies", "list", "data", "cookie"):
+            value = cookies.get(key)
+            if isinstance(value, list):
+                return value
+        return []
+
+    def save_cookies(self, profile_id: str, cookies: list[dict[str, object]]) -> None:
+        """Save cookies to a browser profile."""
+        self._check_success(self._post("/browser/cookie/save", {
+            "id": profile_id,
+            "cookies": cookies,
+        }))
+
     def scan_profiles(self) -> ProfileSnapshot:
         profiles: list[BitProfile] = []
         page = 0

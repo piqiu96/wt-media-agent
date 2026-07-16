@@ -9,8 +9,18 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from wt_media_agent.cloud_agent_client import CloudAgentClient
-from wt_media_agent.constants import DEFAULT_LEASE_SECONDS, MAX_RETRIES, TASK_TYPE_NOOP
+from wt_media_agent.constants import (
+    DEFAULT_LEASE_SECONDS,
+    MAX_RETRIES,
+    TASK_TYPE_ACCOUNT_CHECK,
+    TASK_TYPE_COOKIE_READ,
+    TASK_TYPE_COOKIE_WRITE,
+    TASK_TYPE_NOOP,
+    TASK_TYPE_PROXY_CHECK,
+)
 from wt_media_agent.executors.noop import NoopExecutor
+from wt_media_agent.executors.cookie import CookieReadExecutor, CookieWriteExecutor
+from wt_media_agent.executors.account_check import AccountCheckExecutor
 from wt_media_agent.storage.checkpoint_store import (
     CheckpointStore,
     OfflineResult,
@@ -46,7 +56,10 @@ class TaskRunner:
         self.config = config
         self._running = False
         self._executors: dict[str, ExecutorFactory] = {
-            "noop_task": lambda c, a: NoopExecutor(c, a),
+            TASK_TYPE_NOOP: lambda c, a: NoopExecutor(c, a),
+            TASK_TYPE_COOKIE_READ: lambda c, a: CookieReadExecutor(c, a),
+            TASK_TYPE_COOKIE_WRITE: lambda c, a: CookieWriteExecutor(c, a),
+            TASK_TYPE_ACCOUNT_CHECK: lambda c, a: AccountCheckExecutor(c, a),
         }
 
     def register_executor(self, task_type: str, factory: ExecutorFactory) -> None:

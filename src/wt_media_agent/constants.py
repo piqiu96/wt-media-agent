@@ -12,6 +12,10 @@ TASK_STATUS_CANCELLED = "cancelled"
 
 # Task types.
 TASK_TYPE_NOOP = "noop_task"
+TASK_TYPE_COOKIE_READ = "cookie_read_task"
+TASK_TYPE_COOKIE_WRITE = "cookie_write_task"
+TASK_TYPE_ACCOUNT_CHECK = "account_check_task"
+TASK_TYPE_PROXY_CHECK = "proxy_check_task"
 
 # Agent modes.
 AGENT_MODE_LOCAL = "local"
