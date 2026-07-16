@@ -32,6 +32,10 @@ class SnapshotClient:
                     group_name="运营组",
                     status=1,
                     bit_updated_at="2026-07-14 18:00:00",
+                    remark="",
+                    proxy_type="noproxy",
+                    proxy_host="",
+                    proxy_port=0,
                 ),
             ),
         )

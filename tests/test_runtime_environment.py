@@ -16,8 +16,8 @@ class SnapshotClient:
         return ProfileSnapshot(
             main_user_id="main-user-1",
             profiles=(
-                BitProfile("profile-1", "bit-user-1", "main-user-1", "Account 1", 1, "", "", 1, ""),
-                BitProfile("profile-2", "bit-user-2", "main-user-1", "Account 2", 2, "", "", 1, ""),
+                BitProfile("profile-1", "bit-user-1", "main-user-1", "Account 1", 1, "", "", 1, "", "", "noproxy", "", 0),
+                BitProfile("profile-2", "bit-user-2", "main-user-1", "Account 2", 2, "", "", 1, "", "", "noproxy", "", 0),
             ),
         )
 

@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 class ProfileScanner(Protocol):
     def scan_profiles(self) -> ProfileSnapshot: ...
+    def create_profile(self, config: dict[str, object]) -> str: ...
+    def open_profile(self, profile_id: str) -> None: ...
+    def close_profile(self, profile_id: str) -> None: ...
+    def update_profile(self, profile_id: str, config: dict[str, object]) -> None: ...
+    def delete_profile(self, profile_id: str) -> None: ...
 
 
 class LocalApiServer:
@@ -88,6 +93,53 @@ class LocalApiServer:
         except BitBrowserResponseError:
             return 502, {"error": {"code": "bitbrowser_response_error"}}
 
+    def profile_create_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        try:
+            profile_id = self.bitbrowser.create_profile(body)
+            return 201, {"data": {"id": profile_id}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
+    def profile_open_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        profile_id = body.get("id", "")
+        if not profile_id:
+            return 400, {"error": {"code": "profile_id_required"}}
+        try:
+            self.bitbrowser.open_profile(profile_id)
+            return 200, {"data": {"status": "opened"}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
+    def profile_close_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        profile_id = body.get("id", "")
+        if not profile_id:
+            return 400, {"error": {"code": "profile_id_required"}}
+        try:
+            self.bitbrowser.close_profile(profile_id)
+            return 200, {"data": {"status": "closed"}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
+    def profile_update_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        profile_id = body.get("id", "")
+        if not profile_id:
+            return 400, {"error": {"code": "profile_id_required"}}
+        try:
+            self.bitbrowser.update_profile(profile_id, body)
+            return 200, {"data": {"status": "updated"}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
+    def profile_delete_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        profile_id = body.get("id", "")
+        if not profile_id:
+            return 400, {"error": {"code": "profile_id_required"}}
+        try:
+            self.bitbrowser.delete_profile(profile_id)
+            return 200, {"data": {"status": "deleted"}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
 
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     class AgentHandler(BaseHTTPRequestHandler):
@@ -118,6 +170,21 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/v1/bit-browser/profile-scans":
                 status, payload = api.profile_scan_response()
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-create":
+                status, payload = api.profile_create_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-open":
+                status, payload = api.profile_open_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-close":
+                status, payload = api.profile_close_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-update":
+                status, payload = api.profile_update_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-delete":
+                status, payload = api.profile_delete_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bind":
                 self._handle_bind()
@@ -187,6 +254,16 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 raise
+
+        def _read_body(self) -> dict[str, object]:
+            try:
+                length = int(self.headers.get("content-length", 0))
+                if not length:
+                    return {}
+                body = self.rfile.read(length)
+                return json.loads(body) if body else {}
+            except (ValueError, json.JSONDecodeError):
+                return {}
 
         def _cors_headers(self) -> None:
             self.send_header("access-control-allow-origin", "*")

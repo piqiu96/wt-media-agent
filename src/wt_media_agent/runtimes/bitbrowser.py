@@ -34,6 +34,10 @@ class BitProfile:
     group_name: str
     status: int | str | None
     bit_updated_at: str
+    remark: str
+    proxy_type: str
+    proxy_host: str
+    proxy_port: int
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,51 @@ class BitBrowserClient:
         self._base_url = normalized
         self._transport = transport or _post_json
         self._timeout = timeout
+
+    def _post(self, path: str, payload: dict[str, object]) -> dict[str, object]:
+        return self._transport(
+            f"{self._base_url}{path}",
+            payload,
+            self._timeout,
+        )
+
+    def _check_success(self, response: dict[str, object]) -> dict[str, object]:
+        if not isinstance(response, dict):
+            raise BitBrowserResponseError("BitBrowser response is not an object")
+        if response.get("success") is not True:
+            msg = response.get("msg", "unknown error")
+            raise BitBrowserResponseError(f"BitBrowser request failed: {msg}")
+        data = response.get("data")
+        return data if isinstance(data, dict) else {}
+
+    def create_profile(self, config: dict[str, object]) -> str:
+        """Create a new browser profile. Returns the new profile ID."""
+        result = self._check_success(self._post("/browser/create", config))
+        profile_id = result.get("id", "")
+        if not profile_id:
+            raise BitBrowserResponseError("BitBrowser create profile returned no id")
+        return profile_id
+
+    def open_profile(self, profile_id: str) -> None:
+        """Open a browser profile in the BitBrowser application."""
+        self._check_success(self._post("/browser/open", {"id": profile_id}))
+
+    def close_profile(self, profile_id: str) -> None:
+        """Close a browser profile."""
+        try:
+            self._check_success(self._post("/browser/close", {"id": profile_id}))
+        except BitBrowserResponseError:
+            pass  # Close may fail if already closed
+
+    def update_profile(self, profile_id: str, config: dict[str, object]) -> None:
+        """Update an existing browser profile."""
+        payload = dict(config)
+        payload["id"] = profile_id
+        self._check_success(self._post("/browser/update", payload))
+
+    def delete_profile(self, profile_id: str) -> None:
+        """Delete a browser profile."""
+        self._check_success(self._post("/browser/delete", {"id": profile_id}))
 
     def scan_profiles(self) -> ProfileSnapshot:
         profiles: list[BitProfile] = []
@@ -136,6 +185,8 @@ def _safe_profile(item: dict[str, object]) -> BitProfile:
     status = item.get("status")
     if not isinstance(status, (int, str)) or isinstance(status, bool):
         status = None
+    proxy_port_raw = item.get("proxyPort") or 0
+    proxy_port = int(proxy_port_raw) if isinstance(proxy_port_raw, (int, str)) and str(proxy_port_raw).isdigit() else 0
     return BitProfile(
         bit_profile_id=bit_profile_id,
         profile_user_id=_string(item.get("userId")),
@@ -146,6 +197,10 @@ def _safe_profile(item: dict[str, object]) -> BitProfile:
         group_name=_string(item.get("groupName")),
         status=status,
         bit_updated_at=_string(item.get("updateTime")),
+        remark=_string(item.get("remark")),
+        proxy_type=_string(item.get("proxyType")),
+        proxy_host=_string(item.get("proxyHost")),
+        proxy_port=proxy_port,
     )
 
 
