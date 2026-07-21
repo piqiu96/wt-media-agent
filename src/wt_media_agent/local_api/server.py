@@ -20,6 +20,7 @@ from wt_media_agent.runtimes.bitbrowser import (
     BitBrowserResponseError,
     ProfileSnapshot,
 )
+from wt_media_agent.proxy_check import check_proxy_connectivity
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,22 @@ class LocalApiServer:
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
+    def proxy_check_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """Run the short TCP check inline; browser interaction is not involved."""
+        host = str(body.get("host", "")).strip()
+        try:
+            port = int(body.get("port", 0))
+        except (TypeError, ValueError):
+            port = 0
+        if not host or not 1 <= port <= 65535:
+            return 400, {"error": {"code": "proxy_input_invalid"}}
+        result = check_proxy_connectivity(host, port)
+        data: dict[str, object] = {"connectivity": result}
+        proxy_id = str(body.get("proxy_id", "")).strip()
+        if proxy_id:
+            data["proxy_id"] = proxy_id
+        return 200, {"data": data}
+
 
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     class AgentHandler(BaseHTTPRequestHandler):
@@ -185,6 +202,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-delete":
                 status, payload = api.profile_delete_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-check":
+                status, payload = api.proxy_check_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bind":
                 self._handle_bind()
