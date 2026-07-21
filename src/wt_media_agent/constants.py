@@ -16,6 +16,10 @@ TASK_TYPE_COOKIE_READ = "cookie_read_task"
 TASK_TYPE_COOKIE_WRITE = "cookie_write_task"
 TASK_TYPE_ACCOUNT_CHECK = "account_check_task"
 TASK_TYPE_PROXY_CHECK = "proxy_check_task"
+TASK_TYPE_PROFILE_CREATE = "profile_create_task"
+TASK_TYPE_PROFILE_OPEN = "profile_open_task"
+TASK_TYPE_PROFILE_CLOSE = "profile_close_task"
+TASK_TYPE_PROFILE_UPDATE = "profile_update_task"
 
 # Agent modes.
 AGENT_MODE_LOCAL = "local"
