@@ -73,6 +73,7 @@ class CloudAgentClient:
         status: str,
         progress: int,
         message: str = "",
+        result: Optional[Mapping[str, object]] = None,
     ) -> Mapping[str, object]:
         response = self._transport(
             "POST",
@@ -82,6 +83,7 @@ class CloudAgentClient:
                 "status": status,
                 "progress": progress,
                 "message": message,
+                **({"result": dict(result)} if result is not None else {}),
             },
             {},
         )

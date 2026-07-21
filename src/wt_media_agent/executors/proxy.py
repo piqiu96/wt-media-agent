@@ -29,4 +29,4 @@ class ProxyCheckExecutor:
                 result = "reachable"
         except OSError as exc:
             result = f"unreachable: {type(exc).__name__}"
-        return self.client.report_task(task_id, self.agent_id, "succeeded", 100, result)
+        return self.client.report_task(task_id, self.agent_id, "succeeded", 100, result, {"proxy_id": str(payload.get("proxy_id", "")), "connectivity": result})

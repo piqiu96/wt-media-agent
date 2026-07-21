@@ -111,4 +111,5 @@ class AccountCheckExecutor:
         return self.client.report_task(
             task_id, self.agent_id, "succeeded", 100,
             result_message,
+            {"account_id": str(payload.get("account_id", "")), "profile_id": profile_id, "platform": platform, "check_result": result_status, "cookie_count": len(cookies) if 'cookies' in locals() else 0},
         )
