@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Mapping
 
-from wt_media_agent.cloud_agent_client import AgentIdentity, CloudAgentClient
+from wt_media_agent.cloud_agent_client import AgentIdentity, CloudAgentClient, SessionInvalidError
 from wt_media_agent.cloud_agent_contract import (
     EXPECTED_MAJOR_VERSION,
     REQUIRED_CONTRACT_REVISION,
@@ -164,6 +164,19 @@ class CloudAgentClientTest(unittest.TestCase):
         client = CloudAgentClient("http://cloud.test", transport=lambda method, path, payload, headers: {})
 
         with self.assertRaises(ValueError):
+            client.heartbeat("agent-local-1")
+
+    def test_session_invalid_error_is_explicit(self) -> None:
+        client = CloudAgentClient(
+            "http://cloud.test",
+            transport=lambda method, path, body, headers: {
+                "errcode": 11001,
+                "message": "用户会话已失效，Agent 停止工作",
+                "data": None,
+            },
+        )
+
+        with self.assertRaises(SessionInvalidError):
             client.heartbeat("agent-local-1")
 
 

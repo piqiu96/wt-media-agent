@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Optional
 
-from wt_media_agent.cloud_agent_client import CloudAgentClient
+from wt_media_agent.cloud_agent_client import CloudAgentClient, SessionInvalidError
 from wt_media_agent.constants import (
     DEFAULT_LEASE_SECONDS,
     MAX_RETRIES,
@@ -140,6 +140,10 @@ class TaskRunner:
             self._save_completed(task_id, task_type)
             self.store.remove_checkpoint(task_id)
             logger.info("task %s succeeded", task_id)
+        except SessionInvalidError as exc:
+            self._running = False
+            logger.error("task %s result is uncertain after session invalidation: %s", task_id, exc)
+            self._save_failed(task_id, task_type, "session_invalidated_result_uncertain")
         except Exception as exc:
             logger.error("task %s failed: %s", task_id, exc)
             self._save_failed(task_id, task_type, str(exc))
@@ -147,6 +151,10 @@ class TaskRunner:
     def _claim_task(self) -> Optional[Mapping[str, object]]:
         try:
             return self.client.claim_task(self.config.agent_id, self.config.lease_seconds)
+        except SessionInvalidError as exc:
+            self._running = False
+            logger.error("agent session invalidated; draining runner: %s", exc)
+            return None
         except Exception as exc:
             logger.debug("claim failed (may be normal): %s", exc)
             return None

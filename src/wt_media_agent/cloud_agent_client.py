@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional
+from urllib import error as urlerror
 from urllib import request
 
 from wt_media_agent.cloud_agent_contract import (
@@ -16,6 +17,10 @@ from wt_media_agent.cloud_agent_contract import (
 Transport = Callable[
     [str, str, Mapping[str, object], Mapping[str, str]], Mapping[str, object]
 ]
+
+
+class SessionInvalidError(RuntimeError):
+    """Cloud invalidated the user session bound to this Local Agent."""
 
 
 @dataclass(frozen=True)
@@ -184,8 +189,11 @@ class CloudAgentClient:
             method=method,
             headers={"content-type": "application/json", **headers},
         )
-        with request.urlopen(req, timeout=10) as resp:
-            raw = resp.read().decode("utf-8")
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode("utf-8")
+        except urlerror.HTTPError as exc:
+            raw = exc.read().decode("utf-8")
         decoded = json.loads(raw)
         if not isinstance(decoded, Mapping):
             raise ValueError("cloud response must be a JSON object")
@@ -193,6 +201,8 @@ class CloudAgentClient:
 
 
 def _expect_data(response: Mapping[str, object]) -> Mapping[str, object]:
+    if response.get("errcode") == 11001:
+        raise SessionInvalidError(str(response.get("message") or "Cloud session is invalid"))
     data = response.get("data")
     if not isinstance(data, Mapping):
         raise ValueError("cloud response missing data object")
