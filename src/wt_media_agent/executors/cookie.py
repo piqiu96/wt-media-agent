@@ -28,6 +28,7 @@ class CookieReadExecutor:
         task_id = task.get("task_id", "")
         payload = task.get("payload") if isinstance(task.get("payload"), Mapping) else task
         profile_id = str(payload.get("profile_id", "") or payload.get("browser_profile_id", ""))
+        account_id = str(payload.get("account_id", ""))
         if not isinstance(task_id, str) or not task_id:
             raise ValueError("cookie_read_task requires task_id")
         if not profile_id:
@@ -45,11 +46,14 @@ class CookieReadExecutor:
         result = {
             "profile_id": profile_id,
             "cookie_count": len(cookies),
-            "cookies": cookies[:50],  # Cap at 50 cookies for response size
         }
-        return self.client.report_task(
+        if account_id:
+            result["account_id"] = account_id
+        return _report_with_result(
+            self.client,
             str(task_id), self.agent_id, "succeeded", 100,
             f"读取到 {len(cookies)} 条 Cookie",
+            result,
         )
 
 
@@ -67,6 +71,7 @@ class CookieWriteExecutor:
         task_id = task.get("task_id", "")
         payload = task.get("payload") if isinstance(task.get("payload"), Mapping) else task
         profile_id = str(payload.get("profile_id", "") or payload.get("browser_profile_id", ""))
+        account_id = str(payload.get("account_id", ""))
         cookies = payload.get("cookies", [])
         if not isinstance(task_id, str) or not task_id:
             raise ValueError("cookie_write_task requires task_id")
@@ -91,7 +96,31 @@ class CookieWriteExecutor:
             "written": len(cookies),
             "verified_count": len(read_back),
         }
-        return self.client.report_task(
+        if account_id:
+            result["account_id"] = account_id
+        return _report_with_result(
+            self.client,
             str(task_id), self.agent_id, "succeeded", 100,
             f"已写入 {len(cookies)} 条 Cookie，验证到 {len(read_back)} 条",
+            result,
         )
+
+
+def _report_with_result(
+    client: CloudAgentClient,
+    task_id: str,
+    agent_id: str,
+    status: str,
+    progress: int,
+    message: str,
+    result: Mapping[str, object],
+) -> Mapping[str, object]:
+    """Report structured metadata while retaining compatibility with test doubles."""
+    try:
+        return client.report_task(
+            task_id, agent_id, status, progress, message, result=result
+        )
+    except TypeError as exc:
+        if "result" not in str(exc):
+            raise
+        return client.report_task(task_id, agent_id, status, progress, message)
