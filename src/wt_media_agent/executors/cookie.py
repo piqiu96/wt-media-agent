@@ -26,7 +26,8 @@ class CookieReadExecutor:
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = task.get("task_id", "")
-        profile_id = str(task.get("profile_id", "") or task.get("browser_profile_id", ""))
+        payload = task.get("payload") if isinstance(task.get("payload"), Mapping) else task
+        profile_id = str(payload.get("profile_id", "") or payload.get("browser_profile_id", ""))
         if not isinstance(task_id, str) or not task_id:
             raise ValueError("cookie_read_task requires task_id")
         if not profile_id:
@@ -64,8 +65,9 @@ class CookieWriteExecutor:
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = task.get("task_id", "")
-        profile_id = str(task.get("profile_id", "") or task.get("browser_profile_id", ""))
-        cookies = task.get("cookies", [])
+        payload = task.get("payload") if isinstance(task.get("payload"), Mapping) else task
+        profile_id = str(payload.get("profile_id", "") or payload.get("browser_profile_id", ""))
+        cookies = payload.get("cookies", [])
         if not isinstance(task_id, str) or not task_id:
             raise ValueError("cookie_write_task requires task_id")
         if not profile_id:
