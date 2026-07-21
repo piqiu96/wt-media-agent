@@ -51,7 +51,7 @@ class ProfileMutationExecutor:
         snapshot = self.bitbrowser.scan_profiles()
         if not any(p.bit_profile_id == profile_id for p in snapshot.profiles):
             raise RuntimeError("profile_mutation_readback_missing")
-        return self.client.report_task(task_id, self.agent_id, "succeeded", 100, f"Profile {self.operation} 并读回验证成功", {"profile_id": profile_id, "readback": True, "operation": self.operation})
+        return self.client.report_task(task_id, self.agent_id, "succeeded", 100, f"Profile {self.operation} 并读回验证成功", {"profile_id": profile_id, "cloud_profile_id": str(payload.get("cloud_profile_id", "")), "readback": True, "operation": self.operation})
 
 
 def factory(operation: str):
