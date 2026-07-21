@@ -42,9 +42,10 @@ class AccountCheckExecutor:
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = str(task.get("task_id", ""))
-        profile_id = str(task.get("profile_id", "") or task.get("browser_profile_id", ""))
-        platform = str(task.get("platform", ""))
-        expected_account_id = str(task.get("platform_account_id", ""))
+        payload = task.get("payload") if isinstance(task.get("payload"), Mapping) else task
+        profile_id = str(payload.get("profile_id", "") or payload.get("browser_profile_id", ""))
+        platform = str(payload.get("platform", ""))
+        expected_account_id = str(payload.get("platform_account_id", ""))
 
         if not task_id:
             raise ValueError("account_check_task requires task_id")
