@@ -58,6 +58,9 @@ class LocalProfileScanTests(unittest.TestCase):
         self.assertEqual(payload["profiles"][0]["bit_profile_id"], "profile-1")
         self.assertEqual(payload["profiles"][0]["profile_user_id"], "bit-user-1")
         self.assertEqual(payload["profiles"][0]["main_user_id"], "main-user-1")
+        self.assertEqual(payload["profiles"][0]["status"], 1)
+        self.assertEqual(payload["profiles"][0]["proxy_type"], "noproxy")
+        self.assertEqual(payload["profiles"][0]["proxy_port"], 0)
         self.assertNotIn("cookie", str(payload).lower())
         self.assertNotIn("password", str(payload).lower())
 
