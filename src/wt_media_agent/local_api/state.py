@@ -25,6 +25,7 @@ class PendingResultQueue:
 
 @dataclass
 class LocalAgentState:
+    node_id: str = ""
     agent_id: str = "local-agent-dev"
     status: str = "idle"
     current_task_id: Optional[str] = None
@@ -32,6 +33,7 @@ class LocalAgentState:
 
     def snapshot(self) -> dict[str, object]:
         return {
+            "node_id": self.node_id,
             "agent_id": self.agent_id,
             "status": self.status,
             "current_task_id": self.current_task_id,

@@ -21,6 +21,7 @@ from wt_media_agent.runtimes.bitbrowser import (
     ProfileSnapshot,
 )
 from wt_media_agent.proxy_check import check_proxy_connectivity
+from wt_media_agent.runtimes.environment import RuntimeEnvironmentCollector
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,8 @@ class LocalApiServer:
 
     def status(self) -> dict[str, object]:
         base = self.state.snapshot()
+        environment = RuntimeEnvironmentCollector(bitbrowser=self.bitbrowser).collect().to_dict()
+        base.update(environment)
         if self.store:
             incomplete = self.store.get_incomplete_checkpoints()
             if incomplete:
@@ -258,8 +261,10 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
 
             # Generate a session token for this binding.
             session_token = secrets.token_hex(32)
+            node_id = str(payload.get("node_id", "local-agent-dev"))
+            api.state.node_id = node_id
             self._write_json(200, {
-                "node_id": payload.get("node_id", "local-agent-dev"),
+                "node_id": node_id,
                 "session_token": session_token,
                 "status": "bound",
             })

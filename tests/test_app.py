@@ -10,6 +10,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from wt_media_agent.app import create_app
 from wt_media_agent.local_api.server import LocalApiServer
+from wt_media_agent.runtimes.bitbrowser import BitBrowserIdentityError
+
+
+class IdentityErrorClient:
+    def scan_profiles(self):
+        raise BitBrowserIdentityError("no profile facts")
 
 
 class AgentScaffoldTests(unittest.TestCase):
@@ -28,17 +34,24 @@ class AgentScaffoldTests(unittest.TestCase):
         )
 
     def test_local_api_status(self) -> None:
+        server = LocalApiServer(bitbrowser=IdentityErrorClient())
+
+        status = server.status()
+        self.assertEqual(status["node_id"], "")
+        self.assertEqual(status["agent_id"], "local-agent-dev")
+        self.assertEqual(status["status"], "idle")
+        self.assertEqual(status["current_task_id"], None)
+        self.assertEqual(status["pending_result_count"], 0)
+        self.assertEqual(status["bitbrowser_status"], "identity_unverifiable")
+        self.assertNotIn("main_user_id", status)
+
+    def test_local_bind_projects_node_id_into_status(self) -> None:
         server = LocalApiServer()
 
-        self.assertEqual(
-            server.status(),
-            {
-                "agent_id": "local-agent-dev",
-                "status": "idle",
-                "current_task_id": None,
-                "pending_result_count": 0,
-            },
-        )
+        handler_api = server
+        handler_api.state.node_id = "node-1"
+
+        self.assertEqual(server.status()["node_id"], "node-1")
 
     def test_local_api_sse_snapshot(self) -> None:
         server = LocalApiServer()
