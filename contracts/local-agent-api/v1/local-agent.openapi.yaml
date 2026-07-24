@@ -43,6 +43,27 @@ paths:
               schema: {$ref: '#/components/schemas/ProfileSnapshot'}
         '409': {description: Profile main account is empty, missing, or mixed, or Profile userId is missing.}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
+  /api/v1/bit-browser/profile-groups:
+    post:
+      operationId: listBitBrowserProfileGroups
+      description: Synchronously reads safe BitBrowser group identifiers for profile creation.
+      responses:
+        '200':
+          description: Safe group list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [groups]
+                    properties:
+                      groups:
+                        type: array
+                        items: {$ref: '#/components/schemas/BitProfileGroup'}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
   /api/v1/account-check:
     post:
       operationId: checkPlatformAccountInProfile
@@ -104,6 +125,13 @@ components:
         group_name: {type: string}
         status: {oneOf: [{type: integer}, {type: string}], nullable: true}
         bit_updated_at: {type: string}
+      additionalProperties: false
+    BitProfileGroup:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: string}
+        name: {type: string}
       additionalProperties: false
     AccountCheckRequest:
       type: object

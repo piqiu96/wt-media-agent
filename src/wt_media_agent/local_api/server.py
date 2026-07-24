@@ -33,6 +33,7 @@ class ProfileScanner(Protocol):
     def close_profile(self, profile_id: str) -> None: ...
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None: ...
     def delete_profile(self, profile_id: str) -> None: ...
+    def group_list(self) -> list[dict[str, object]]: ...
     def read_cookies(self, profile_id: str) -> list[dict[str, object]]: ...
 
 
@@ -102,6 +103,12 @@ class LocalApiServer:
         try:
             profile_id = self.bitbrowser.create_profile(body)
             return 201, {"data": {"id": profile_id}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
+    def profile_groups_response(self) -> tuple[int, dict[str, object]]:
+        try:
+            return 200, {"data": {"groups": _safe_groups(self.bitbrowser.group_list())}}
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -212,6 +219,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/v1/bit-browser/profile-scans":
                 status, payload = api.profile_scan_response()
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-groups":
+                status, payload = api.profile_groups_response()
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-create":
                 status, payload = api.profile_create_response(self._read_body())
@@ -378,6 +388,18 @@ def _identify_platform_account(platform: str, cookies: list[dict[str, object]]) 
         "login_status": "environment_error",
         "message": "当前平台暂未读取到可确认的平台账号UID",
     }
+
+
+def _safe_groups(groups: list[dict[str, object]]) -> list[dict[str, str]]:
+    safe: list[dict[str, str]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        group_id = str(group.get("id") or group.get("groupId") or "").strip()
+        group_name = str(group.get("name") or group.get("groupName") or "").strip()
+        if group_id:
+            safe.append({"id": group_id, "name": group_name or group_id})
+    return safe
 
 
 def serve(
