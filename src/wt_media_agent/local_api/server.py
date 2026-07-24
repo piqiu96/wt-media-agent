@@ -33,6 +33,7 @@ class ProfileScanner(Protocol):
     def close_profile(self, profile_id: str) -> None: ...
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None: ...
     def delete_profile(self, profile_id: str) -> None: ...
+    def read_cookies(self, profile_id: str) -> list[dict[str, object]]: ...
 
 
 class LocalApiServer:
@@ -160,6 +161,27 @@ class LocalApiServer:
             data["proxy_id"] = proxy_id
         return 200, {"data": data}
 
+    def account_check_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """Synchronously inspect one BitBrowser profile and return safe account identity facts."""
+        profile_id = str(body.get("profile_id", "")).strip()
+        platform = str(body.get("platform", "")).strip().lower()
+        expected_id = str(body.get("expected_platform_account_id", "")).strip()
+        if not profile_id or platform not in {"bilibili", "baijiahao", "douyin"}:
+            return 400, {"error": {"code": "account_check_input_invalid"}}
+        try:
+            self.bitbrowser.open_profile(profile_id)
+            cookies = self.bitbrowser.read_cookies(profile_id)
+        except BitBrowserIdentityError:
+            return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
+        result = _identify_platform_account(platform, cookies)
+        if expected_id and result.get("platform_account_id") and result["platform_account_id"] != expected_id:
+            result["login_status"] = "account_mismatch"
+            result["message"] = "当前窗口登录账号与媒体账号台账不一致"
+        return 200, {"data": result}
+
 
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     class AgentHandler(BaseHTTPRequestHandler):
@@ -208,6 +230,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-check":
                 status, payload = api.proxy_check_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/account-check":
+                status, payload = api.account_check_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bind":
                 self._handle_bind()
@@ -313,6 +338,46 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
     return AgentHandler
+
+
+def _identify_platform_account(platform: str, cookies: list[dict[str, object]]) -> dict[str, object]:
+    """Extract only safe platform identity facts. Cookie values never leave this function except known public IDs."""
+    cookie_by_name: dict[str, str] = {}
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name", "")).strip()
+        value = str(cookie.get("value", "")).strip()
+        if name and value:
+            cookie_by_name[name] = value
+
+    if not cookie_by_name:
+        return {
+            "platform_account_id": "",
+            "name": "",
+            "avatar_url": "",
+            "login_status": "not_logged_in",
+            "message": "当前窗口未读取到登录Cookie",
+        }
+
+    if platform == "bilibili":
+        uid = cookie_by_name.get("DedeUserID", "").strip()
+        if uid:
+            return {
+                "platform_account_id": uid,
+                "name": "",
+                "avatar_url": "",
+                "login_status": "normal",
+                "message": "已读取到哔哩哔哩账号UID",
+            }
+
+    return {
+        "platform_account_id": "",
+        "name": "",
+        "avatar_url": "",
+        "login_status": "environment_error",
+        "message": "当前平台暂未读取到可确认的平台账号UID",
+    }
 
 
 def serve(

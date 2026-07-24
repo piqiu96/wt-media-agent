@@ -43,6 +43,28 @@ paths:
               schema: {$ref: '#/components/schemas/ProfileSnapshot'}
         '409': {description: Profile main account is empty, missing, or mixed, or Profile userId is missing.}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
+  /api/v1/account-check:
+    post:
+      operationId: checkPlatformAccountInProfile
+      description: Synchronously opens/reads one BitBrowser profile and returns only safe platform identity facts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AccountCheckRequest'}
+      responses:
+        '200':
+          description: Account check finished with a business login status. Normal requires a platform_account_id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/AccountCheckResult'}
+        '400': {description: Required profile or platform input is invalid.}
+        '409': {description: BitBrowser identity is not verifiable.}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
 components:
   schemas:
     Health:
@@ -82,4 +104,24 @@ components:
         group_name: {type: string}
         status: {oneOf: [{type: integer}, {type: string}], nullable: true}
         bit_updated_at: {type: string}
+      additionalProperties: false
+    AccountCheckRequest:
+      type: object
+      required: [profile_id, platform]
+      properties:
+        profile_id: {type: string, description: BitBrowser profile id.}
+        platform: {type: string, enum: [bilibili, baijiahao, douyin]}
+        expected_platform_account_id: {type: string, description: Existing Cloud platform account id used to detect mismatch.}
+      additionalProperties: false
+    AccountCheckResult:
+      type: object
+      required: [platform_account_id, name, avatar_url, login_status, message]
+      properties:
+        platform_account_id: {type: string}
+        name: {type: string}
+        avatar_url: {type: string}
+        login_status:
+          type: string
+          enum: [normal, not_logged_in, verification_needed, expired, restricted, account_mismatch, environment_error]
+        message: {type: string}
       additionalProperties: false
