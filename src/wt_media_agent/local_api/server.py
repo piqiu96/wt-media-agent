@@ -66,18 +66,31 @@ class LocalApiServer:
         return {"status": "ok", "service": "wt-media-agent", "mode": "m1"}
 
     def status(self) -> dict[str, object]:
+        started_at = time.monotonic()
+        logger.info("local_api.status.start")
         base = self.state.snapshot()
-        environment = RuntimeEnvironmentCollector(bitbrowser=self.bitbrowser).collect().to_dict()
-        base.update(environment)
-        if self.store:
-            incomplete = self.store.get_incomplete_checkpoints()
-            if incomplete:
-                cp = incomplete[0]
-                base["current_task_id"] = cp.task_id
-                base["current_task_progress"] = cp.progress
-                base["current_task_status"] = cp.checkpoint_status
-            base["pending_result_count"] = len(self.store.get_undelivered_results())
-        return base
+        try:
+            environment = RuntimeEnvironmentCollector(bitbrowser=self.bitbrowser).collect().to_dict()
+            base.update(environment)
+            if self.store:
+                incomplete = self.store.get_incomplete_checkpoints()
+                if incomplete:
+                    cp = incomplete[0]
+                    base["current_task_id"] = cp.task_id
+                    base["current_task_progress"] = cp.progress
+                    base["current_task_status"] = cp.checkpoint_status
+                base["pending_result_count"] = len(self.store.get_undelivered_results())
+            logger.info(
+                "local_api.status.success duration_ms=%d bitbrowser_status=%s main_user_id=%s profile_count=%d",
+                _duration_ms(started_at),
+                base.get("bitbrowser_status", ""),
+                base.get("main_user_id", ""),
+                len(base.get("bit_profile_ids", []) or []),
+            )
+            return base
+        except Exception:
+            logger.exception("local_api.status.failure duration_ms=%d", _duration_ms(started_at))
+            raise
 
     def push_event(self, event_type: str, data: dict[str, object]) -> None:
         self._event_queue.put({"event": event_type, "data": data})
@@ -115,21 +128,49 @@ class LocalApiServer:
     def profile_open_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         profile_id = body.get("id", "")
         if not profile_id:
+            logger.warning("local_api.profile_open.reject reason=profile_id_required")
             return 400, {"error": {"code": "profile_id_required"}}
+        started_at = time.monotonic()
+        logger.info("local_api.profile_open.start profile_id=%s", profile_id)
         try:
             self.bitbrowser.open_profile(profile_id)
+            logger.info(
+                "local_api.profile_open.success profile_id=%s duration_ms=%d",
+                profile_id,
+                _duration_ms(started_at),
+            )
             return 200, {"data": {"status": "opened"}}
         except BitBrowserResponseError as e:
+            logger.warning(
+                "local_api.profile_open.failure profile_id=%s duration_ms=%d error=%s",
+                profile_id,
+                _duration_ms(started_at),
+                e,
+            )
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
     def profile_close_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         profile_id = body.get("id", "")
         if not profile_id:
+            logger.warning("local_api.profile_close.reject reason=profile_id_required")
             return 400, {"error": {"code": "profile_id_required"}}
+        started_at = time.monotonic()
+        logger.info("local_api.profile_close.start profile_id=%s", profile_id)
         try:
             self.bitbrowser.close_profile(profile_id)
+            logger.info(
+                "local_api.profile_close.success profile_id=%s duration_ms=%d",
+                profile_id,
+                _duration_ms(started_at),
+            )
             return 200, {"data": {"status": "closed"}}
         except BitBrowserResponseError as e:
+            logger.warning(
+                "local_api.profile_close.failure profile_id=%s duration_ms=%d error=%s",
+                profile_id,
+                _duration_ms(started_at),
+                e,
+            )
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
     def profile_update_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
@@ -402,6 +443,10 @@ def _safe_groups(groups: list[dict[str, object]]) -> list[dict[str, str]]:
     return safe
 
 
+def _duration_ms(started_at: float) -> int:
+    return int((time.monotonic() - started_at) * 1000)
+
+
 def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
@@ -421,6 +466,10 @@ def serve(
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=os.getenv("WT_MEDIA_AGENT_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
