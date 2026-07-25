@@ -96,11 +96,11 @@ class BitBrowserClient:
 
     def create_profile(self, config: dict[str, object]) -> str:
         """Create a new browser profile. Returns the new profile ID."""
-        result = self._check_success(self._post("/browser/create", config))
-        profile_id = result.get("id", "")
+        result = self._check_success(self._post("/browser/update", config))
+        profile_id = result.get("id") or result.get("browserId") or result.get("profileId") or ""
         if not profile_id:
             raise BitBrowserResponseError("BitBrowser create profile returned no id")
-        return profile_id
+        return str(profile_id)
 
     def open_profile(self, profile_id: str) -> None:
         """Open a browser profile in the BitBrowser application."""

@@ -133,6 +133,26 @@ class BitBrowserRuntimeTests(unittest.TestCase):
                 with self.assertRaises(BitBrowserResponseError):
                     BitBrowserClient("http://127.0.0.1:54345", transport=transport).scan_profiles()
 
+    def test_create_profile_uses_update_endpoint_and_returns_created_id(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {"id": "profile-created"}}])
+        client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
+
+        profile_id = client.create_profile({"name": "窗口", "groupId": "group-1"})
+
+        self.assertEqual(profile_id, "profile-created")
+        self.assertEqual(len(transport.calls), 1)
+        url, payload, timeout = transport.calls[0]
+        self.assertTrue(url.endswith("/browser/update"))
+        self.assertEqual(payload, {"name": "窗口", "groupId": "group-1"})
+        self.assertEqual(timeout, 2)
+
+    def test_create_profile_accepts_browser_id_response(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {"browserId": "profile-created"}}])
+
+        profile_id = BitBrowserClient("http://127.0.0.1:54345", transport=transport).create_profile({})
+
+        self.assertEqual(profile_id, "profile-created")
+
 
 if __name__ == "__main__":
     unittest.main()
