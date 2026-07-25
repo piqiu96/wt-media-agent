@@ -47,6 +47,13 @@ class ProfileOperationClient:
         raise AssertionError("not used")
 
 
+class LenientOpenClient(ProfileOperationClient):
+    def open_profile(self, profile_id: str) -> None:
+        from wt_media_agent.runtimes.bitbrowser import BitBrowserResponseError
+
+        raise BitBrowserResponseError("BitBrowser request failed: 浏览器正在打开中")
+
+
 class LocalProfileOperationTests(unittest.TestCase):
     def test_profile_groups_returns_safe_group_list(self) -> None:
         server = LocalApiServer(bitbrowser=ProfileOperationClient())
@@ -58,6 +65,14 @@ class LocalProfileOperationTests(unittest.TestCase):
             {"id": "group-1", "name": "运营分组"},
             {"id": "group-2", "name": "备用分组"},
         ])
+
+    def test_opening_profile_state_is_not_masked_by_route(self) -> None:
+        server = LocalApiServer(bitbrowser=LenientOpenClient())
+
+        status, payload = server.profile_open_response({"id": "profile-1"})
+
+        self.assertEqual(status, 502)
+        self.assertIn("浏览器正在打开中", payload["error"]["message"])
 
     def test_profile_create_delegates_to_bitbrowser(self) -> None:
         client = ProfileOperationClient()

@@ -104,7 +104,13 @@ class BitBrowserClient:
 
     def open_profile(self, profile_id: str) -> None:
         """Open a browser profile in the BitBrowser application."""
-        self._check_success(self._post("/browser/open", {"id": profile_id}))
+        try:
+            self._check_success(self._post("/browser/open", {"id": profile_id}))
+        except BitBrowserResponseError as error:
+            message = str(error)
+            if "正在打开" in message or "已打开" in message:
+                return
+            raise
 
     def close_profile(self, profile_id: str) -> None:
         """Close a browser profile."""
@@ -125,7 +131,7 @@ class BitBrowserClient:
 
     def group_list(self) -> list[dict[str, object]]:
         """List all profile groups."""
-        result = self._check_success(self._post("/group/list", {}))
+        result = self._check_success(self._post("/group/list", {"page": 0, "pageSize": self.PAGE_SIZE}))
         groups = result.get("list", []) if isinstance(result, dict) else []
         return groups if isinstance(groups, list) else []
 
@@ -243,7 +249,7 @@ def _post_json(url: str, payload: dict[str, object], timeout: float) -> dict[str
         with urlrequest.urlopen(request, timeout=timeout) as response:
             decoded = json.loads(response.read().decode("utf-8"))
     except (urlerror.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BitBrowserResponseError("BitBrowser Local API request failed") from error
+        raise BitBrowserResponseError(f"BitBrowser Local API request failed: {error}") from error
     if not isinstance(decoded, dict):
         raise BitBrowserResponseError("BitBrowser response is not an object")
     return decoded
