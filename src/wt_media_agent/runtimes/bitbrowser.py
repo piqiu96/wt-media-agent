@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import os
 from typing import Callable
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -61,6 +62,7 @@ class BitBrowserClient:
     """Reads every Profile through the documented zero-based list API."""
 
     PAGE_SIZE = 100
+    DEFAULT_CREATE_TIMEOUT = 30.0
 
     def __init__(
         self,
@@ -85,6 +87,13 @@ class BitBrowserClient:
             self._timeout,
         )
 
+    def _post_with_timeout(self, path: str, payload: dict[str, object], timeout: float) -> dict[str, object]:
+        return self._transport(
+            f"{self._base_url}{path}",
+            payload,
+            timeout,
+        )
+
     def _check_success(self, response: dict[str, object]) -> dict[str, object]:
         if not isinstance(response, dict):
             raise BitBrowserResponseError("BitBrowser response is not an object")
@@ -96,7 +105,8 @@ class BitBrowserClient:
 
     def create_profile(self, config: dict[str, object]) -> str:
         """Create a new browser profile. Returns the new profile ID."""
-        result = self._check_success(self._post("/browser/update", config))
+        payload = _create_profile_payload(config)
+        result = self._check_success(self._post_with_timeout("/browser/update", payload, _create_timeout(self._timeout)))
         profile_id = result.get("id") or result.get("browserId") or result.get("profileId") or ""
         if not profile_id:
             raise BitBrowserResponseError("BitBrowser create profile returned no id")
@@ -235,6 +245,27 @@ def _safe_profile(item: dict[str, object]) -> BitProfile:
 
 def _string(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _create_profile_payload(config: dict[str, object]) -> dict[str, object]:
+    payload = dict(config)
+    payload.setdefault("browserFingerPrint", {})
+    if not payload.get("proxyHost"):
+        payload.setdefault("proxyMethod", 2)
+        payload.setdefault("proxyType", "noproxy")
+    return payload
+
+
+def _create_timeout(default_timeout: float) -> float:
+    raw = os.getenv("WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS", "")
+    if raw:
+        try:
+            timeout = float(raw)
+        except ValueError:
+            timeout = BitBrowserClient.DEFAULT_CREATE_TIMEOUT
+    else:
+        timeout = BitBrowserClient.DEFAULT_CREATE_TIMEOUT
+    return max(default_timeout, timeout)
 
 
 def _post_json(url: str, payload: dict[str, object], timeout: float) -> dict[str, object]:

@@ -113,10 +113,26 @@ class LocalApiServer:
             return 502, {"error": {"code": "bitbrowser_response_error"}}
 
     def profile_create_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        started_at = time.monotonic()
+        profile_name = str(body.get("name", "")).strip()
+        group_id = str(body.get("groupId", "") or body.get("group_id", "")).strip()
+        logger.info("local_api.profile_create.start name=%s group_id=%s", profile_name, group_id)
         try:
             profile_id = self.bitbrowser.create_profile(body)
+            logger.info(
+                "local_api.profile_create.success profile_id=%s duration_ms=%d",
+                profile_id,
+                _duration_ms(started_at),
+            )
             return 201, {"data": {"id": profile_id}}
         except BitBrowserResponseError as e:
+            logger.warning(
+                "local_api.profile_create.failure name=%s group_id=%s duration_ms=%d error=%s",
+                profile_name,
+                group_id,
+                _duration_ms(started_at),
+                e,
+            )
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
     def profile_groups_response(self) -> tuple[int, dict[str, object]]:

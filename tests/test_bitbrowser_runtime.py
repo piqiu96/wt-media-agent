@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import os
 import sys
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,8 +145,14 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 1)
         url, payload, timeout = transport.calls[0]
         self.assertTrue(url.endswith("/browser/update"))
-        self.assertEqual(payload, {"name": "窗口", "groupId": "group-1"})
-        self.assertEqual(timeout, 2)
+        self.assertEqual(payload, {
+            "name": "窗口",
+            "groupId": "group-1",
+            "browserFingerPrint": {},
+            "proxyMethod": 2,
+            "proxyType": "noproxy",
+        })
+        self.assertEqual(timeout, 30.0)
 
     def test_create_profile_accepts_browser_id_response(self) -> None:
         transport = FakeTransport([{"success": True, "data": {"browserId": "profile-created"}}])
@@ -152,6 +160,32 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         profile_id = BitBrowserClient("http://127.0.0.1:54345", transport=transport).create_profile({})
 
         self.assertEqual(profile_id, "profile-created")
+
+    def test_create_profile_keeps_explicit_proxy_config(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {"id": "profile-created"}}])
+
+        BitBrowserClient("http://127.0.0.1:54345", transport=transport).create_profile({
+            "name": "窗口",
+            "proxyHost": "127.0.0.1",
+            "proxyType": "socks5",
+            "proxyPort": 1080,
+        })
+
+        self.assertEqual(transport.calls[0][1], {
+            "name": "窗口",
+            "proxyHost": "127.0.0.1",
+            "proxyType": "socks5",
+            "proxyPort": 1080,
+            "browserFingerPrint": {},
+        })
+
+    def test_create_profile_timeout_can_be_overridden(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {"id": "profile-created"}}])
+
+        with patch.dict(os.environ, {"WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS": "45"}):
+            BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2).create_profile({})
+
+        self.assertEqual(transport.calls[0][2], 45.0)
 
 
 if __name__ == "__main__":
