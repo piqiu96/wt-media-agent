@@ -187,6 +187,28 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
         self.assertEqual(transport.calls[0][2], 45.0)
 
+    def test_profile_mutations_use_long_timeout(self) -> None:
+        transport = FakeTransport([
+            {"success": True, "data": {}},
+            {"success": True, "data": {}},
+            {"success": True, "data": {}},
+        ])
+        client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
+
+        client.open_profile("profile-1")
+        client.close_profile("profile-1")
+        client.update_profile("profile-1", {"name": "窗口"})
+
+        self.assertEqual([call[2] for call in transport.calls], [30.0, 30.0, 30.0])
+
+    def test_profile_mutation_timeout_can_be_overridden(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {}}])
+
+        with patch.dict(os.environ, {"WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS": "60"}):
+            BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2).open_profile("profile-1")
+
+        self.assertEqual(transport.calls[0][2], 60.0)
+
 
 if __name__ == "__main__":
     unittest.main()

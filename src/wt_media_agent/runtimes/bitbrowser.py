@@ -63,6 +63,7 @@ class BitBrowserClient:
 
     PAGE_SIZE = 100
     DEFAULT_CREATE_TIMEOUT = 30.0
+    DEFAULT_MUTATION_TIMEOUT = 30.0
 
     def __init__(
         self,
@@ -115,7 +116,7 @@ class BitBrowserClient:
     def open_profile(self, profile_id: str) -> None:
         """Open a browser profile in the BitBrowser application."""
         try:
-            self._check_success(self._post("/browser/open", {"id": profile_id}))
+            self._check_success(self._post_with_timeout("/browser/open", {"id": profile_id}, _mutation_timeout(self._timeout)))
         except BitBrowserResponseError as error:
             message = str(error)
             if "正在打开" in message or "已打开" in message:
@@ -125,7 +126,7 @@ class BitBrowserClient:
     def close_profile(self, profile_id: str) -> None:
         """Close a browser profile."""
         try:
-            self._check_success(self._post("/browser/close", {"id": profile_id}))
+            self._check_success(self._post_with_timeout("/browser/close", {"id": profile_id}, _mutation_timeout(self._timeout)))
         except BitBrowserResponseError:
             pass  # Close may fail if already closed
 
@@ -133,7 +134,7 @@ class BitBrowserClient:
         """Update an existing browser profile."""
         payload = dict(config)
         payload["id"] = profile_id
-        self._check_success(self._post("/browser/update", payload))
+        self._check_success(self._post_with_timeout("/browser/update", payload, _mutation_timeout(self._timeout)))
 
     def delete_profile(self, profile_id: str) -> None:
         """Delete a browser profile."""
@@ -258,13 +259,22 @@ def _create_profile_payload(config: dict[str, object]) -> dict[str, object]:
 
 def _create_timeout(default_timeout: float) -> float:
     raw = os.getenv("WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS", "")
+    return _timeout_from_env(raw, BitBrowserClient.DEFAULT_CREATE_TIMEOUT, default_timeout)
+
+
+def _mutation_timeout(default_timeout: float) -> float:
+    raw = os.getenv("WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS", "")
+    return _timeout_from_env(raw, BitBrowserClient.DEFAULT_MUTATION_TIMEOUT, default_timeout)
+
+
+def _timeout_from_env(raw: str, fallback: float, default_timeout: float) -> float:
     if raw:
         try:
             timeout = float(raw)
         except ValueError:
-            timeout = BitBrowserClient.DEFAULT_CREATE_TIMEOUT
+            timeout = fallback
     else:
-        timeout = BitBrowserClient.DEFAULT_CREATE_TIMEOUT
+        timeout = fallback
     return max(default_timeout, timeout)
 
 
