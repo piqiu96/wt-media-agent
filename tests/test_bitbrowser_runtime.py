@@ -191,7 +191,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         transport = FakeTransport([
             {"success": True, "data": {}},
             {"success": True, "data": {}},
-            {"success": True, "data": {"list": [{"id": "profile-1", "name": "窗口", "fingerPrint": {"ua": "x"}}]}},
+            {"success": True, "data": {"browserFingerPrint": {"ua": "x"}}},
             {"success": True, "data": {}},
         ])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
@@ -200,7 +200,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         client.close_profile("profile-1")
         client.update_profile("profile-1", {"name": "窗口"})
 
-        # open/close 用长超时；update 先本地扫指纹（默认超时）再写回（长超时）
+        # open/close 用长超时；update 先读指纹（/browser/detail，默认超时）再写回（长超时）
         self.assertEqual([call[2] for call in transport.calls], [30.0, 30.0, 2.0, 30.0])
 
     def test_profile_mutation_timeout_can_be_overridden(self) -> None:
@@ -213,7 +213,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
     def test_update_profile_preserves_current_fingerprint(self) -> None:
         transport = FakeTransport([
-            {"success": True, "data": {"list": [{"id": "profile-1", "name": "窗口", "fingerPrint": {"ua": "preserved"}}]}},
+            {"success": True, "data": {"browserFingerPrint": {"ua": "preserved"}}},
             {"success": True, "data": {}},
         ])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
@@ -221,7 +221,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         client.update_profile("profile-1", {"name": "新名"})
 
         self.assertEqual(len(transport.calls), 2)
-        self.assertTrue(transport.calls[0][0].endswith("/browser/list"))
+        self.assertTrue(transport.calls[0][0].endswith("/browser/detail"))
         url, payload, _ = transport.calls[1]
         self.assertTrue(url.endswith("/browser/update"))
         self.assertEqual(payload["id"], "profile-1")
@@ -241,7 +241,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
     def test_update_profile_raises_when_fingerprint_unreadable(self) -> None:
         transport = FakeTransport([
-            {"success": True, "data": {"list": [{"id": "profile-1", "name": "窗口", "updateTime": "x"}]}},
+            {"success": True, "data": {}},
         ])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
 

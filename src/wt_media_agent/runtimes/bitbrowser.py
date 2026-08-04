@@ -137,31 +137,22 @@ class BitBrowserClient:
         runtime. Restoring Cloud config must pass the existing fingerprint back
         unchanged; an empty object would let BitBrowser regenerate the fingerprint
         and change the browser identity. Raise instead of writing when unreadable.
+
+        /browser/list does not expose the fingerprint; /browser/detail returns it
+        in data.browserFingerPrint.
         """
-        page = 0
-        while True:
-            response = self._transport(
-                f"{self._base_url}/browser/list",
-                {"page": page, "pageSize": self.PAGE_SIZE},
-                self._timeout,
-            )
-            items = _response_items(response)
-            for item in items:
-                if _string(item.get("id")) == profile_id:
-                    fingerprint = item.get("fingerPrint")
-                    if not isinstance(fingerprint, dict):
-                        fingerprint = item.get("browserFingerPrint")
-                    if not isinstance(fingerprint, dict):
-                        raise BitBrowserResponseError(
-                            "无法读取窗口当前指纹，为保护浏览器身份不执行更新"
-                        )
-                    return fingerprint
-            if len(items) < self.PAGE_SIZE:
-                break
-            page += 1
-        raise BitBrowserResponseError(
-            f"无法读取窗口 {profile_id} 的当前指纹，为保护浏览器身份不执行更新"
+        response = self._transport(
+            f"{self._base_url}/browser/detail",
+            {"id": profile_id},
+            self._timeout,
         )
+        data = self._check_success(response)
+        fingerprint = data.get("browserFingerPrint")
+        if not isinstance(fingerprint, dict):
+            raise BitBrowserResponseError(
+                f"无法读取窗口 {profile_id} 的当前指纹，为保护浏览器身份不执行更新"
+            )
+        return fingerprint
 
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None:
         """Update an existing browser profile.
