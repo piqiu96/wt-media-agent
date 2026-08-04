@@ -130,10 +130,50 @@ class BitBrowserClient:
         except BitBrowserResponseError:
             pass  # Close may fail if already closed
 
+    def _read_profile_fingerprint(self, profile_id: str) -> dict[str, object]:
+        """Return the current BitBrowser fingerprint for a profile.
+
+        The fingerprint is sensitive browser identity and must not leave the local
+        runtime. Restoring Cloud config must pass the existing fingerprint back
+        unchanged; an empty object would let BitBrowser regenerate the fingerprint
+        and change the browser identity. Raise instead of writing when unreadable.
+        """
+        page = 0
+        while True:
+            response = self._transport(
+                f"{self._base_url}/browser/list",
+                {"page": page, "pageSize": self.PAGE_SIZE},
+                self._timeout,
+            )
+            items = _response_items(response)
+            for item in items:
+                if _string(item.get("id")) == profile_id:
+                    fingerprint = item.get("fingerPrint")
+                    if not isinstance(fingerprint, dict):
+                        fingerprint = item.get("browserFingerPrint")
+                    if not isinstance(fingerprint, dict):
+                        raise BitBrowserResponseError(
+                            "无法读取窗口当前指纹，为保护浏览器身份不执行更新"
+                        )
+                    return fingerprint
+            if len(items) < self.PAGE_SIZE:
+                break
+            page += 1
+        raise BitBrowserResponseError(
+            f"无法读取窗口 {profile_id} 的当前指纹，为保护浏览器身份不执行更新"
+        )
+
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None:
-        """Update an existing browser profile."""
+        """Update an existing browser profile.
+
+        BitBrowser /browser/update requires browserFingerPrint. Preserve the profile's
+        current fingerprint instead of sending an empty object, so the browser identity
+        is not regenerated.
+        """
         payload = dict(config)
         payload["id"] = profile_id
+        if "browserFingerPrint" not in payload:
+            payload["browserFingerPrint"] = self._read_profile_fingerprint(profile_id)
         self._check_success(self._post_with_timeout("/browser/update", payload, _mutation_timeout(self._timeout)))
 
     def delete_profile(self, profile_id: str) -> None:
