@@ -130,16 +130,16 @@ class BitBrowserClient:
         except BitBrowserResponseError:
             pass  # Close may fail if already closed
 
-    def _read_profile_fingerprint(self, profile_id: str) -> dict[str, object]:
-        """Return the current BitBrowser fingerprint for a profile.
+    def _read_profile_runtime_fields(self, profile_id: str) -> tuple[dict[str, object], object]:
+        """Return (browserFingerPrint, proxyMethod) for a profile from /browser/detail.
 
         The fingerprint is sensitive browser identity and must not leave the local
-        runtime. Restoring Cloud config must pass the existing fingerprint back
-        unchanged; an empty object would let BitBrowser regenerate the fingerprint
-        and change the browser identity. Raise instead of writing when unreadable.
+        runtime. Restoring Cloud config must pass the existing fingerprint and proxy
+        method back unchanged; an empty fingerprint or a missing proxy method would
+        let BitBrowser regenerate/reset them. Raise instead of writing when unreadable.
 
-        /browser/list does not expose the fingerprint; /browser/detail returns it
-        in data.browserFingerPrint.
+        /browser/list does not expose either field; /browser/detail returns
+        data.browserFingerPrint and data.proxyMethod.
         """
         response = self._transport(
             f"{self._base_url}/browser/detail",
@@ -152,19 +152,22 @@ class BitBrowserClient:
             raise BitBrowserResponseError(
                 f"无法读取窗口 {profile_id} 的当前指纹，为保护浏览器身份不执行更新"
             )
-        return fingerprint
+        return fingerprint, data.get("proxyMethod")
 
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None:
         """Update an existing browser profile.
 
-        BitBrowser /browser/update requires browserFingerPrint. Preserve the profile's
-        current fingerprint instead of sending an empty object, so the browser identity
-        is not regenerated.
+        BitBrowser /browser/update requires browserFingerPrint and proxyMethod. Preserve
+        the profile's current values instead of sending empty/absent ones, so the browser
+        identity is not regenerated and the proxy method is not reset.
         """
         payload = dict(config)
         payload["id"] = profile_id
-        if "browserFingerPrint" not in payload:
-            payload["browserFingerPrint"] = self._read_profile_fingerprint(profile_id)
+        if "browserFingerPrint" not in payload or "proxyMethod" not in payload:
+            fingerprint, proxy_method = self._read_profile_runtime_fields(profile_id)
+            payload.setdefault("browserFingerPrint", fingerprint)
+            if "proxyMethod" not in payload:
+                payload["proxyMethod"] = proxy_method if proxy_method is not None else 2
         self._check_success(self._post_with_timeout("/browser/update", payload, _mutation_timeout(self._timeout)))
 
     def delete_profile(self, profile_id: str) -> None:

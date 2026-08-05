@@ -191,7 +191,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         transport = FakeTransport([
             {"success": True, "data": {}},
             {"success": True, "data": {}},
-            {"success": True, "data": {"browserFingerPrint": {"ua": "x"}}},
+            {"success": True, "data": {"browserFingerPrint": {"ua": "x"}, "proxyMethod": 2}},
             {"success": True, "data": {}},
         ])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
@@ -200,7 +200,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         client.close_profile("profile-1")
         client.update_profile("profile-1", {"name": "窗口"})
 
-        # open/close 用长超时；update 先读指纹（/browser/detail，默认超时）再写回（长超时）
+        # open/close 用长超时；update 先读指纹/代理方式（/browser/detail，默认超时）再写回（长超时）
         self.assertEqual([call[2] for call in transport.calls], [30.0, 30.0, 2.0, 30.0])
 
     def test_profile_mutation_timeout_can_be_overridden(self) -> None:
@@ -211,9 +211,9 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
         self.assertEqual(transport.calls[0][2], 60.0)
 
-    def test_update_profile_preserves_current_fingerprint(self) -> None:
+    def test_update_profile_preserves_current_fingerprint_and_proxy_method(self) -> None:
         transport = FakeTransport([
-            {"success": True, "data": {"browserFingerPrint": {"ua": "preserved"}}},
+            {"success": True, "data": {"browserFingerPrint": {"ua": "preserved"}, "proxyMethod": 2}},
             {"success": True, "data": {}},
         ])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
@@ -227,17 +227,22 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["id"], "profile-1")
         self.assertEqual(payload["name"], "新名")
         self.assertEqual(payload["browserFingerPrint"], {"ua": "preserved"})
+        self.assertEqual(payload["proxyMethod"], 2)
 
-    def test_update_profile_keeps_caller_fingerprint_without_scan(self) -> None:
+    def test_update_profile_keeps_caller_fields_without_detail(self) -> None:
         transport = FakeTransport([{"success": True, "data": {}}])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
 
-        client.update_profile("profile-1", {"name": "窗口", "browserFingerPrint": {"ua": "caller"}})
+        client.update_profile(
+            "profile-1",
+            {"name": "窗口", "browserFingerPrint": {"ua": "caller"}, "proxyMethod": 3},
+        )
 
         self.assertEqual(len(transport.calls), 1)
         url, payload, _ = transport.calls[0]
         self.assertTrue(url.endswith("/browser/update"))
         self.assertEqual(payload["browserFingerPrint"], {"ua": "caller"})
+        self.assertEqual(payload["proxyMethod"], 3)
 
     def test_update_profile_raises_when_fingerprint_unreadable(self) -> None:
         transport = FakeTransport([
