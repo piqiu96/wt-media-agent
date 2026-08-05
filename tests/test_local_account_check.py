@@ -45,27 +45,39 @@ class ErrorClient(CookieClient):
 
 
 class LocalAccountCheckTests(unittest.TestCase):
-    def test_bilibili_cookie_extracts_uid_without_leaking_cookie(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([
-            {"name": "DedeUserID", "value": "123456"},
-            {"name": "SESSDATA", "value": "secret-session"},
-        ]))
+    def test_bilibili_identifies_via_nav_api_without_leaking_cookie(self) -> None:
+        import json as _json
+        from unittest import mock
 
-        status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "bilibili"})
+        fake_body = _json.dumps({
+            "code": 0, "message": "0",
+            "data": {"mid": 293793435, "uname": "测试用户", "face": "http://avatar", "isLogin": True},
+        })
+        server = LocalApiServer(bitbrowser=CookieClient([{"name": "SESSDATA", "value": "secret-session"}]))
+
+        with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
+            urlopen.return_value.read.return_value = fake_body.encode()
+            status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "bilibili"})
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["data"]["platform_account_id"], "123456")
+        self.assertEqual(payload["data"]["platform_account_id"], "293793435")
+        self.assertEqual(payload["data"]["name"], "测试用户")
         self.assertEqual(payload["data"]["login_status"], "normal")
         self.assertNotIn("secret-session", str(payload))
 
     def test_expected_uid_mismatch_returns_account_mismatch(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([{"name": "DedeUserID", "value": "123456"}]))
+        import json as _json
+        from unittest import mock
 
-        status, payload = server.account_check_response({
-            "profile_id": "profile-1",
-            "platform": "bilibili",
-            "expected_platform_account_id": "999",
-        })
+        fake_body = _json.dumps({"code": 0, "message": "0", "data": {"mid": 293793435, "uname": "u", "face": "", "isLogin": True}})
+        server = LocalApiServer(bitbrowser=CookieClient([{"name": "SESSDATA", "value": "s"}]))
+        with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
+            urlopen.return_value.read.return_value = fake_body.encode()
+            status, payload = server.account_check_response({
+                "profile_id": "profile-1",
+                "platform": "bilibili",
+                "expected_platform_account_id": "999",
+            })
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["data"]["login_status"], "account_mismatch")
