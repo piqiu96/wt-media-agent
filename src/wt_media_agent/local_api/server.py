@@ -246,6 +246,24 @@ class LocalApiServer:
             result["message"] = "当前窗口登录账号与媒体账号台账不一致"
         return 200, {"data": result}
 
+    def cookie_read_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """Synchronously read cookies from a BitBrowser profile.
+
+        Returns the real cookie list so the caller can refresh active_cookie.
+        Cookie data is sensitive; callers must follow secret_policy.
+        """
+        profile_id = str(body.get("profile_id", "")).strip()
+        if not profile_id:
+            return 400, {"error": {"code": "cookie_read_input_invalid"}}
+        try:
+            self.bitbrowser.open_profile(profile_id)
+            cookies = self.bitbrowser.read_cookies(profile_id)
+        except BitBrowserIdentityError:
+            return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserResponseError as e:
+            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+        return 200, {"data": {"cookies": cookies}}
+
 
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     class AgentHandler(BaseHTTPRequestHandler):
@@ -300,6 +318,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/account-check":
                 status, payload = api.account_check_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/cookie-read":
+                status, payload = api.cookie_read_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bind":
                 self._handle_bind()
