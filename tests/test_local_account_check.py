@@ -20,6 +20,10 @@ class CookieClient:
     def open_profile(self, profile_id: str) -> None:
         self.opened.append(profile_id)
 
+    def open_profile_with_devtools(self, profile_id: str) -> str:
+        self.opened.append(profile_id)
+        return ""  # 测试中无 CDP，走 detail/saved cookie 路径
+
     def read_cookies(self, profile_id: str) -> list[dict[str, object]]:
         return self.cookies
 
@@ -43,30 +47,27 @@ class ErrorClient(CookieClient):
     def open_profile(self, profile_id: str) -> None:
         raise BitBrowserResponseError("upstream unavailable")
 
+    def open_profile_with_devtools(self, profile_id: str) -> str:
+        raise BitBrowserResponseError("upstream unavailable")
+
 
 class LocalAccountCheckTests(unittest.TestCase):
-    def test_bilibili_identifies_from_dede_user_id_with_nav_name(self) -> None:
-        import json as _json
-        from unittest import mock
+    def test_bilibili_nav_data_fills_name_and_avatar(self) -> None:
+        from wt_media_agent.local_api.server import _identify_bilibili
 
-        fake_body = _json.dumps({
-            "code": 0, "message": "0",
-            "data": {"mid": 293793435, "uname": "测试用户", "face": "http://avatar", "isLogin": True},
-        })
-        server = LocalApiServer(bitbrowser=CookieClient([
+        cookies = [
             {"name": "DedeUserID", "value": "293793435"},
             {"name": "SESSDATA", "value": "secret-session"},
-        ]))
+        ]
+        nav = {"code": 0, "data": {"mid": 293793435, "uname": "测试用户", "face": "http://avatar", "isLogin": True}}
 
-        with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
-            urlopen.return_value.read.return_value = fake_body.encode()
-            status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "bilibili"})
+        result = _identify_bilibili(cookies, nav_data=nav)
 
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["data"]["platform_account_id"], "293793435")
-        self.assertEqual(payload["data"]["name"], "测试用户")
-        self.assertEqual(payload["data"]["login_status"], "normal")
-        self.assertNotIn("secret-session", str(payload))
+        self.assertEqual(result["platform_account_id"], "293793435")
+        self.assertEqual(result["name"], "测试用户")
+        self.assertEqual(result["avatar_url"], "http://avatar")
+        self.assertEqual(result["login_status"], "normal")
+        self.assertNotIn("secret-session", str(result))
 
     def test_bilibili_uid_from_cookie_without_nav(self) -> None:
         server = LocalApiServer(bitbrowser=CookieClient([{"name": "DedeUserID", "value": "37069716"}]))

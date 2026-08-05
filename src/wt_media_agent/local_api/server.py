@@ -16,6 +16,7 @@ from urllib import request as urlrequest
 
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
+from wt_media_agent.runtimes import cdp_client
 from wt_media_agent.runtimes.bitbrowser import (
     BitBrowserClient,
     BitBrowserIdentityError,
@@ -234,18 +235,23 @@ class LocalApiServer:
         expected_id = str(body.get("expected_platform_account_id", "")).strip()
         if not profile_id or platform not in {"bilibili", "baijiahao", "douyin"}:
             return 400, {"error": {"code": "account_check_input_invalid"}}
+        devtools = ""
         try:
-            self.bitbrowser.open_profile(profile_id)
-            cookies = self.bitbrowser.read_cookies(profile_id)
+            devtools = self.bitbrowser.open_profile_with_devtools(profile_id)
+            cookies = _read_account_cookies(self.bitbrowser, profile_id, devtools)
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
+        nav_data = None
+        if platform == "bilibili" and devtools:
+            nav_data = _bilibili_nav_via_cdp(devtools)
+
         if platform == "baijiahao":
             result = _identify_baijiahao(cookies)
         elif platform == "bilibili":
-            result = _identify_bilibili(cookies)
+            result = _identify_bilibili(cookies, nav_data)
         else:
             result = _identify_platform_account(platform, cookies)
         if expected_id and result.get("platform_account_id") and result["platform_account_id"] != expected_id:
@@ -435,6 +441,28 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     return AgentHandler
 
 
+def _read_account_cookies(bitbrowser, profile_id: str, devtools: str) -> list[dict[str, object]]:
+    """Read the profile's cookies: live via CDP when a DevTools endpoint is available,
+    otherwise fall back to /browser/detail saved cookies."""
+    if devtools:
+        try:
+            return cdp_client.read_live_cookies(devtools)
+        except Exception:  # noqa: BLE001 - fall back to saved cookies
+            pass
+    return bitbrowser.read_cookies(profile_id)
+
+
+def _bilibili_nav_via_cdp(devtools: str) -> dict[str, object] | None:
+    """Fetch Bilibili nav (mid/uname/face) from inside the page to bypass risk control."""
+    try:
+        nav = cdp_client.eval_fetch_json(devtools, "https://api.bilibili.com/x/web-interface/nav")
+        if nav.get("status") == 200:
+            return nav.get("json") or {}
+    except Exception:  # noqa: BLE001 - best-effort, never block identification
+        pass
+    return None
+
+
 def _identify_platform_account(platform: str, cookies: list[dict[str, object]]) -> dict[str, object]:
     """Extract only safe platform identity facts. Cookie values never leave this function except known public IDs."""
     cookie_by_name: dict[str, str] = {}
@@ -554,13 +582,13 @@ def _identify_baijiahao(cookies: list[dict[str, object]]) -> dict[str, object]:
         }
 
 
-def _identify_bilibili(cookies: list[dict[str, object]]) -> dict[str, object]:
+def _identify_bilibili(cookies: list[dict[str, object]], nav_data: dict[str, object] | None = None) -> dict[str, object]:
     """Identify a Bilibili account from cookies.
 
-    UID comes reliably from the DedeUserID cookie. Nickname/avatar are a
-    best-effort server-side nav call; Bilibili's newer API enforces bili_ticket
-    /fingerprint risk control that can reject server-side requests (-101 / -799),
-    so a failed nav never downgrades a valid DedeUserID login to logged-out.
+    UID comes reliably from the DedeUserID cookie. Nickname/avatar come from the
+    in-page nav fetch (nav_data) when available; Bilibili's newer API enforces
+    bili_ticket / fingerprint risk control that rejects server-side requests
+    (-101 / -799), so a failed nav never downgrades a valid DedeUserID login.
     """
     cookie_by_name: dict[str, str] = {}
     for cookie in cookies:
@@ -581,28 +609,11 @@ def _identify_bilibili(cookies: list[dict[str, object]]) -> dict[str, object]:
         }
     name = ""
     face = ""
-    sessdata = cookie_by_name.get("SESSDATA", "").strip()
-    if sessdata:
-        try:
-            req = urlrequest.Request(
-                "https://api.bilibili.com/x/web-interface/nav",
-                headers={
-                    "Referer": "https://www.bilibili.com/",
-                    "Cookie": f"SESSDATA={urlparse.quote(sessdata)}",
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-                    ),
-                },
-            )
-            body = urlrequest.urlopen(req, timeout=10).read().decode(errors="replace")
-            payload = json.loads(body)
-            if payload.get("code") == 0:
-                data = payload.get("data") or {}
-                name = str(data.get("uname", "") or "").strip()
-                face = str(data.get("face", "") or "").strip()
-        except Exception:  # noqa: BLE001 - best-effort, never block UID identification
-            pass
+    nav = nav_data if isinstance(nav_data, dict) else None
+    if nav and nav.get("code") == 0:
+        data = nav.get("data") or {}
+        name = str(data.get("uname", "") or "").strip()
+        face = str(data.get("face", "") or "").strip()
     return {
         "platform_account_id": uid,
         "name": name,

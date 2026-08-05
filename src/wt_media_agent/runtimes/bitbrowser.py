@@ -123,6 +123,21 @@ class BitBrowserClient:
                 return
             raise
 
+    def open_profile_with_devtools(self, profile_id: str) -> str:
+        """Open a profile and return its DevTools http endpoint (host:port).
+
+        Returns '' while the profile is still opening (no endpoint yet); propagates
+        real BitBrowser errors so callers can surface them.
+        """
+        try:
+            response = self._post_with_timeout("/browser/open", {"id": profile_id}, _mutation_timeout(self._timeout))
+            data = self._check_success(response)
+        except BitBrowserResponseError as error:
+            if "正在打开" in str(error) or "已打开" in str(error):
+                return ""
+            raise
+        return str(data.get("http") or "").strip()
+
     def close_profile(self, profile_id: str) -> None:
         """Close a browser profile."""
         try:
