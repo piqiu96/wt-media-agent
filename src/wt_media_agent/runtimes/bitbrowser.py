@@ -181,14 +181,22 @@ class BitBrowserClient:
         return groups if isinstance(groups, list) else []
 
     def read_cookies(self, profile_id: str) -> list[dict[str, object]]:
-        """Read all cookies from an open profile's browser context."""
-        result = self._check_success(self._post("/browser/cookie", {"id": profile_id}))
-        cookies = result if isinstance(result, dict) else {}
-        for key in ("cookies", "list", "data", "cookie"):
-            value = cookies.get(key)
-            if isinstance(value, list):
-                return value
-        return []
+        """Read the profile's stored cookies from /browser/detail.
+
+        This BitBrowser version exposes the profile's active cookies in the
+        /browser/detail `cookie` JSON array field; there is no /browser/cookie
+        endpoint. Cookie values are sensitive and must not be logged.
+        """
+        response = self._transport(f"{self._base_url}/browser/detail", {"id": profile_id}, self._timeout)
+        data = self._check_success(response)
+        raw = data.get("cookie")
+        if not isinstance(raw, str) or not raw.strip():
+            return []
+        try:
+            cookies = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        return cookies if isinstance(cookies, list) else []
 
     def save_cookies(self, profile_id: str, cookies: list[dict[str, object]]) -> None:
         """Save cookies to a browser profile."""

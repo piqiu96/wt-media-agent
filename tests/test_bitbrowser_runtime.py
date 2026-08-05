@@ -256,6 +256,27 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         # 没有对 /browser/update 发请求：宁可拒绝也不传空指纹重置身份
         self.assertEqual(len(transport.calls), 1)
 
+    def test_read_cookies_parses_detail_cookie_field(self) -> None:
+        import json as _json
+        cookie_payload = _json.dumps([
+            {"name": "DedeUserID", "value": "123456", "domain": ".bilibili.com", "path": "/"},
+            {"name": "SESSDATA", "value": "secret", "domain": ".bilibili.com", "path": "/"},
+        ])
+        transport = FakeTransport([{"success": True, "data": {"cookie": cookie_payload}}])
+        client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
+
+        cookies = client.read_cookies("profile-1")
+
+        self.assertEqual(len(cookies), 2)
+        self.assertEqual(cookies[0]["name"], "DedeUserID")
+        self.assertTrue(transport.calls[0][0].endswith("/browser/detail"))
+
+    def test_read_cookies_returns_empty_when_no_cookie_field(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {"name": "窗口"}}])
+        client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
+
+        self.assertEqual(client.read_cookies("profile-1"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
