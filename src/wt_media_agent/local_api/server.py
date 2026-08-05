@@ -555,10 +555,12 @@ def _identify_baijiahao(cookies: list[dict[str, object]]) -> dict[str, object]:
 
 
 def _identify_bilibili(cookies: list[dict[str, object]]) -> dict[str, object]:
-    """Identify a Bilibili account via the nav API (open-source bilibili-API-collect).
+    """Identify a Bilibili account from cookies.
 
-    UID/nickname/avatar come from https://api.bilibili.com/x/web-interface/nav
-    authenticated by the SESSDATA cookie, called server-side (no CORS).
+    UID comes reliably from the DedeUserID cookie. Nickname/avatar are a
+    best-effort server-side nav call; Bilibili's newer API enforces bili_ticket
+    /fingerprint risk control that can reject server-side requests (-101 / -799),
+    so a failed nav never downgrades a valid DedeUserID login to logged-out.
     """
     cookie_by_name: dict[str, str] = {}
     for cookie in cookies:
@@ -568,66 +570,46 @@ def _identify_bilibili(cookies: list[dict[str, object]]) -> dict[str, object]:
         value = str(cookie.get("value", "")).strip()
         if name and value:
             cookie_by_name[name] = value
-    sessdata = cookie_by_name.get("SESSDATA", "").strip()
-    if not sessdata:
+    uid = cookie_by_name.get("DedeUserID", "").strip()
+    if not uid:
         return {
             "platform_account_id": "",
             "name": "",
             "avatar_url": "",
             "login_status": "not_logged_in",
-            "message": "未读取到B站登录凭证(SESSDATA)",
+            "message": "未读取到B站登录Cookie(DedeUserID)",
         }
-    try:
-        req = urlrequest.Request(
-            "https://api.bilibili.com/x/web-interface/nav",
-            headers={
-                "Referer": "https://www.bilibili.com/",
-                "Cookie": f"SESSDATA={urlparse.quote(sessdata)}",
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-                ),
-            },
-        )
-        body = urlrequest.urlopen(req, timeout=10).read().decode(errors="replace")
-        payload = json.loads(body)
-        code = payload.get("code", -1)
-        if code != 0:
-            status = "expired" if code == -101 else "environment_error"
-            return {
-                "platform_account_id": "",
-                "name": "",
-                "avatar_url": "",
-                "login_status": status,
-                "message": f"B站登录校验失败: {payload.get('message', '')}",
-            }
-        data = payload.get("data") or {}
-        mid = str(data.get("mid", "") or "").strip()
-        uname = str(data.get("uname", "") or "").strip()
-        face = str(data.get("face", "") or "").strip()
-        if not mid:
-            return {
-                "platform_account_id": "",
-                "name": "",
-                "avatar_url": "",
-                "login_status": "not_logged_in",
-                "message": "未读取到B站账号UID",
-            }
-        return {
-            "platform_account_id": mid,
-            "name": uname,
-            "avatar_url": face,
-            "login_status": "normal",
-            "message": "已读取到哔哩哔哩账号信息",
-        }
-    except Exception as exc:  # noqa: BLE001 - surface readable message, never leak cookie
-        return {
-            "platform_account_id": "",
-            "name": "",
-            "avatar_url": "",
-            "login_status": "environment_error",
-            "message": f"B站信息接口调用失败: {exc}",
-        }
+    name = ""
+    face = ""
+    sessdata = cookie_by_name.get("SESSDATA", "").strip()
+    if sessdata:
+        try:
+            req = urlrequest.Request(
+                "https://api.bilibili.com/x/web-interface/nav",
+                headers={
+                    "Referer": "https://www.bilibili.com/",
+                    "Cookie": f"SESSDATA={urlparse.quote(sessdata)}",
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+                    ),
+                },
+            )
+            body = urlrequest.urlopen(req, timeout=10).read().decode(errors="replace")
+            payload = json.loads(body)
+            if payload.get("code") == 0:
+                data = payload.get("data") or {}
+                name = str(data.get("uname", "") or "").strip()
+                face = str(data.get("face", "") or "").strip()
+        except Exception:  # noqa: BLE001 - best-effort, never block UID identification
+            pass
+    return {
+        "platform_account_id": uid,
+        "name": name,
+        "avatar_url": face,
+        "login_status": "normal",
+        "message": "已读取到B站账号UID" + ("" if name else "（昵称/头像需页面内验证）"),
+    }
 
 
 def _safe_groups(groups: list[dict[str, object]]) -> list[dict[str, str]]:
