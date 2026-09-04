@@ -259,8 +259,8 @@ class LocalApiServer:
         try:
             self.bitbrowser.update_profile(profile_id, {
                 "proxyType": protocol,
-                "proxyHost": host,
-                "proxyPort": port,
+                "host": host,
+                "port": port,
                 "proxyUserName": str(body.get("username", "")),
                 "proxyPassword": str(body.get("password", "")),
             })

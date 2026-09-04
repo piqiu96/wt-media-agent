@@ -92,6 +92,17 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, encoded)
 
+    def test_reads_proxy_host_and_port_from_official_list_fields(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {"list": [{
+            **profile(1), "proxyType": "socks5", "host": "198.51.100.10", "port": 50001,
+        }]}}])
+
+        snapshot = BitBrowserClient("http://127.0.0.1:54345", transport=transport).scan_profiles()
+
+        self.assertEqual(snapshot.profiles[0].proxy_type, "socks5")
+        self.assertEqual(snapshot.profiles[0].proxy_host, "198.51.100.10")
+        self.assertEqual(snapshot.profiles[0].proxy_port, 50001)
+
     def test_accepts_mixed_profile_users_under_one_main_user(self) -> None:
         transport = FakeTransport(
             [{"success": True, "data": {"list": [profile(1), profile(2, profile_user="bit-user-2")]}}]
@@ -166,16 +177,16 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
         BitBrowserClient("http://127.0.0.1:54345", transport=transport).create_profile({
             "name": "窗口",
-            "proxyHost": "127.0.0.1",
+            "host": "127.0.0.1",
             "proxyType": "socks5",
-            "proxyPort": 1080,
+            "port": 1080,
         })
 
         self.assertEqual(transport.calls[0][1], {
             "name": "窗口",
-            "proxyHost": "127.0.0.1",
+            "host": "127.0.0.1",
             "proxyType": "socks5",
-            "proxyPort": 1080,
+            "port": 1080,
             "browserFingerPrint": {},
         })
 

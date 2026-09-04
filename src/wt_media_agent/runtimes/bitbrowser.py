@@ -282,7 +282,7 @@ def _safe_profile(item: dict[str, object]) -> BitProfile:
     status = item.get("status")
     if not isinstance(status, (int, str)) or isinstance(status, bool):
         status = None
-    proxy_port_raw = item.get("proxyPort") or 0
+    proxy_port_raw = item.get("port") or 0
     proxy_port = int(proxy_port_raw) if isinstance(proxy_port_raw, (int, str)) and str(proxy_port_raw).isdigit() else 0
     return BitProfile(
         bit_profile_id=bit_profile_id,
@@ -296,7 +296,7 @@ def _safe_profile(item: dict[str, object]) -> BitProfile:
         bit_updated_at=_string(item.get("updateTime")),
         remark=_string(item.get("remark")),
         proxy_type=_string(item.get("proxyType")),
-        proxy_host=_string(item.get("proxyHost")),
+        proxy_host=_string(item.get("host")),
         proxy_port=proxy_port,
     )
 
@@ -308,7 +308,7 @@ def _string(value: object) -> str:
 def _create_profile_payload(config: dict[str, object]) -> dict[str, object]:
     payload = dict(config)
     payload.setdefault("browserFingerPrint", {})
-    if not payload.get("proxyHost"):
+    if not payload.get("host"):
         payload.setdefault("proxyMethod", 2)
         payload.setdefault("proxyType", "noproxy")
     return payload

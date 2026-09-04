@@ -20,7 +20,7 @@ class ProxyMutationExecutor:
         port = int(payload.get("port", 0) or 0)
         if not task_id or not profile_id or not host or port <= 0: raise ValueError("proxy_mutation_task payload invalid")
         self.client.report_task(task_id, self.agent_id, "running", 20, "正在写入 Profile 代理")
-        self.bitbrowser.update_profile(profile_id, {"proxyType": payload.get("proxy_protocol", "http"), "proxyHost": host, "proxyPort": port, "proxyUserName": payload.get("username", ""), "proxyPassword": payload.get("password", "")})
+        self.bitbrowser.update_profile(profile_id, {"proxyType": payload.get("proxy_protocol", "http"), "host": host, "port": port, "proxyUserName": payload.get("username", ""), "proxyPassword": payload.get("password", "")})
         self.client.report_task(task_id, self.agent_id, "running", 70, "正在读回代理配置")
         snapshot = self.bitbrowser.scan_profiles()
         found = next((p for p in snapshot.profiles if p.bit_profile_id == profile_id), None)

@@ -25,8 +25,8 @@ class MutationClient:
         if not self.apply_updates:
             return
         self.proxy_type = str(config.get("proxyType", ""))
-        self.proxy_host = str(config.get("proxyHost", ""))
-        self.proxy_port = int(config.get("proxyPort", 0) or 0)
+        self.proxy_host = str(config.get("host", ""))
+        self.proxy_port = int(config.get("port", 0) or 0)
 
     def scan_profiles(self) -> ProfileSnapshot:
         return ProfileSnapshot("main-1", (BitProfile(
@@ -47,7 +47,7 @@ class ProxyMutationTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"data": {"profile_id": "bit-profile-1", "proxy_protocol": "socks5", "host": "127.0.0.1", "port": 1080, "readback": True}})
-        self.assertEqual(client.updated, [("bit-profile-1", {"proxyType": "socks5", "proxyHost": "127.0.0.1", "proxyPort": 1080, "proxyUserName": "secret-user", "proxyPassword": "secret-password"})])
+        self.assertEqual(client.updated, [("bit-profile-1", {"proxyType": "socks5", "host": "127.0.0.1", "port": 1080, "proxyUserName": "secret-user", "proxyPassword": "secret-password"})])
         self.assertNotIn("password", str(payload).lower())
 
     def test_mutation_does_not_report_success_when_readback_differs(self) -> None:
