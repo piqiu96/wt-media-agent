@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: WT Media Local Agent Loopback API
-  version: 2026.09.04.1
+  version: 2026.09.05.1
 servers:
   - url: http://127.0.0.1:8765
 paths:
@@ -109,7 +109,7 @@ paths:
   /api/v1/proxy-mutation:
     post:
       operationId: mutateProfileProxy
-      description: Synchronously writes one proxy to a BitBrowser Profile and returns only the read-back proxy facts after verification.
+      description: Synchronously assigns or removes one Profile proxy in BitBrowser and returns only secret-free read-back facts after verification.
       requestBody:
         required: true
         content:
@@ -117,7 +117,7 @@ paths:
             schema: {$ref: '#/components/schemas/ProxyMutationRequest'}
       responses:
         '200':
-          description: BitBrowser accepted the update and the returned Profile proxy facts match the requested address and port.
+          description: BitBrowser accepted the mutation and read-back verifies the requested proxy state.
           content:
             application/json:
               schema:
@@ -214,9 +214,14 @@ components:
         connectivity: {type: string, enum: [reachable, unreachable]}
       additionalProperties: false
     ProxyMutationRequest:
+      oneOf:
+        - {$ref: '#/components/schemas/ProxyAssignmentMutationRequest'}
+        - {$ref: '#/components/schemas/ProxyUnbindMutationRequest'}
+    ProxyAssignmentMutationRequest:
       type: object
       required: [profile_id, proxy_protocol, host, port]
       properties:
+        operation: {type: string, enum: [assign], default: assign}
         profile_id: {type: string, description: BitBrowser profile id.}
         proxy_protocol: {type: string, enum: [http, https, socks5]}
         host: {type: string}
@@ -224,7 +229,18 @@ components:
         username: {type: string, writeOnly: true}
         password: {type: string, writeOnly: true}
       additionalProperties: false
+    ProxyUnbindMutationRequest:
+      type: object
+      required: [operation, profile_id]
+      properties:
+        operation: {type: string, enum: [unbind]}
+        profile_id: {type: string, description: BitBrowser profile id.}
+      additionalProperties: false
     ProxyMutationResult:
+      oneOf:
+        - {$ref: '#/components/schemas/ProxyAssignmentMutationResult'}
+        - {$ref: '#/components/schemas/ProxyUnbindMutationResult'}
+    ProxyAssignmentMutationResult:
       type: object
       required: [profile_id, proxy_protocol, host, port, readback]
       properties:
@@ -232,5 +248,13 @@ components:
         proxy_protocol: {type: string, enum: [http, https, socks5]}
         host: {type: string}
         port: {type: integer}
+        readback: {type: boolean, enum: [true]}
+      additionalProperties: false
+    ProxyUnbindMutationResult:
+      type: object
+      required: [operation, profile_id, readback]
+      properties:
+        operation: {type: string, enum: [unbind]}
+        profile_id: {type: string}
         readback: {type: boolean, enum: [true]}
       additionalProperties: false

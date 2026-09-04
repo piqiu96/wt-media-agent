@@ -229,8 +229,25 @@ class LocalApiServer:
         return 200, {"data": data}
 
     def proxy_mutation_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
-        """Write one Profile proxy, then return only verified, secret-free facts."""
+        """Write or remove one Profile proxy, then return verified secret-free facts."""
         profile_id = str(body.get("profile_id", "")).strip()
+        operation = str(body.get("operation", "assign")).strip().lower() or "assign"
+        if operation == "unbind":
+            if not profile_id:
+                return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+            try:
+                self.bitbrowser.update_profile(profile_id, {"proxyType": "noproxy"})
+                snapshot = self.bitbrowser.scan_profiles()
+            except BitBrowserIdentityError:
+                return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+            except BitBrowserResponseError:
+                return 502, {"error": {"code": "bitbrowser_response_error"}}
+            found = next((item for item in snapshot.profiles if item.bit_profile_id == profile_id), None)
+            if found is None or found.proxy_type.lower() != "noproxy":
+                return 409, {"error": {"code": "proxy_mutation_readback_mismatch"}}
+            return 200, {"data": {"operation": "unbind", "profile_id": profile_id, "readback": True}}
+        if operation != "assign":
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
         protocol = str(body.get("proxy_protocol", "")).strip().lower()
         host = str(body.get("host", "")).strip()
         try:
