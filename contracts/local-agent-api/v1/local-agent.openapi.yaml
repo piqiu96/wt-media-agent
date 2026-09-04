@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: WT Media Local Agent Loopback API
-  version: 2026.07.14.7
+  version: 2026.09.04.1
 servers:
   - url: http://127.0.0.1:8765
 paths:
@@ -86,6 +86,48 @@ paths:
         '400': {description: Required profile or platform input is invalid.}
         '409': {description: BitBrowser identity is not verifiable.}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
+  /api/v1/proxy-check:
+    post:
+      operationId: checkProxyConnectivity
+      description: Synchronously runs a bounded proxy connectivity check and never returns credentials.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProxyCheckRequest'}
+      responses:
+        '200':
+          description: Connectivity result without credentials.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/ProxyCheckResult'}
+        '400': {description: Proxy input is invalid.}
+  /api/v1/proxy-mutation:
+    post:
+      operationId: mutateProfileProxy
+      description: Synchronously writes one proxy to a BitBrowser Profile and returns only the read-back proxy facts after verification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProxyMutationRequest'}
+      responses:
+        '200':
+          description: BitBrowser accepted the update and the returned Profile proxy facts match the requested address and port.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/ProxyMutationResult'}
+        '400': {description: Proxy mutation input is invalid.}
+        '409': {description: The requested proxy does not match the Profile read-back.}
+        '502': {description: BitBrowser Local API failed.}
 components:
   schemas:
     Health:
@@ -152,4 +194,43 @@ components:
           type: string
           enum: [normal, not_logged_in, verification_needed, expired, restricted, account_mismatch, environment_error]
         message: {type: string}
+      additionalProperties: false
+    ProxyCheckRequest:
+      type: object
+      required: [host, port]
+      properties:
+        proxy_id: {type: string}
+        proxy_protocol: {type: string, enum: [http, https, socks5]}
+        host: {type: string}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        username: {type: string, writeOnly: true}
+        password: {type: string, writeOnly: true}
+      additionalProperties: false
+    ProxyCheckResult:
+      type: object
+      required: [connectivity]
+      properties:
+        proxy_id: {type: string}
+        connectivity: {type: string, enum: [reachable, unreachable]}
+      additionalProperties: false
+    ProxyMutationRequest:
+      type: object
+      required: [profile_id, proxy_protocol, host, port]
+      properties:
+        profile_id: {type: string, description: BitBrowser profile id.}
+        proxy_protocol: {type: string, enum: [http, https, socks5]}
+        host: {type: string}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        username: {type: string, writeOnly: true}
+        password: {type: string, writeOnly: true}
+      additionalProperties: false
+    ProxyMutationResult:
+      type: object
+      required: [profile_id, proxy_protocol, host, port, readback]
+      properties:
+        profile_id: {type: string}
+        proxy_protocol: {type: string, enum: [http, https, socks5]}
+        host: {type: string}
+        port: {type: integer}
+        readback: {type: boolean, enum: [true]}
       additionalProperties: false

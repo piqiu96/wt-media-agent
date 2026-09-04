@@ -228,6 +228,41 @@ class LocalApiServer:
             data["proxy_id"] = proxy_id
         return 200, {"data": data}
 
+    def proxy_mutation_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """Write one Profile proxy, then return only verified, secret-free facts."""
+        profile_id = str(body.get("profile_id", "")).strip()
+        protocol = str(body.get("proxy_protocol", "")).strip().lower()
+        host = str(body.get("host", "")).strip()
+        try:
+            port = int(body.get("port", 0))
+        except (TypeError, ValueError):
+            port = 0
+        if not profile_id or protocol not in {"http", "https", "socks5"} or not host or not 1 <= port <= 65535:
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        try:
+            self.bitbrowser.update_profile(profile_id, {
+                "proxyType": protocol,
+                "proxyHost": host,
+                "proxyPort": port,
+                "proxyUserName": str(body.get("username", "")),
+                "proxyPassword": str(body.get("password", "")),
+            })
+            snapshot = self.bitbrowser.scan_profiles()
+        except BitBrowserIdentityError:
+            return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserResponseError:
+            return 502, {"error": {"code": "bitbrowser_response_error"}}
+        found = next((item for item in snapshot.profiles if item.bit_profile_id == profile_id), None)
+        if found is None or found.proxy_type.lower() != protocol or found.proxy_host != host or found.proxy_port != port:
+            return 409, {"error": {"code": "proxy_mutation_readback_mismatch"}}
+        return 200, {"data": {
+            "profile_id": profile_id,
+            "proxy_protocol": protocol,
+            "host": host,
+            "port": port,
+            "readback": True,
+        }}
+
     def account_check_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Synchronously inspect one BitBrowser profile and return safe account identity facts."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -329,6 +364,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-check":
                 status, payload = api.proxy_check_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-mutation":
+                status, payload = api.proxy_mutation_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/account-check":
                 status, payload = api.account_check_response(self._read_body())
