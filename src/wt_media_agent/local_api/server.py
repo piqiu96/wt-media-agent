@@ -228,6 +228,24 @@ class LocalApiServer:
             data["proxy_id"] = proxy_id
         return 200, {"data": data}
 
+    def proxy_extract_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """Fetch and parse one provider response without touching BitBrowser."""
+        extract_url = str(body.get("extract_url", "")).strip()
+        protocol = str(body.get("proxy_protocol", "http")).strip().lower() or "http"
+        parsed_url = urlparse.urlsplit(extract_url)
+        if protocol not in {"http", "https", "socks5"} or parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
+            return 400, {"error": {"code": "proxy_extract_input_invalid"}}
+        try:
+            request = urlrequest.Request(extract_url, headers={"Accept": "text/plain"})
+            with urlrequest.urlopen(request, timeout=7) as response:
+                raw = response.read(64 * 1024).decode("utf-8", errors="replace")
+            address = _parse_first_proxy_address(raw, protocol)
+        except ValueError:
+            return 400, {"error": {"code": "proxy_extract_response_invalid"}}
+        except (OSError, TimeoutError):
+            return 502, {"error": {"code": "proxy_extract_request_failed"}}
+        return 200, {"data": address}
+
     def proxy_mutation_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Write or remove one Profile proxy, then return verified secret-free facts."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -331,6 +349,46 @@ class LocalApiServer:
         return 200, {"data": {"cookies": cookies}}
 
 
+def _parse_first_proxy_address(raw: str, default_protocol: str) -> dict[str, object]:
+    for line in raw.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        parsed = _parse_proxy_address(candidate, default_protocol)
+        if parsed is not None:
+            return parsed
+    raise ValueError("no supported proxy address")
+
+
+def _parse_proxy_address(raw: str, default_protocol: str) -> dict[str, object] | None:
+    if "://" in raw:
+        value = urlparse.urlsplit(raw)
+        if value.scheme not in {"http", "https", "socks5"} or not value.hostname or value.port is None:
+            return None
+        return {
+            "proxy_protocol": value.scheme,
+            "host": value.hostname,
+            "port": value.port,
+            "username": value.username or "",
+            "password": value.password or "",
+        }
+    parts = raw.split(":", 3)
+    if len(parts) < 2 or not parts[0]:
+        return None
+    try:
+        port = int(parts[1])
+    except ValueError:
+        return None
+    if not 1 <= port <= 65535:
+        return None
+    result: dict[str, object] = {"proxy_protocol": default_protocol, "host": parts[0], "port": port, "username": "", "password": ""}
+    if len(parts) == 4:
+        result["username"], result["password"] = parts[2], parts[3]
+    elif len(parts) != 2:
+        return None
+    return result
+
+
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     class AgentHandler(BaseHTTPRequestHandler):
         server_version = "WTMediaAgentM1/0.1"
@@ -381,6 +439,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-check":
                 status, payload = api.proxy_check_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-extract":
+                status, payload = api.proxy_extract_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-mutation":
                 status, payload = api.proxy_mutation_response(self._read_body())
