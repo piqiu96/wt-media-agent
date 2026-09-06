@@ -13,9 +13,10 @@ from wt_media_agent.runtimes.bitbrowser import BitProfile, ProfileSnapshot
 
 
 class MutationClient:
-    def __init__(self, apply_updates: bool = False) -> None:
+    def __init__(self, apply_updates: bool = False, clear_proxy_on_unbind: bool = True) -> None:
         self.updated: list[tuple[str, dict[str, object]]] = []
         self.apply_updates = apply_updates
+        self.clear_proxy_on_unbind = clear_proxy_on_unbind
         self.proxy_type = "socks5"
         self.proxy_host = "127.0.0.1"
         self.proxy_port = 1080
@@ -25,6 +26,8 @@ class MutationClient:
         if not self.apply_updates:
             return
         self.proxy_type = str(config.get("proxyType", ""))
+        if self.proxy_type == "noproxy" and not self.clear_proxy_on_unbind:
+            return
         self.proxy_host = str(config.get("host", ""))
         self.proxy_port = int(config.get("port", 0) or 0)
 
@@ -68,7 +71,17 @@ class ProxyMutationTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"data": {"operation": "unbind", "profile_id": "bit-profile-1", "readback": True}})
-        self.assertEqual(client.updated, [("bit-profile-1", {"proxyType": "noproxy"})])
+        self.assertEqual(client.updated, [("bit-profile-1", {"proxyType": "noproxy", "proxyMethod": 2})])
+
+    def test_unbind_rejects_readback_with_residual_proxy_address(self) -> None:
+        client = MutationClient(apply_updates=True, clear_proxy_on_unbind=False)
+
+        status, payload = LocalApiServer(bitbrowser=client).proxy_mutation_response({
+            "operation": "unbind", "profile_id": "bit-profile-1",
+        })
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["code"], "proxy_mutation_readback_mismatch")
 
 
 if __name__ == "__main__":

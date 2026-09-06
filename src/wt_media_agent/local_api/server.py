@@ -236,14 +236,14 @@ class LocalApiServer:
             if not profile_id:
                 return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
             try:
-                self.bitbrowser.update_profile(profile_id, {"proxyType": "noproxy"})
+                self.bitbrowser.update_profile(profile_id, {"proxyType": "noproxy", "proxyMethod": 2})
                 snapshot = self.bitbrowser.scan_profiles()
             except BitBrowserIdentityError:
                 return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
             except BitBrowserResponseError:
                 return 502, {"error": {"code": "bitbrowser_response_error"}}
             found = next((item for item in snapshot.profiles if item.bit_profile_id == profile_id), None)
-            if found is None or found.proxy_type.lower() != "noproxy":
+            if found is None or found.proxy_type.lower() != "noproxy" or found.proxy_host or found.proxy_port:
                 return 409, {"error": {"code": "proxy_mutation_readback_mismatch"}}
             return 200, {"data": {"operation": "unbind", "profile_id": profile_id, "readback": True}}
         if operation != "assign":
