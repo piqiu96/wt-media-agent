@@ -71,7 +71,11 @@ class ProxyMutationTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"data": {"operation": "unbind", "profile_id": "bit-profile-1", "readback": True}})
-        self.assertEqual(client.updated, [("bit-profile-1", {"proxyType": "noproxy", "proxyMethod": 2})])
+        self.assertEqual(client.updated, [("bit-profile-1", {
+            "proxyType": "noproxy", "proxyMethod": 2,
+            "host": "", "port": 0,
+            "proxyUserName": "", "proxyPassword": "",
+        })])
 
     def test_unbind_rejects_readback_with_residual_proxy_address(self) -> None:
         client = MutationClient(apply_updates=True, clear_proxy_on_unbind=False)

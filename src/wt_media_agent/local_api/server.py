@@ -254,7 +254,17 @@ class LocalApiServer:
             if not profile_id:
                 return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
             try:
-                self.bitbrowser.update_profile(profile_id, {"proxyType": "noproxy", "proxyMethod": 2})
+                self.bitbrowser.update_profile(profile_id, {
+                    "proxyType": "noproxy",
+                    "proxyMethod": 2,
+                    # BitBrowser keeps the old address and credentials unless the
+                    # clear values are sent explicitly. They must disappear before
+                    # Cloud can record the formal unbind.
+                    "host": "",
+                    "port": 0,
+                    "proxyUserName": "",
+                    "proxyPassword": "",
+                })
                 snapshot = self.bitbrowser.scan_profiles()
             except BitBrowserIdentityError:
                 return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
