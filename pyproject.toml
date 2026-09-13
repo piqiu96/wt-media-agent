@@ -11,7 +11,7 @@ local = []
 cloud = []
 dev = []
 test = []
-build = []
+build = ["pyinstaller>=6.0"]
 
 [project.scripts]
 wt-media-local-agent = "wt_media_agent.local_main:main"
