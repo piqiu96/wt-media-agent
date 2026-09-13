@@ -10,8 +10,10 @@ import platform
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -40,6 +42,54 @@ def binary_name(target: str) -> str:
     return f"wt-media-agent-{target}{suffix}"
 
 
+def pyinstaller_signing_args(system: str | None = None) -> list[str]:
+    """Ad-hoc sign embedded Mach-O libraries for macOS runtime loading."""
+    return ["--codesign-identity", "-"] if (system or platform.system()).lower() == "darwin" else []
+
+
+def python_library_resign_args(system: str | None = None) -> list[str]:
+    return ["codesign", "--force", "--sign", "-"] if (system or platform.system()).lower() == "darwin" else []
+
+
+def python_shared_library() -> Path | None:
+    library_dir = sysconfig.get_config_var("LIBDIR")
+    library_name = sysconfig.get_config_var("LDLIBRARY")
+    if not library_dir or not library_name:
+        return None
+    path = Path(library_dir) / library_name
+    return path if path.is_file() else None
+
+
+@contextmanager
+def unsigned_python_shared_library():
+    """Temporarily replace the interpreter's linker signature during freezing.
+
+    PyInstaller embeds libpython but does not replace its linker signature. On
+    recent macOS versions that signature can conflict with the ad-hoc-signed
+    one-file process. The original file is restored before returning.
+    """
+    resign_args = python_library_resign_args()
+    if not resign_args:
+        yield
+        return
+    library = python_shared_library()
+    if library is None:
+        yield
+        return
+    with tempfile.TemporaryDirectory(prefix="wt-media-agent-python-lib-") as temporary:
+        backup = Path(temporary) / library.name
+        shutil.copy2(library, backup)
+        has_signature = subprocess.run(
+            ["codesign", "-d", str(library)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ).returncode == 0
+        try:
+            if has_signature:
+                subprocess.run([*resign_args, str(library)], check=True)
+            yield
+        finally:
+            shutil.copy2(backup, library)
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -58,12 +108,15 @@ def build(target: str, output_dir: Path, manifest: Path) -> Path:
     name = binary_name(target)
     with tempfile.TemporaryDirectory(prefix="wt-media-agent-sidecar-") as temporary:
         workdir = Path(temporary)
-        subprocess.run([
+        command = [
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
             "--name", name, "--paths", str(ROOT / "src"),
             "--distpath", str(workdir / "dist"), "--workpath", str(workdir / "work"),
             "--specpath", str(workdir / "spec"), str(ROOT / "src" / "wt_media_agent" / "sidecar_main.py"),
-        ], check=True)
+        ]
+        command[6:6] = pyinstaller_signing_args()
+        with unsigned_python_shared_library():
+            subprocess.run(command, check=True)
         built = workdir / "dist" / name
         if not built.is_file():
             raise RuntimeError(f"PyInstaller did not produce {built}")

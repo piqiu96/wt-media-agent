@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 import sys
 import unittest
 from unittest import mock
@@ -11,6 +12,21 @@ sys.path.insert(0, str(ROOT / "src"))
 
 
 class SidecarEntryTests(unittest.TestCase):
+    def test_macos_build_uses_adhoc_signing_for_embedded_python(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "build_desktop_sidecar", ROOT / "scripts" / "build_desktop_sidecar.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.pyinstaller_signing_args("darwin"), ["--codesign-identity", "-"])
+        self.assertEqual(
+            module.python_library_resign_args("darwin"),
+            ["codesign", "--force", "--sign", "-"],
+        )
+        self.assertEqual(module.python_library_resign_args("windows"), [])
+
     def test_sidecar_entry_starts_local_api_on_loopback(self) -> None:
         from wt_media_agent import sidecar_main
 
