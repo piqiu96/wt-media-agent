@@ -17,6 +17,7 @@ from wt_media_agent.constants import (
     TASK_TYPE_COOKIE_WRITE,
     TASK_TYPE_NOOP,
     TASK_TYPE_PROXY_CHECK,
+    TASK_TYPE_DISCOVERY,
     TASK_TYPE_PROXY_MUTATION,
     TASK_TYPE_PROFILE_CREATE,
     TASK_TYPE_PROFILE_OPEN,
@@ -30,6 +31,7 @@ from wt_media_agent.executors.account_check import AccountCheckExecutor
 from wt_media_agent.executors.profile import factory as profile_executor_factory
 from wt_media_agent.executors.proxy import ProxyCheckExecutor
 from wt_media_agent.executors.proxy_mutation import ProxyMutationExecutor
+from wt_media_agent.executors.discovery import DiscoveryExecutor
 from wt_media_agent.storage.checkpoint_store import (
     CheckpointStore,
     OfflineResult,
@@ -75,6 +77,7 @@ class TaskRunner:
             TASK_TYPE_PROFILE_UPDATE: profile_executor_factory("update"),
             TASK_TYPE_PROXY_CHECK: lambda c, a: ProxyCheckExecutor(c, a),
             TASK_TYPE_PROXY_MUTATION: lambda c, a: ProxyMutationExecutor(c, a),
+            TASK_TYPE_DISCOVERY: lambda c, a: DiscoveryExecutor(c, a),
         }
 
     def register_executor(self, task_type: str, factory: ExecutorFactory) -> None:
