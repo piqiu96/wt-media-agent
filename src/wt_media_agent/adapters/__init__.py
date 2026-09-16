@@ -1,1 +1,1 @@
-"""External channel adapters used by discovery executors."""
+"""Platform adapters for local execution capabilities."""

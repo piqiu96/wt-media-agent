@@ -21,7 +21,6 @@ TASK_TYPE_PROFILE_CREATE = "profile_create_task"
 TASK_TYPE_PROFILE_OPEN = "profile_open_task"
 TASK_TYPE_PROFILE_CLOSE = "profile_close_task"
 TASK_TYPE_PROFILE_UPDATE = "profile_update_task"
-TASK_TYPE_DISCOVERY = "discovery_task"
 
 # Agent modes.
 AGENT_MODE_LOCAL = "local"
