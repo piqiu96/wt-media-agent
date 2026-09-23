@@ -8,7 +8,7 @@ from wt_media_agent.clients.bitbrowser import (
     BitProfile,
     ProfileSnapshot,
 )
-from wt_media_agent.runtimes.environment import RuntimeEnvironmentCollector
+from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
 
 
 class SnapshotClient:

@@ -24,7 +24,7 @@ from wt_media_agent.clients.bitbrowser import (
     ProfileSnapshot,
 )
 from wt_media_agent.proxy_check import check_proxy_connectivity
-from wt_media_agent.runtimes.environment import RuntimeEnvironmentCollector
+from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
 
 logger = logging.getLogger(__name__)
 

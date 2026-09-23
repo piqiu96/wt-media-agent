@@ -12,7 +12,7 @@ import subprocess
 import sys
 from typing import Callable, Protocol
 
-from wt_media_agent import __version__
+from wt_media_agent.runtime.version import __version__
 from wt_media_agent.clients.bitbrowser import (
     BitBrowserError,
     BitBrowserIdentityError,
