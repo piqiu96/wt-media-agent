@@ -16,7 +16,7 @@ from urllib import request as urlrequest
 
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
-from wt_media_agent.runtimes import cdp_client
+from wt_media_agent.services.browser import cdp
 from wt_media_agent.clients.bitbrowser import (
     BitBrowserClient,
     BitBrowserIdentityError,
@@ -573,7 +573,7 @@ def _read_account_cookies(bitbrowser, profile_id: str, devtools: str) -> list[di
     otherwise fall back to /browser/detail saved cookies."""
     if devtools:
         try:
-            return cdp_client.read_live_cookies(devtools)
+            return cdp.read_live_cookies(devtools)
         except Exception:  # noqa: BLE001 - fall back to saved cookies
             pass
     return bitbrowser.read_cookies(profile_id)
@@ -582,7 +582,7 @@ def _read_account_cookies(bitbrowser, profile_id: str, devtools: str) -> list[di
 def _bilibili_nav_via_cdp(devtools: str) -> dict[str, object] | None:
     """Fetch Bilibili nav (mid/uname/face) from inside the page to bypass risk control."""
     try:
-        nav = cdp_client.eval_fetch_json(devtools, "https://api.bilibili.com/x/web-interface/nav")
+        nav = cdp.eval_fetch_json(devtools, "https://api.bilibili.com/x/web-interface/nav")
         if nav.get("status") == 200:
             return nav.get("json") or {}
     except Exception:  # noqa: BLE001 - best-effort, never block identification
