@@ -15,9 +15,9 @@
 
 ## 本仓库拥有
 
-- Agent Runtime：任务执行、心跳、进度、异常处理、执行日志、检查点与结果回传（`runner.py`、`storage/`）。
-- 本机实际操作（Local）：BitBrowser 调用、Profile 与窗口操作、代理写入与实际状态读取、Cookie 与登录环境、本地文件、本地 FFmpeg、浏览器自动化（`runtimes/`、`executors/`、`local_api/`）。
-- 与 Cloud 的通信客户端（`cloud_agent_client.py`、`cloud_agent_contract.py`）。
+- Agent Runtime：任务执行、心跳、进度、异常处理、执行日志、检查点与结果回传（`runner/`、`storage/`）。
+- 本机实际操作（Local）：BitBrowser 调用、Profile 与窗口操作、代理写入与实际状态读取、Cookie 与登录环境、本地文件、浏览器自动化（`clients/`、`services/`、`executors/`、`local_api/`）。
+- 与 Cloud 的通信客户端（`clients/cloud/`）。
 - 平台适配（API、页面元素、操作步骤、执行状态识别）——当前 `adapters/` 为占位，未来平台 Playwright 适配在此引入。
 
 ## 本仓库不拥有
@@ -31,15 +31,18 @@
 
 | 需求是 | 去哪里 |
 |---|---|
-| 改 BitBrowser 实际执行 | `src/wt_media_agent/runtimes/bitbrowser.py` |
-| 改浏览器自动化底层（CDP） | `src/wt_media_agent/runtimes/cdp_client.py` |
+| 改进程装配与启动顺序 | `src/wt_media_agent/bootstrap/app.py`（唯一装配入口） |
+| 改配置键、数据目录、日志 | `src/wt_media_agent/runtime/`（`config.py` 是全 `src/` 唯一读环境变量的模块） |
+| 改 BitBrowser 实际执行 | `src/wt_media_agent/clients/bitbrowser/` |
+| 改浏览器自动化底层（CDP） | `src/wt_media_agent/services/browser/cdp.py` |
+| 改 Cookie 提取 / 平台身份 | `src/wt_media_agent/services/browser/cookies.py`、`clients/{bilibili,baijiahao}/identity.py`、`clients/platform_identity.py` |
 | 改平台 Playwright 适配 | `src/wt_media_agent/adapters/`（注意当前为占位） |
-| 改任务执行、心跳、恢复 | `src/wt_media_agent/runner.py`、`storage/checkpoint_store.py` |
-| 改本地代理写入/检测 | `src/wt_media_agent/executors/proxy*.py`、`proxy_check.py` |
+| 改任务执行、心跳、恢复 | `src/wt_media_agent/runner/runner.py`、`storage/checkpoint_store.py` |
+| 改本地代理写入/检测 | `src/wt_media_agent/services/net/proxy.py`、`executors/proxy*.py` |
 | 改 Cookie / 登录环境操作 | `src/wt_media_agent/executors/cookie.py`、`account_check.py` |
-| 改本地 FFmpeg 合成执行 | `src/wt_media_agent/runtimes/`（本地运行时） |
-| 改与 Cloud 的回传协议 | `cloud_agent_client.py`、`cloud_agent_contract.py`，契约变更先经 `../wt-media-workspace` 协调 |
-| 改本地控制 API | `src/wt_media_agent/local_api/` |
+| 改与 Cloud 的回传协议 | `src/wt_media_agent/clients/cloud/`，契约变更先经 `../wt-media-workspace` 协调 |
+| 改本地控制 API | `src/wt_media_agent/local_api/`（`server.py:main` 是冻结符号） |
+| 改本地 FFmpeg 合成执行 | **尚无实现**：`runtime/environment.py` 只探测 ffmpeg 是否存在 |
 
 ## 禁止
 

@@ -44,9 +44,10 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 | `clients/platform_identity.py` | 从 Cookie 直接读身份的通用平台（抖音等） | Local | 改通用身份读取 |
 | `clients/bilibili/identity.py` | B 站身份（Cookie + 页面导航补全） | Local | 改 B 站身份 |
 | `clients/baijiahao/identity.py` | 百家号身份（公开 logininfo 接口） | Local | 改百家号身份 |
+| `clients/platform_urls.py` | 登录校验目的地 URL 表（`LOGIN_URLS` / `login_url()`）。**唯一**允许出现平台 `https://` 字面量的地方，`executors/` 不得自带 | Local | 改平台登录地址 |
 | `cloud_agent_client.py`、`cloud_agent_contract.py` | **废弃导入路径**：转发到 `clients/cloud/` 的 re-export shim，仅为冻结的 `tests/test_runner_session.py` 保留 | 共用 | 不要在此处改逻辑 |
 
-平台 URL 与端点常量随各自的 `clients/` 模块走。`local_api/` 目前确无 `http://`/`https://` 字面量；`executors/account_check.py` 尚余 4 处（`:30-32` 三个平台首页、`:81` 内部探针）未迁出，读该文件时按现状理解。
+平台 URL 与端点常量随各自的 `clients/` 模块走：平台登录地址在 `clients/platform_urls.py`，代理探针地址在 `clients/bitbrowser/client.py` 的 `PROXY_PROBE_URL`。`executors/` 与 `local_api/` 下的 `http://`/`https://` 字面量**已清零**，并由 `tests/test_dependency_boundaries.py` 的 R9 常驻守护——在该处写 URL 会直接测试失败，不必靠人工记忆。
 
 ## 四、服务能力（`src/wt_media_agent/services/`，共用）
 

@@ -13,13 +13,15 @@ Agent 执行任务，但不拥有正式业务事实：不连 Cloud MySQL，不�
 ## Structure
 
 - `src/wt_media_agent`: 可安装 Python 包。
-- 入口：`local_main.py`（Local 进程）、`cloud_main.py`（Cloud 进程）、`sidecar_main.py`（Desktop 拉起的 Sidecar 模式）、`app.py`（应用装配）、`runner.py`（任务执行 Runner）。
-- `core`: 共享运行时原语，当前含 `profile_guard.py`。
+- 入口：`local_main.py`（Local 进程）、`cloud_main.py`（Cloud 进程）、`sidecar_main.py`（Desktop 拉起的 Sidecar 模式，**冻结路径**）、`local_api/server.py:main`（健康脚本与 m2b/verify 脚本调用的冻结符号）。四者都是薄壳。
+- `bootstrap`: 唯一的生产装配入口（`app.py` 的有序装配序列）与三个模式面（`local.py`/`cloud.py`/`sidecar.py`），无注册表、无容器。
+- `runtime`: 横切基础——`config.py`（**全 `src/` 唯一读环境变量的模块**）、`paths.py`（落盘位置唯一事实源）、`logging.py`、`environment.py`、`constants.py`、`version.py`。
+- `clients`: 最底层业务层——`bitbrowser/`（本地接口 + 唯一构造点 + 超时 + 错误类型）、`cloud/`（回传、领取、心跳与契约校验）、`bilibili/`、`baijiahao/`、`platform_identity.py`；`cloud_agent_client.py`/`cloud_agent_contract.py` 是**仅为冻结测试保留的废弃导入 shim**。
+- `services`: 建在 `clients/` 之上的能力——`browser/cdp.py`、`browser/cookies.py`、`net/proxy.py`、`profile_guard.py`。
 - `local_api`: 环回控制 API（`server.py`）与本地状态（`state.py`），由 Desktop Rust 层代理。
-- `storage`: SQLite 检查点存储（`checkpoint_store.py`）与本地存储迁移（`migration.py`）。
-- `runtimes`: 执行运行时适配：`bitbrowser.py`（BitBrowser 本地接口）、`cdp_client.py`（浏览器 CDP）、`environment.py`（运行环境检测）。
-- `executors`: 任务类型编排：`profile.py`、`account_check.py`、`cookie.py`、`proxy.py`、`proxy_mutation.py`、`noop.py`。
-- `cloud_agent_client.py` / `cloud_agent_contract.py`: 与 Cloud 的通信客户端与契约类型。
+- `storage`: SQLite 检查点存储（`checkpoint_store.py`）、连接策略（`sqlite.py`）与本地存储迁移（`migration.py`，含冻结符号）。
+- `runner`: 任务执行 Runner（`runner.py`）、配置（`config.py`）与任务类型注册表（`registry.py`）。
+- `executors`: 任务类型编排：`protocol.py`（`Executor`/`ExecutorFactory`，不得 import `runner/`）、`profile.py`、`account_check.py`、`cookie.py`、`proxy.py`、`proxy_mutation.py`、`noop.py`。
 - `modes`: 模式选择占位，尚无实现。
 - `adapters`: 平台适配占位，尚无实现。
 - `generated`: 仅存放生成的契约类型。

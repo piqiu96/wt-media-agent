@@ -10,20 +10,25 @@ Local Agent and Cloud Agent runtime skeleton for the modular social media operat
 
 ## Bootstrap
 
-This repository is an installable Python package under `src/wt_media_agent`. The BitBrowser adapter uses the Python standard library and calls the configured local API only when a scan is requested.
+This repository is an installable Python package under `src/wt_media_agent`. All four process entrypoints are thin shells over a single ordered assembly sequence in `bootstrap/app.py`. The BitBrowser adapter uses the Python standard library and calls the configured local API only when a scan is requested.
 
-BitBrowser configuration:
+BitBrowser settings come from `config/agent.toml`; each key can be overridden by environment variables:
 
 - `WT_MEDIA_BITBROWSER_API_URL`: local service base URL, default `http://127.0.0.1:54345`.
 - `WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS`: request timeout, default `5`.
 
 ## Key Directories
 
-- `src/wt_media_agent/core`: shared runtime primitives.
-- `src/wt_media_agent/local_api`: loopback control API placeholder.
-- `src/wt_media_agent/runtimes`: runtime adapter placeholders.
-- `src/wt_media_agent/executors`: executor registry placeholder.
+- `src/wt_media_agent/bootstrap`: the only production assembly path, plus one module per run mode.
+- `src/wt_media_agent/runtime`: config, paths, logging, environment detection, constants, version.
+- `src/wt_media_agent/clients`: outbound clients (`bitbrowser/`, `cloud/`, platform identity) — the lowest business layer.
+- `src/wt_media_agent/services`: capabilities built on `clients/` (browser, net, profile guard).
+- `src/wt_media_agent/executors`: per-task-type orchestration, wired in through `runner/registry.py`.
+- `src/wt_media_agent/local_api`: loopback control API (proxied by the Desktop Rust layer).
+- `src/wt_media_agent/storage`: checkpoint storage and local schema migration.
 - `contracts`: Agent-owned local contracts.
+
+`DIRECTORY_MAP.md` is the full navigation map, including frozen module paths and symbols that must not move.
 
 ## M0 Verification
 
