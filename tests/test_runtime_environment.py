@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from wt_media_agent.runtimes.bitbrowser import (
+from wt_media_agent.clients.bitbrowser import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
     BitProfile,

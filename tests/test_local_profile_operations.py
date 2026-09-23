@@ -49,7 +49,7 @@ class ProfileOperationClient:
 
 class LenientOpenClient(ProfileOperationClient):
     def open_profile(self, profile_id: str) -> None:
-        from wt_media_agent.runtimes.bitbrowser import BitBrowserResponseError
+        from wt_media_agent.clients.bitbrowser import BitBrowserResponseError
 
         raise BitBrowserResponseError("BitBrowser request failed: 浏览器正在打开中")
 

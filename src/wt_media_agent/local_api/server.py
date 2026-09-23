@@ -17,7 +17,7 @@ from urllib import request as urlrequest
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.runtimes import cdp_client
-from wt_media_agent.runtimes.bitbrowser import (
+from wt_media_agent.clients.bitbrowser import (
     BitBrowserClient,
     BitBrowserIdentityError,
     BitBrowserResponseError,

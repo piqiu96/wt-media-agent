@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Protocol
 
 from wt_media_agent import __version__
-from wt_media_agent.runtimes.bitbrowser import (
+from wt_media_agent.clients.bitbrowser import (
     BitBrowserError,
     BitBrowserIdentityError,
     ProfileSnapshot,

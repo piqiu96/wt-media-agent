@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from wt_media_agent.local_api.server import LocalApiServer
-from wt_media_agent.runtimes.bitbrowser import BitProfile, ProfileSnapshot
+from wt_media_agent.clients.bitbrowser import BitProfile, ProfileSnapshot
 
 
 class MutationClient:

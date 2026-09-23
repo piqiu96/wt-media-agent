@@ -9,17 +9,10 @@ from typing import Callable
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-
-class BitBrowserError(RuntimeError):
-    """Base error for BitBrowser adapter failures."""
-
-
-class BitBrowserResponseError(BitBrowserError):
-    """The Local API was unavailable or returned an invalid response."""
-
-
-class BitBrowserIdentityError(BitBrowserError):
-    """Profile ownership could not be verified safely."""
+from wt_media_agent.clients.bitbrowser.errors import (
+    BitBrowserIdentityError,
+    BitBrowserResponseError,
+)
 
 
 @dataclass(frozen=True)

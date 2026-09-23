@@ -7,7 +7,7 @@ import os
 
 from wt_media_agent.cloud_agent_client import CloudAgentClient
 from wt_media_agent.runtime.constants import DEFAULT_BITBROWSER_API_URL, DEFAULT_BITBROWSER_TIMEOUT
-from wt_media_agent.runtimes.bitbrowser import BitBrowserClient
+from wt_media_agent.clients.bitbrowser import BitBrowserClient
 
 
 class ProfileMutationExecutor:

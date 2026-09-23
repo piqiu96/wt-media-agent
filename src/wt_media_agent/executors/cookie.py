@@ -11,7 +11,7 @@ from wt_media_agent.runtime.constants import (
     DEFAULT_BITBROWSER_API_URL,
     DEFAULT_BITBROWSER_TIMEOUT,
 )
-from wt_media_agent.runtimes.bitbrowser import BitBrowserClient
+from wt_media_agent.clients.bitbrowser import BitBrowserClient
 
 
 class CookieReadExecutor:

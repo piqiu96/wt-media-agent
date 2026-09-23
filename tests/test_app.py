@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from wt_media_agent.app import create_app
 from wt_media_agent.local_api.server import LocalApiServer
-from wt_media_agent.runtimes.bitbrowser import BitBrowserIdentityError
+from wt_media_agent.clients.bitbrowser import BitBrowserIdentityError
 
 
 class IdentityErrorClient:
