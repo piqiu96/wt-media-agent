@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-import os
 
 from wt_media_agent.clients.cloud import CloudAgentClient
-from wt_media_agent.runtime.constants import DEFAULT_BITBROWSER_API_URL, DEFAULT_BITBROWSER_TIMEOUT
-from wt_media_agent.clients.bitbrowser import BitBrowserClient
+from wt_media_agent.clients.bitbrowser import bitbrowser_from_config
+from wt_media_agent.runtime.config import get_config
 
 
 CHECK_RESULTS = {
@@ -36,9 +35,7 @@ class AccountCheckExecutor:
     def __init__(self, client: CloudAgentClient, agent_id: str) -> None:
         self.client = client
         self.agent_id = agent_id
-        bb_url = os.getenv("WT_MEDIA_BITBROWSER_API_URL", DEFAULT_BITBROWSER_API_URL)
-        bb_timeout = float(os.getenv("WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS", str(DEFAULT_BITBROWSER_TIMEOUT)))
-        self.bitbrowser = BitBrowserClient(bb_url, timeout=bb_timeout)
+        self.bitbrowser = bitbrowser_from_config(get_config())
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = str(task.get("task_id", ""))

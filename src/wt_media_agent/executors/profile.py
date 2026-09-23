@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import os
 
 from wt_media_agent.clients.cloud import CloudAgentClient
-from wt_media_agent.runtime.constants import DEFAULT_BITBROWSER_API_URL, DEFAULT_BITBROWSER_TIMEOUT
-from wt_media_agent.clients.bitbrowser import BitBrowserClient
+from wt_media_agent.clients.bitbrowser import bitbrowser_from_config
+from wt_media_agent.runtime.config import get_config
 
 
 class ProfileMutationExecutor:
@@ -15,10 +14,7 @@ class ProfileMutationExecutor:
         self.client = client
         self.agent_id = agent_id
         self.operation = operation
-        self.bitbrowser = BitBrowserClient(
-            os.getenv("WT_MEDIA_BITBROWSER_API_URL", DEFAULT_BITBROWSER_API_URL),
-            timeout=float(os.getenv("WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS", str(DEFAULT_BITBROWSER_TIMEOUT))),
-        )
+        self.bitbrowser = bitbrowser_from_config(get_config())
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = str(task.get("task_id", ""))

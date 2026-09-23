@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import queue
 import secrets
 import time
@@ -22,10 +21,10 @@ from wt_media_agent.local_api.reporting import (
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.clients.bitbrowser import (
-    BitBrowserClient,
     BitBrowserIdentityError,
     BitBrowserResponseError,
     ProfileSnapshot,
+    bitbrowser_from_config,
 )
 from wt_media_agent.clients import platform_identity
 from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
@@ -67,10 +66,7 @@ class LocalApiServer:
         self.store = checkpoint_store
         self.auth_token = auth_token or ""
         self._event_queue: queue.Queue[dict[str, object]] = queue.Queue()
-        self.bitbrowser = bitbrowser or BitBrowserClient(
-            os.getenv("WT_MEDIA_BITBROWSER_API_URL", "http://127.0.0.1:54345"),
-            timeout=float(os.getenv("WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS", "5")),
-        )
+        self.bitbrowser = bitbrowser or bitbrowser_from_config(get_config())
 
     def _check_auth(self, headers: dict[str, str]) -> bool:
         if not self.auth_token:

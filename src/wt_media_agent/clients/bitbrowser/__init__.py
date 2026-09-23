@@ -16,6 +16,7 @@ from wt_media_agent.clients.bitbrowser.errors import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
 )
+from wt_media_agent.clients.bitbrowser.factory import bitbrowser_from_config
 
 __all__ = [
     "BitBrowserClient",
@@ -25,4 +26,5 @@ __all__ = [
     "BitProfile",
     "ProfileSnapshot",
     "Transport",
+    "bitbrowser_from_config",
 ]
