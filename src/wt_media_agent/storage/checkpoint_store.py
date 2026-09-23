@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from wt_media_agent.storage.sqlite import connect
+from wt_media_agent.utils.time import utc_now_iso
 
 
 @dataclass
@@ -52,7 +52,7 @@ class CheckpointStore:
     # ---- Task Checkpoints ----
 
     def save_checkpoint(self, cp: TaskCheckpoint) -> None:
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        now = utc_now_iso()
         with self._connect() as db:
             db.execute(
                 """INSERT OR REPLACE INTO task_checkpoints
@@ -89,7 +89,7 @@ class CheckpointStore:
     # ---- Offline Results Queue ----
 
     def enqueue_result(self, result: OfflineResult) -> int:
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        now = utc_now_iso()
         with self._connect() as db:
             cursor = db.execute(
                 """INSERT INTO offline_results

@@ -16,6 +16,7 @@ from wt_media_agent.storage.checkpoint_store import (
     OfflineResult,
     TaskCheckpoint,
 )
+from wt_media_agent.utils.time import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class TaskRunner:
     # ---- Checkpoint helpers ----
 
     def _save_claimed(self, task_id: str, task_type: str) -> None:
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        now = utc_now_iso()
         self.store.save_checkpoint(TaskCheckpoint(
             task_id=task_id,
             task_type=task_type,
@@ -146,7 +147,7 @@ class TaskRunner:
         ))
 
     def _save_running(self, task_id: str, task_type: str, progress: int, message: str) -> None:
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        now = utc_now_iso()
         cp = self.store.get_checkpoint(task_id) or TaskCheckpoint(
             task_id=task_id, task_type=task_type, agent_id=self.config.agent_id,
             checkpoint_status="", created_at=now, updated_at=now,
@@ -158,7 +159,7 @@ class TaskRunner:
         self.store.save_checkpoint(cp)
 
     def _save_completed(self, task_id: str, task_type: str) -> None:
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        now = utc_now_iso()
         cp = self.store.get_checkpoint(task_id) or TaskCheckpoint(
             task_id=task_id, task_type=task_type, agent_id=self.config.agent_id,
             checkpoint_status="", created_at=now, updated_at=now,
@@ -171,7 +172,7 @@ class TaskRunner:
     def _save_failed(self, task_id: str, task_type: str, error: str) -> None:
         cp = self.store.get_checkpoint(task_id) or TaskCheckpoint(
             task_id=task_id, task_type=task_type, agent_id=self.config.agent_id,
-            checkpoint_status="", updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            checkpoint_status="", updated_at=utc_now_iso(),
         )
         cp.checkpoint_status = "failed"
         cp.error_code = "executor_error"
