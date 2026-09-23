@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from wt_media_agent.core.profile_guard import (
+from wt_media_agent.services.profile_guard import (
     ProfileBusyError,
     ProfileLockManager,
     SensitiveTaskGuard,
