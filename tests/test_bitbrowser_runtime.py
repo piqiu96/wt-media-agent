@@ -16,6 +16,7 @@ from wt_media_agent.clients.bitbrowser import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
 )
+from wt_media_agent.runtime.config import load_config
 
 
 class FakeTransport:
@@ -192,9 +193,16 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
     def test_create_profile_timeout_can_be_overridden(self) -> None:
         transport = FakeTransport([{"success": True, "data": {"id": "profile-created"}}])
+        # The variable is now read by the configuration layer, not the client;
+        # this still checks the whole path from operator input to request.
+        config = load_config(env={"WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS": "45"})
 
-        with patch.dict(os.environ, {"WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS": "45"}):
-            BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2).create_profile({})
+        BitBrowserClient(
+            "http://127.0.0.1:54345",
+            transport=transport,
+            timeout=2,
+            create_timeout_override=config.bitbrowser_create_timeout_seconds,
+        ).create_profile({})
 
         self.assertEqual(transport.calls[0][2], 45.0)
 
@@ -216,9 +224,14 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
     def test_profile_mutation_timeout_can_be_overridden(self) -> None:
         transport = FakeTransport([{"success": True, "data": {}}])
+        config = load_config(env={"WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS": "60"})
 
-        with patch.dict(os.environ, {"WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS": "60"}):
-            BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2).open_profile("profile-1")
+        BitBrowserClient(
+            "http://127.0.0.1:54345",
+            transport=transport,
+            timeout=2,
+            mutation_timeout_override=config.bitbrowser_mutation_timeout_seconds,
+        ).open_profile("profile-1")
 
         self.assertEqual(transport.calls[0][2], 60.0)
 

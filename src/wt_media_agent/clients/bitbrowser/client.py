@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
-import os
 from typing import Callable
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -12,6 +11,10 @@ from urllib import request as urlrequest
 from wt_media_agent.clients.bitbrowser.errors import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
+)
+from wt_media_agent.clients.bitbrowser.timeouts import (
+    DEFAULT_OPERATION_TIMEOUT,
+    effective_timeout,
 )
 
 
@@ -55,8 +58,8 @@ class BitBrowserClient:
     """Reads every Profile through the documented zero-based list API."""
 
     PAGE_SIZE = 100
-    DEFAULT_CREATE_TIMEOUT = 30.0
-    DEFAULT_MUTATION_TIMEOUT = 30.0
+    DEFAULT_CREATE_TIMEOUT = DEFAULT_OPERATION_TIMEOUT
+    DEFAULT_MUTATION_TIMEOUT = DEFAULT_OPERATION_TIMEOUT
 
     def __init__(
         self,
@@ -64,6 +67,8 @@ class BitBrowserClient:
         *,
         transport: Transport | None = None,
         timeout: float = 5.0,
+        create_timeout_override: float | None = None,
+        mutation_timeout_override: float | None = None,
     ) -> None:
         normalized = base_url.strip().rstrip("/")
         if not normalized:
@@ -73,6 +78,21 @@ class BitBrowserClient:
         self._base_url = normalized
         self._transport = transport or _post_json
         self._timeout = timeout
+        # Passed in rather than read from the environment: this module is a
+        # client, and `runtime/config.py` is the only place that reads env
+        # (CHG-056 T-03).
+        self._create_timeout_override = create_timeout_override
+        self._mutation_timeout_override = mutation_timeout_override
+
+    def _create_timeout(self) -> float:
+        return effective_timeout(
+            self._timeout, self._create_timeout_override, self.DEFAULT_CREATE_TIMEOUT
+        )
+
+    def _mutation_timeout(self) -> float:
+        return effective_timeout(
+            self._timeout, self._mutation_timeout_override, self.DEFAULT_MUTATION_TIMEOUT
+        )
 
     def _post(self, path: str, payload: dict[str, object]) -> dict[str, object]:
         return self._transport(
@@ -100,7 +120,7 @@ class BitBrowserClient:
     def create_profile(self, config: dict[str, object]) -> str:
         """Create a new browser profile. Returns the new profile ID."""
         payload = _create_profile_payload(config)
-        result = self._check_success(self._post_with_timeout("/browser/update", payload, _create_timeout(self._timeout)))
+        result = self._check_success(self._post_with_timeout("/browser/update", payload, self._create_timeout()))
         profile_id = result.get("id") or result.get("browserId") or result.get("profileId") or ""
         if not profile_id:
             raise BitBrowserResponseError("BitBrowser create profile returned no id")
@@ -109,7 +129,7 @@ class BitBrowserClient:
     def open_profile(self, profile_id: str) -> None:
         """Open a browser profile in the BitBrowser application."""
         try:
-            self._check_success(self._post_with_timeout("/browser/open", {"id": profile_id}, _mutation_timeout(self._timeout)))
+            self._check_success(self._post_with_timeout("/browser/open", {"id": profile_id}, self._mutation_timeout()))
         except BitBrowserResponseError as error:
             message = str(error)
             if "正在打开" in message or "已打开" in message:
@@ -123,7 +143,7 @@ class BitBrowserClient:
         real BitBrowser errors so callers can surface them.
         """
         try:
-            response = self._post_with_timeout("/browser/open", {"id": profile_id}, _mutation_timeout(self._timeout))
+            response = self._post_with_timeout("/browser/open", {"id": profile_id}, self._mutation_timeout())
             data = self._check_success(response)
         except BitBrowserResponseError as error:
             if "正在打开" in str(error) or "已打开" in str(error):
@@ -134,7 +154,7 @@ class BitBrowserClient:
     def close_profile(self, profile_id: str) -> None:
         """Close a browser profile."""
         try:
-            self._check_success(self._post_with_timeout("/browser/close", {"id": profile_id}, _mutation_timeout(self._timeout)))
+            self._check_success(self._post_with_timeout("/browser/close", {"id": profile_id}, self._mutation_timeout()))
         except BitBrowserResponseError:
             pass  # Close may fail if already closed
 
@@ -176,7 +196,7 @@ class BitBrowserClient:
             payload.setdefault("browserFingerPrint", fingerprint)
             if "proxyMethod" not in payload:
                 payload["proxyMethod"] = proxy_method if proxy_method is not None else 2
-        self._check_success(self._post_with_timeout("/browser/update", payload, _mutation_timeout(self._timeout)))
+        self._check_success(self._post_with_timeout("/browser/update", payload, self._mutation_timeout()))
 
     def delete_profile(self, profile_id: str) -> None:
         """Delete a browser profile."""
@@ -305,27 +325,6 @@ def _create_profile_payload(config: dict[str, object]) -> dict[str, object]:
         payload.setdefault("proxyMethod", 2)
         payload.setdefault("proxyType", "noproxy")
     return payload
-
-
-def _create_timeout(default_timeout: float) -> float:
-    raw = os.getenv("WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS", "")
-    return _timeout_from_env(raw, BitBrowserClient.DEFAULT_CREATE_TIMEOUT, default_timeout)
-
-
-def _mutation_timeout(default_timeout: float) -> float:
-    raw = os.getenv("WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS", "")
-    return _timeout_from_env(raw, BitBrowserClient.DEFAULT_MUTATION_TIMEOUT, default_timeout)
-
-
-def _timeout_from_env(raw: str, fallback: float, default_timeout: float) -> float:
-    if raw:
-        try:
-            timeout = float(raw)
-        except ValueError:
-            timeout = fallback
-    else:
-        timeout = fallback
-    return max(default_timeout, timeout)
 
 
 def _post_json(url: str, payload: dict[str, object], timeout: float) -> dict[str, object]:
