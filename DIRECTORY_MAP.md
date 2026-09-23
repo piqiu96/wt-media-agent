@@ -10,16 +10,21 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 
 | 路径 | 职责 | 适用 | 何时进入 |
 |---|---|---|---|
-| `src/wt_media_agent/local_main.py` | Local Agent 进程入口 | Local | 改本地启动方式 |
-| `src/wt_media_agent/cloud_main.py` | Cloud Agent 进程入口 | Cloud | 改云端启动方式 |
-| `src/wt_media_agent/sidecar_main.py` | Sidecar 模式入口（由 Desktop 拉起）。**冻结路径**：Desktop 打包直接以本文件为 PyInstaller 入口，不得搬移或改名 | Local | 改 Sidecar 启动行为 |
-| `src/wt_media_agent/app.py` | 最小应用装配壳。**当前是占位**：`create_app(mode)` 只打印脚手架就绪，尚未真正装配 | 共用 | 改模块组装 |
+| `src/wt_media_agent/bootstrap/app.py` | **唯一的生产装配入口**（ADR-0016 §2）。九步显式有序装配：配置 → RuntimePaths → 日志 → BitBrowserClient（`src/` 内唯一构造点）→ CloudAgentClient → 迁移+CheckpointStore → executor 工厂 → TaskRunner → LocalAgentState。无注册表、无容器 | 共用 | 改模块组装、改组件顺序 |
+| `src/wt_media_agent/bootstrap/local.py` | Local 模式面：起本机 API | Local | 改本地启动行为 |
+| `src/wt_media_agent/bootstrap/cloud.py` | Cloud 模式面：默认只打印环境事实 JSON 并返回 0；`WT_MEDIA_AGENT_RUN_RUNNER` 为真才 `runner.start()` | Cloud | 改云端启动行为 |
+| `src/wt_media_agent/bootstrap/sidecar.py` | Sidecar 模式面：消费 bootstrap 装配结果并起 API；开关打开时 runner 走守护线程 | Local | 改 Sidecar 启动行为 |
+| `src/wt_media_agent/local_main.py` | Local 进程入口（`wt-media-local-agent`），3 行委托 `bootstrap.local` | Local | 一般不必进 |
+| `src/wt_media_agent/cloud_main.py` | Cloud 进程入口（`wt-media-cloud-agent`），3 行委托 `bootstrap.cloud` | Cloud | 一般不必进 |
+| `src/wt_media_agent/sidecar_main.py` | Sidecar 入口（由 Desktop 拉起），委托 `bootstrap.sidecar`，自身不接任何命令行参数。**冻结路径**：Desktop 打包直接以本文件为 PyInstaller 入口，不得搬移或改名 | Local | 改 Sidecar 启动行为 |
+
+`local_api/server.py:main` 是第四个进程入口（`wt-media-local-health`、`scripts/verify-health.sh`、workspace 的 m2b/verify 脚本都调它）：保留原位与符号不动，内部同样委托 `bootstrap` 装配。四个入口都是薄壳，装配实现只有 `bootstrap/app.py` 一处。
 
 ## 二、运行时基础（`src/wt_media_agent/runtime/`，共用）
 
 | 路径 | 职责 | 何时进入 |
 |---|---|---|
-| `runtime/config.py` | 配置加载：强类型 `AgentConfig` + 声明式键表，优先级 env > 文件 > 默认值。**全 `src/` 只允许本模块读环境变量** | 改配置键、改优先级 |
+| `runtime/config.py` | 配置加载：强类型 `AgentConfig` + 声明式键表，优先级 env > 文件 > 默认值。**全 `src/` 只允许本模块读环境变量**。凭据键仅环境变量可给，文件里出现即按名忽略 | 改配置键、改优先级 |
 | `runtime/paths.py` | 数据/日志/版本目录解析的唯一事实源（override / dev / installed 三态） | 改落盘位置 |
 | `runtime/logging.py` | 日志初始化（级别、轮转文件、目录创建失败降级到 stderr） | 改日志 |
 | `runtime/environment.py` | 运行环境检测（frozen / production / dev 判定） | 改环境校验 |
@@ -34,7 +39,7 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 | `clients/bitbrowser/factory.py` | `BitBrowserClient` 的唯一构造点（`bitbrowser_from_config`） | Local | 改客户端装配 |
 | `clients/bitbrowser/timeouts.py` | 操作级超时规则（override 只能抬高、不能压低） | Local | 改超时策略 |
 | `clients/bitbrowser/errors.py` | 适配器异常类型 | Local | 改错误语义 |
-| `clients/cloud/client.py` | 与 Cloud 的通信客户端（回传、领取、心跳） | 共用 | 改回传、领取、心跳协议 |
+| `clients/cloud/client.py` | 与 Cloud 的通信客户端（回传、领取、心跳），请求超时来自 `cloud.timeout_seconds` | 共用 | 改回传、领取、心跳协议 |
 | `clients/cloud/contract.py` | Cloud 响应契约兼容性校验 | 共用 | 改契约映射 |
 | `clients/platform_identity.py` | 从 Cookie 直接读身份的通用平台（抖音等） | Local | 改通用身份读取 |
 | `clients/bilibili/identity.py` | B 站身份（Cookie + 页面导航补全） | Local | 改 B 站身份 |
