@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from wt_media_agent.storage.sqlite import connect
+
 
 @dataclass
 class TaskCheckpoint:
@@ -46,10 +48,7 @@ class CheckpointStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        return connect(self._db_path)
 
     # ---- Task Checkpoints ----
 
