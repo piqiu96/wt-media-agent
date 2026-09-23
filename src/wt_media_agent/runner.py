@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from wt_media_agent.cloud_agent_client import CloudAgentClient, SessionInvalidError
-from wt_media_agent.constants import (
+from wt_media_agent.runtime.constants import (
     DEFAULT_LEASE_SECONDS,
     MAX_RETRIES,
     TASK_TYPE_ACCOUNT_CHECK,

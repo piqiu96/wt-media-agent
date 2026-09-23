@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from wt_media_agent.constants import (
+from wt_media_agent.runtime.constants import (
     DEFAULT_BITBROWSER_API_URL,
     DEFAULT_BITBROWSER_TIMEOUT,
     DEFAULT_CLOUD_BASE_URL,

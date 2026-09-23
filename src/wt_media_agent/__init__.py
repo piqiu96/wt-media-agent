@@ -1,3 +1,5 @@
 """WT Media Agent package."""
 
-__version__ = "0.2.2"
+from wt_media_agent.runtime.version import __version__
+
+__all__ = ["__version__"]
