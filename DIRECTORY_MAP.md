@@ -72,7 +72,7 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 |---|---|
 | `contracts/` | 本地契约：`local-agent-api/`、`local-error-codes/`、`local-event-schemas/`、`local-status-enums/` |
 | `tests/` | 单元测试（bitbrowser、cookie、proxy、profile、sidecar、runner 会话等，按文件名对应模块） |
-| `configs/` | 配置说明 |
+| `config/` | 运行时唯一读取的配置目录（`agent.toml` + README）；`config_online/` 为发布整目录替换源 |
 | `scripts/` | 构建与运行脚本 |
 
 ## 九、禁止扫描区

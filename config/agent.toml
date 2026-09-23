@@ -1,0 +1,50 @@
+# WT Media Agent -- runtime configuration.
+#
+# Precedence, per key: environment variable > this file > built-in default.
+#
+# This directory is the only configuration the runtime reads. `config_online/`
+# is the release replacement source: shipping replaces `config/` wholesale with
+# `config_online/`, and no runtime code reads `config_online/` or switches on it
+# (ADR-0016). A missing file is not an error -- every key falls back to its
+# built-in default, which is how a bundled sidecar starts before Desktop passes
+# anything in.
+#
+# Credentials do not belong here. Keys such as `runtime_token` are read from the
+# environment only; a sensitive key found in this file is ignored and reported
+# by name. The environment does not travel in the release artifact, this file
+# does.
+
+environment = "development"
+
+[cloud]
+base_url = "http://127.0.0.1:18080"
+timeout_seconds = 10.0
+
+[local_api]
+# A packaged sidecar is loopback-only: Desktop overrides host and port through
+# the environment, and a customer environment must never widen the binding.
+host = "127.0.0.1"
+port = 8765
+
+[bitbrowser]
+api_url = "http://127.0.0.1:54345"
+timeout_seconds = 5.0
+
+# `bitbrowser.create_timeout_seconds` and `bitbrowser.mutation_timeout_seconds`
+# are intentionally absent. Leaving them out means the BitBrowser client's own
+# DEFAULT_*_TIMEOUT applies; setting them can only raise a timeout, never lower
+# it below `timeout_seconds` above. Keeping them absent keeps that default in
+# one place instead of duplicating 30.0 here.
+
+[agent]
+# Empty means "decide from the deployment shape": a source checkout writes to
+# <repo>/.local/data, an installed agent to
+# ~/Library/Application Support/WTMedia/Agent. Set this only to pin a location,
+# which is what Desktop does when it spawns a sidecar.
+data_dir = ""
+
+[logging]
+level = "INFO"
+# Empty means "decide from the deployment shape": a source checkout logs to
+# stderr, an installed agent to <logs_dir>/agent.log.
+file = ""

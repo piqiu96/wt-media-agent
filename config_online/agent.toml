@@ -1,0 +1,48 @@
+# WT Media Agent -- release configuration.
+#
+# This file is the release replacement source for `config/agent.toml`. Shipping
+# copies this directory over `config/`; no runtime code reads this directory or
+# switches on it (ADR-0016). The two files must stay 1:1 in filenames and key
+# sets -- a test asserts that -- so that replacing one directory with the other
+# cannot silently drop a key the runtime expects.
+#
+# Precedence, per key: environment variable > this file > built-in default.
+#
+# Credentials do not belong here. Keys such as `runtime_token` are read from the
+# environment only; a sensitive key found in this file is ignored and reported
+# by name.
+
+environment = "production"
+
+[cloud]
+# Q-01 (CHG-20260923-056) is still open: whether the production deployment is a
+# local Cloud service on 127.0.0.1:18080 or a remote Cloud host. Until it is
+# decided this keeps the loopback value, which is the safe reading -- a loopback
+# address cannot send credentials off the machine. Resolve before release.
+base_url = "http://127.0.0.1:18080"
+timeout_seconds = 10.0
+
+[local_api]
+# A packaged sidecar is loopback-only: Desktop overrides host and port through
+# the environment, and a customer environment must never widen the binding.
+host = "127.0.0.1"
+port = 8765
+
+[bitbrowser]
+api_url = "http://127.0.0.1:54345"
+timeout_seconds = 5.0
+
+# See config/agent.toml: the two operation-specific timeouts are deliberately
+# absent so that the client's own DEFAULT_*_TIMEOUT stays the single source.
+
+[agent]
+# Empty resolves to ~/Library/Application Support/WTMedia/Agent because
+# `environment` above is "production". Desktop overrides it with
+# WT_MEDIA_AGENT_DATA_DIR when it spawns a sidecar.
+data_dir = ""
+
+[logging]
+level = "INFO"
+# Empty resolves to <logs_dir>/agent.log for the same reason: a bundled sidecar
+# has no terminal to log to.
+file = ""
