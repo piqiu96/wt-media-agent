@@ -271,6 +271,38 @@ class ConfigCacheTest(unittest.TestCase):
             reset_config_cache()
 
 
+class RunRunnerSwitchTest(unittest.TestCase):
+    """`agent.run_runner` decides whether this process starts claiming tasks.
+
+    A typo must not pick an answer, and the shell spellings a script actually
+    writes -- `false`, `0`, `off` -- must all mean off. Reading `"false"` as
+    truthy would start an Agent polling Cloud off the back of a variable that
+    says not to.
+    """
+
+    def resolve(self, value: str) -> bool:
+        with tempfile.TemporaryDirectory() as tmp:
+            return load(env={"WT_MEDIA_AGENT_RUN_RUNNER": value}, config_dir=Path(tmp)).run_runner
+
+    def test_the_switch_defaults_to_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(load(config_dir=Path(tmp)).run_runner)
+
+    def test_the_truthy_spellings_turn_it_on(self):
+        for value in ("1", "true", "TRUE", "yes", "on"):
+            with self.subTest(value=value):
+                self.assertTrue(self.resolve(value))
+
+    def test_the_falsy_spellings_leave_it_off(self):
+        for value in ("0", "false", "FALSE", "no", "off", ""):
+            with self.subTest(value=value):
+                self.assertFalse(self.resolve(value))
+
+    def test_an_unrecognised_spelling_is_an_error(self):
+        with self.assertRaises(ConfigError):
+            self.resolve("maybe")
+
+
 class ConfigMirrorTest(unittest.TestCase):
     """`config_online/` replaces `config/` wholesale, so they must line up."""
 

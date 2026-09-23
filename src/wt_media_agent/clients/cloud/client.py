@@ -31,9 +31,21 @@ class AgentIdentity:
     capabilities: tuple[str, ...] = ()
 
 
+#: What this client used to hard-code. Kept as the default so that a caller
+#: who does not configure a timeout keeps the previous behaviour.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
+
+
 class CloudAgentClient:
-    def __init__(self, base_url: str, transport: Optional[Transport] = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        transport: Optional[Transport] = None,
+        *,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
         self._transport = transport or self._http_transport
 
     def register(self, identity: AgentIdentity) -> Mapping[str, object]:
@@ -192,7 +204,7 @@ class CloudAgentClient:
             headers={"content-type": "application/json", **headers},
         )
         try:
-            with request.urlopen(req, timeout=10) as resp:
+            with request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except urlerror.HTTPError as exc:
             raw = exc.read().decode("utf-8")

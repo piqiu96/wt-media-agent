@@ -13,6 +13,7 @@ from typing import Optional, Protocol
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
+from wt_media_agent.bootstrap.app import build_components
 from wt_media_agent.local_api.reporting import (
     _build_account_check_items,
     _duration_ms,
@@ -24,7 +25,6 @@ from wt_media_agent.clients.bitbrowser import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
     ProfileSnapshot,
-    bitbrowser_from_config,
 )
 from wt_media_agent.clients import platform_identity
 from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
@@ -34,7 +34,6 @@ from wt_media_agent.services.net.proxy import (
     check_proxy_connectivity,
     parse_first_proxy_address,
 )
-from wt_media_agent.runtime.config import get_config
 from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
 from wt_media_agent.runtime.logging import configure_from
 
@@ -58,7 +57,8 @@ class LocalApiServer:
     def __init__(
         self,
         state: Optional[LocalAgentState] = None,
-        bitbrowser: ProfileScanner | None = None,
+        *,
+        bitbrowser: ProfileScanner,
         checkpoint_store: Optional[CheckpointStore] = None,
         auth_token: str = "",
     ) -> None:
@@ -66,7 +66,11 @@ class LocalApiServer:
         self.store = checkpoint_store
         self.auth_token = auth_token or ""
         self._event_queue: queue.Queue[dict[str, object]] = queue.Queue()
-        self.bitbrowser = bitbrowser or bitbrowser_from_config(get_config())
+        # Mandatory, and with no default: this class used to build a client
+        # from the environment when none was passed, which meant every route
+        # here could reach BitBrowser without anyone deciding it should. The
+        # client comes from `bootstrap` (ADR-0016 §2).
+        self.bitbrowser = bitbrowser
 
     def _check_auth(self, headers: dict[str, str]) -> bool:
         if not self.auth_token:
@@ -540,10 +544,18 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
 def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
+    *,
+    bitbrowser: ProfileScanner,
     checkpoint_store: Optional[CheckpointStore] = None,
+    state: Optional[LocalAgentState] = None,
     auth_token: str = "",
 ) -> None:
-    api = LocalApiServer(checkpoint_store=checkpoint_store, auth_token=auth_token)
+    api = LocalApiServer(
+        state,
+        bitbrowser=bitbrowser,
+        checkpoint_store=checkpoint_store,
+        auth_token=auth_token,
+    )
     httpd = ThreadingHTTPServer((host, port), make_handler(api))
     logger.info("wt-media-agent local API listening on %s:%s", host, port)
     print(f"wt-media-agent local API listening on {host}:{port}", flush=True)
@@ -556,13 +568,35 @@ def serve(
 
 
 def main(argv: list[str] | None = None) -> int:
-    configure_from(get_config())
+    """Frozen console-script entry (`wt-media-local-health`, verify-health.sh).
+
+    The module path and this symbol are load-bearing: `scripts/verify-health.sh`
+    and wt-media-workspace's acceptance scripts both invoke
+    `python -m wt_media_agent.local_api.server`. Assembly itself lives in
+    `bootstrap`, so this stays an entry point rather than a second init path.
+
+    `--host`/`--port` keep their historical defaults for the same reason. The
+    runtime token is read from configuration unless a caller passes one
+    explicitly; a sidecar never passes one on a command line (it would be
+    visible in `ps`).
+    """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8765, type=int)
+    parser.add_argument("--host", default="")
+    parser.add_argument("--port", default=0, type=int)
     parser.add_argument("--auth-token", default="")
     args = parser.parse_args(argv)
-    serve(args.host, args.port, auth_token=args.auth_token)
+
+    components = build_components()
+    config = components.config
+    configure_from(config)
+    serve(
+        args.host or config.local_api_host,
+        args.port or config.local_api_port,
+        bitbrowser=components.bitbrowser,
+        checkpoint_store=components.store,
+        state=components.state,
+        auth_token=args.auth_token or config.runtime_token,
+    )
     return 0
 
 

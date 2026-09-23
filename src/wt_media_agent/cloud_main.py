@@ -1,12 +1,12 @@
-"""Cloud Agent entrypoint."""
+"""Cloud Agent entrypoint (`wt-media-cloud-agent`)."""
 
 from __future__ import annotations
 
-from wt_media_agent.app import create_app
+from wt_media_agent.bootstrap import cloud
 
 
 def main() -> int:
-    return create_app("cloud").run()
+    return cloud.run()
 
 
 if __name__ == "__main__":

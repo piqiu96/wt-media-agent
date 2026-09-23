@@ -88,6 +88,23 @@ def _as_float(raw: object) -> float:
         raise ConfigError(f"expected a number, got {raw!r}") from exc
 
 
+def _as_bool(raw: object) -> bool:
+    """Accept the spellings a shell script or a TOML file actually produces.
+
+    An unrecognised spelling raises rather than defaulting: "run the runner"
+    is the switch that decides whether this process starts polling Cloud, and
+    a typo must not silently pick either answer.
+    """
+    if isinstance(raw, bool):
+        return raw
+    text = _as_str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"", "0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"expected a boolean, got {raw!r}")
+
+
 def _as_log_level(raw: object) -> str:
     """Return a level name the `logging` module will accept.
 
@@ -142,7 +159,13 @@ _SPEC: tuple[Field, ...] = (
     Field("bitbrowser_timeout_seconds", "bitbrowser.timeout_seconds", ("WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS",), DEFAULT_BITBROWSER_TIMEOUT, _as_float),
     Field("bitbrowser_create_timeout_seconds", "bitbrowser.create_timeout_seconds", ("WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS",), None, _as_optional_float),
     Field("bitbrowser_mutation_timeout_seconds", "bitbrowser.mutation_timeout_seconds", ("WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS",), None, _as_optional_float),
+    Field("agent_id", "agent.id", ("WT_MEDIA_AGENT_ID",), "local-agent-dev", _as_str),
     Field("data_dir", "agent.data_dir", ("WT_MEDIA_AGENT_DATA_DIR",), "", _as_str),
+    # The switch that decides whether this process polls Cloud for tasks. Off by
+    # default: an Agent started by hand, or by a health check, must not begin
+    # claiming tasks just because it was started. Desktop and the acceptance
+    # scripts turn it on explicitly.
+    Field("run_runner", "agent.run_runner", ("WT_MEDIA_AGENT_RUN_RUNNER",), False, _as_bool),
     # WT_MEDIA_AGENT_LOG_LEVEL is a compatibility alias: it is what
     # local_api/server.py read before T-03, and what
     # wt-media-workspace/scripts/m2b_local_acceptance.py still exports.
@@ -171,7 +194,9 @@ class AgentConfig:
     bitbrowser_timeout_seconds: float
     bitbrowser_create_timeout_seconds: float | None
     bitbrowser_mutation_timeout_seconds: float | None
+    agent_id: str
     data_dir: str
+    run_runner: bool
     log_level: str
     log_file: str
     runtime_token: str

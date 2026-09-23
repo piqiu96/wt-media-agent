@@ -36,6 +36,14 @@ timeout_seconds = 5.0
 # absent so that the client's own DEFAULT_*_TIMEOUT stays the single source.
 
 [agent]
+# The Agent identity Cloud sees. One Agent per installed Desktop, so the
+# default matches the Local Agent's historical value; Desktop overrides it per
+# launch through WT_MEDIA_AGENT_ID when it needs to distinguish instances.
+id = "local-agent-dev"
+# Whether this process polls Cloud for tasks. Off by default on purpose: an
+# Agent started by hand or by a health check must not begin claiming tasks just
+# because it was started. The acceptance scripts and Desktop turn it on.
+run_runner = false
 # Empty resolves to ~/Library/Application Support/WTMedia/Agent because
 # `environment` above is "production". Desktop overrides it with
 # WT_MEDIA_AGENT_DATA_DIR when it spawns a sidecar.

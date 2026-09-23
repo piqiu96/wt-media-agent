@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Mapping
+from unittest import mock
+from urllib import request as urlrequest
 
 from wt_media_agent.clients.cloud import AgentIdentity, CloudAgentClient, SessionInvalidError
 from wt_media_agent.clients.cloud.contract import (
@@ -182,3 +185,28 @@ class CloudAgentClientTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequestTimeoutTest(unittest.TestCase):
+    """CHG-056 T-04: the request timeout is configured, not hard-coded at 10s."""
+
+    def _call(self, client: CloudAgentClient) -> float:
+        """Make one real transport call and return the timeout it used."""
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({"data": {}}).encode()
+        with mock.patch.object(
+            urlrequest, "urlopen", return_value=response
+        ) as urlopen:
+            client.heartbeat("agent-1")
+        return urlopen.call_args.kwargs["timeout"]
+
+    def test_the_configured_timeout_reaches_the_request(self) -> None:
+        client = CloudAgentClient("http://cloud.test", timeout=42.5)
+
+        self.assertEqual(self._call(client), 42.5)
+
+    def test_an_omitted_timeout_keeps_the_historical_default(self) -> None:
+        """Callers that pass no timeout must keep behaving exactly as before."""
+        client = CloudAgentClient("http://cloud.test")
+
+        self.assertEqual(self._call(client), 10)
