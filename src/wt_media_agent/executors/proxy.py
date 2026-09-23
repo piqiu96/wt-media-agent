@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from wt_media_agent.clients.cloud import CloudAgentClient
-from wt_media_agent.proxy_check import check_proxy_connectivity
+from wt_media_agent.services.net.proxy import check_proxy_connectivity
 
 
 class ProxyCheckExecutor:

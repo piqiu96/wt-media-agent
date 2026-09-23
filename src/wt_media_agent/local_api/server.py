@@ -23,7 +23,10 @@ from wt_media_agent.clients.bitbrowser import (
     BitBrowserResponseError,
     ProfileSnapshot,
 )
-from wt_media_agent.proxy_check import check_proxy_connectivity
+from wt_media_agent.services.net.proxy import (
+    check_proxy_connectivity,
+    parse_first_proxy_address,
+)
 from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
 
 logger = logging.getLogger(__name__)
@@ -239,7 +242,7 @@ class LocalApiServer:
             request = urlrequest.Request(extract_url, headers={"Accept": "text/plain"})
             with urlrequest.urlopen(request, timeout=7) as response:
                 raw = response.read(64 * 1024).decode("utf-8", errors="replace")
-            address = _parse_first_proxy_address(raw, protocol)
+            address = parse_first_proxy_address(raw, protocol)
         except ValueError:
             return 400, {"error": {"code": "proxy_extract_response_invalid"}}
         except (OSError, TimeoutError):
@@ -357,46 +360,6 @@ class LocalApiServer:
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
         return 200, {"data": {"cookies": cookies}}
-
-
-def _parse_first_proxy_address(raw: str, default_protocol: str) -> dict[str, object]:
-    for line in raw.splitlines():
-        candidate = line.strip()
-        if not candidate:
-            continue
-        parsed = _parse_proxy_address(candidate, default_protocol)
-        if parsed is not None:
-            return parsed
-    raise ValueError("no supported proxy address")
-
-
-def _parse_proxy_address(raw: str, default_protocol: str) -> dict[str, object] | None:
-    if "://" in raw:
-        value = urlparse.urlsplit(raw)
-        if value.scheme not in {"http", "https", "socks5"} or not value.hostname or value.port is None:
-            return None
-        return {
-            "proxy_protocol": value.scheme,
-            "host": value.hostname,
-            "port": value.port,
-            "username": value.username or "",
-            "password": value.password or "",
-        }
-    parts = raw.split(":", 3)
-    if len(parts) < 2 or not parts[0]:
-        return None
-    try:
-        port = int(parts[1])
-    except ValueError:
-        return None
-    if not 1 <= port <= 65535:
-        return None
-    result: dict[str, object] = {"proxy_protocol": default_protocol, "host": parts[0], "port": port, "username": "", "password": ""}
-    if len(parts) == 4:
-        result["username"], result["password"] = parts[2], parts[3]
-    elif len(parts) != 2:
-        return None
-    return result
 
 
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
