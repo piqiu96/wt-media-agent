@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+from wt_media_agent.runtime.config import get_config
 
 
 DEFAULT_DB_NAME = "local-agent.sqlite3"
@@ -75,10 +76,22 @@ MIGRATIONS: tuple[Migration, ...] = (
 
 
 def default_data_dir() -> Path:
-    configured = os.environ.get("WT_MEDIA_AGENT_DATA_DIR")
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / ".wt-media-agent"
+    """The local Agent data directory.
+
+    Delegates to the configuration layer so there is one rule, not two
+    (CHG-056 T-03). Signature and module path are deliberately unchanged:
+    `pyproject.toml`'s `wt-media-agent-storage-migrate` console script points at
+    `main` in this module, as does `scripts/migrate-storage.sh`.
+
+    Behaviour change: with no `--data-dir`, no `--db-path` and no
+    `WT_MEDIA_AGENT_DATA_DIR`, this used to return `~/.wt-media-agent`
+    unconditionally. It now returns the deployment-shaped default -- `<repo>/
+    .local/data` in a checkout, the installed location under
+    `~/Library/Application Support/WTMedia/Agent` when frozen or in production.
+    Any development database left in `~/.wt-media-agent` is therefore not
+    migrated; pass `--db-path` to reach one.
+    """
+    return get_config().paths.data_dir
 
 
 def default_db_path(data_dir: Path | None = None) -> Path:
@@ -127,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     applied = apply_migrations(db_path)
     print(f"storage migration ok: {len(applied)} applied, {len(MIGRATIONS)} total")
+    print(f"database {db_path}")
     for item in applied:
         print(f"applied {item.version} {item.name}")
     return 0

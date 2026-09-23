@@ -45,4 +45,8 @@ WT_MEDIA_AGENT_HEALTH_PORT=18765 scripts/health.sh
 scripts/stop-health.sh
 ```
 
-The storage migration command initializes `local-agent.sqlite3` under `WT_MEDIA_AGENT_DATA_DIR`, `--data-dir`, or an explicit `--db-path`. It records applied versions in `schema_migrations` and skips already applied migrations on repeat runs.
+The storage migration command initializes `local-agent.sqlite3` under `--db-path` if given, else `--data-dir` or `WT_MEDIA_AGENT_DATA_DIR` if given, else the deployment-shaped default: `<repo>/.local/data` from a checkout, `~/Library/Application Support/WTMedia/Agent` when frozen or in production. It prints the database path it used. It records applied versions in `schema_migrations` and skips already applied migrations on repeat runs.
+
+The default moved in CHG-056 T-03; it used to be `~/.wt-media-agent` for every deployment shape. A development database left there is not migrated — pass `--db-path ~/.wt-media-agent/local-agent.sqlite3` to reach it.
+
+Runtime configuration lives in `config/agent.toml`, overridden per key by environment variables (see `config/README.md`).
