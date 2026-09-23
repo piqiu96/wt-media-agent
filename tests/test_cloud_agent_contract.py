@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from wt_media_agent.cloud_agent_contract import (
+from wt_media_agent.clients.cloud.contract import (
     REQUIRED_CONTRACT_REVISION,
     is_cloud_agent_compatible,
     is_cloud_response_compatible,

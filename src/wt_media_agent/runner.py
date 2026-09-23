@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Optional
 
-from wt_media_agent.cloud_agent_client import CloudAgentClient, SessionInvalidError
+from wt_media_agent.clients.cloud import CloudAgentClient, SessionInvalidError
 from wt_media_agent.runtime.constants import (
     DEFAULT_LEASE_SECONDS,
     MAX_RETRIES,

@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from typing import Mapping
 
-from wt_media_agent.cloud_agent_client import AgentIdentity, CloudAgentClient, SessionInvalidError
-from wt_media_agent.cloud_agent_contract import (
+from wt_media_agent.clients.cloud import AgentIdentity, CloudAgentClient, SessionInvalidError
+from wt_media_agent.clients.cloud.contract import (
     EXPECTED_MAJOR_VERSION,
     REQUIRED_CONTRACT_REVISION,
 )

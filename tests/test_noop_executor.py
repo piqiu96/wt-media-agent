@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Mapping
 
-from wt_media_agent.cloud_agent_client import CloudAgentClient
+from wt_media_agent.clients.cloud import CloudAgentClient
 from wt_media_agent.executors.noop import NoopExecutor
 
 

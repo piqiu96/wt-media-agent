@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 import os
 
-from wt_media_agent.cloud_agent_client import CloudAgentClient
+from wt_media_agent.clients.cloud import CloudAgentClient
 from wt_media_agent.runtime.constants import (
     DEFAULT_BITBROWSER_API_URL,
     DEFAULT_BITBROWSER_TIMEOUT,
