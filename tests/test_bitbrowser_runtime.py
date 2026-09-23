@@ -46,6 +46,35 @@ def profile(index: int, profile_user: str = "bit-user-1", main_user: str = "main
     }
 
 
+class OpenUrlTests(unittest.TestCase):
+    """`open_url` is the public door executors now use instead of `_post` (T-05).
+
+    No other test reaches this method: the executor tests drive a stand-in that
+    records the URL it was handed, not the request this client builds. Without
+    the assertions below, the path, the payload keys and the timeout that
+    `open_url` uses would all be unpinned.
+    """
+
+    def test_it_posts_the_profile_and_url_to_the_open_url_endpoint(self) -> None:
+        transport = FakeTransport([{"success": True, "data": {}}])
+        client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=3.5)
+
+        client.open_url("profile-7", "https://www.bilibili.com/")
+
+        self.assertEqual(len(transport.calls), 1)
+        url, payload, timeout = transport.calls[0]
+        self.assertEqual(url, "http://127.0.0.1:54345/browser/open-url")
+        self.assertEqual(payload, {"id": "profile-7", "url": "https://www.bilibili.com/"})
+        self.assertEqual(timeout, 3.5)
+
+    def test_a_refused_navigation_is_not_raised(self) -> None:
+        """Callers treat navigation as best-effort and read nothing back."""
+        transport = FakeTransport([{"success": False, "msg": "browser not open"}])
+        client = BitBrowserClient("http://127.0.0.1:54345", transport=transport)
+
+        client.open_url("profile-7", "https://www.bilibili.com/")
+
+
 class BitBrowserRuntimeTests(unittest.TestCase):
     def test_pages_from_zero_with_official_max_page_size(self) -> None:
         first_page = [profile(index) for index in range(100)]

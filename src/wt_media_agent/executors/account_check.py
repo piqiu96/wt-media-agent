@@ -6,7 +6,8 @@ from collections.abc import Mapping
 
 
 from wt_media_agent.clients.cloud import CloudAgentClient
-from wt_media_agent.clients.bitbrowser import BitBrowserClient
+from wt_media_agent.clients.bitbrowser import PROXY_PROBE_URL, BitBrowserClient
+from wt_media_agent.clients.platform_urls import login_url
 
 
 CHECK_RESULTS = {
@@ -23,13 +24,6 @@ CHECK_RESULTS = {
 
 class AccountCheckExecutor:
     """Open a BitBrowser Profile, navigate to the target platform, and verify login state."""
-
-    # Well-known platform URLs for login verification.
-    PLATFORM_URLS = {
-        "douyin": "https://www.douyin.com/",
-        "bilibili": "https://www.bilibili.com/",
-        "baijiahao": "https://baijiahao.baidu.com/",
-    }
 
     def __init__(
         self, client: CloudAgentClient, agent_id: str, bitbrowser: BitBrowserClient
@@ -49,8 +43,10 @@ class AccountCheckExecutor:
             raise ValueError("account_check_task requires task_id")
         if not profile_id:
             raise ValueError("account_check_task requires profile_id")
-        if platform not in self.PLATFORM_URLS:
-            raise ValueError(f"unsupported platform: {platform}")
+        # Resolved outside the `try` below on purpose: an unsupported platform is
+        # a caller error and has to propagate. Inside, the broad `except` would
+        # turn it into a `check_failed` result reported to Cloud.
+        navigate_url = login_url(platform)
 
         result_status = "check_failed"
         result_message = ""
@@ -61,11 +57,7 @@ class AccountCheckExecutor:
 
             self.client.report_task(task_id, self.agent_id, "running", 30, f"正在访问 {platform}")
             # Navigate to platform home page to trigger login state
-            navigate_url = self.PLATFORM_URLS[platform]
-            self.bitbrowser._post("/browser/open-url", {
-                "id": profile_id,
-                "url": navigate_url,
-            })
+            self.bitbrowser.open_url(profile_id, navigate_url)
 
             self.client.report_task(task_id, self.agent_id, "running", 50, "正在读取 Cookie")
             cookies = self.bitbrowser.read_cookies(profile_id)
@@ -77,10 +69,7 @@ class AccountCheckExecutor:
             else:
                 # Check 2: Profile proxy connectivity (profiles with proxy config)
                 try:
-                    self.bitbrowser._post("/browser/open-url", {
-                        "id": profile_id,
-                        "url": "http://detect.ocsp.intra",
-                    })
+                    self.bitbrowser.open_url(profile_id, PROXY_PROBE_URL)
                 except Exception:
                     pass  # Proxy check is best-effort
 

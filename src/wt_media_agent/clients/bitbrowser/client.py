@@ -53,6 +53,11 @@ class ProfileSnapshot:
 
 Transport = Callable[[str, dict[str, object], float], dict[str, object]]
 
+#: A host a profile is asked to open in order to see whether requests leave it
+#: at all. It resolves nowhere on purpose: the answer is whether the navigation
+#: happened, not what came back.
+PROXY_PROBE_URL = "http://detect.ocsp.intra"
+
 
 class BitBrowserClient:
     """Reads every Profile through the documented zero-based list API."""
@@ -135,6 +140,16 @@ class BitBrowserClient:
             if "正在打开" in message or "已打开" in message:
                 return
             raise
+
+    def open_url(self, profile_id: str, url: str) -> None:
+        """Ask an already-open profile to navigate to `url`.
+
+        Public on purpose: executors used to call `_post("/browser/open-url")`
+        directly, which reached a private method of another layer with a URL
+        literal of their own (ADR-0016 §3). The response carries no fact a
+        caller consumes, so -- as before -- nothing is raised on failure.
+        """
+        self._post("/browser/open-url", {"id": profile_id, "url": url})
 
     def open_profile_with_devtools(self, profile_id: str) -> str:
         """Open a profile and return its DevTools http endpoint (host:port).
