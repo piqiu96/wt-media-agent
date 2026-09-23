@@ -5,16 +5,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from wt_media_agent.clients.cloud import CloudAgentClient
-from wt_media_agent.clients.bitbrowser import bitbrowser_from_config
-from wt_media_agent.runtime.config import get_config
+from wt_media_agent.clients.bitbrowser import BitBrowserClient
 
 
 class ProfileMutationExecutor:
-    def __init__(self, client: CloudAgentClient, agent_id: str, operation: str) -> None:
+    def __init__(
+        self,
+        client: CloudAgentClient,
+        agent_id: str,
+        operation: str,
+        bitbrowser: BitBrowserClient,
+    ) -> None:
         self.client = client
         self.agent_id = agent_id
         self.operation = operation
-        self.bitbrowser = bitbrowser_from_config(get_config())
+        self.bitbrowser = bitbrowser
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = str(task.get("task_id", ""))
@@ -50,5 +55,12 @@ class ProfileMutationExecutor:
         return self.client.report_task(task_id, self.agent_id, "succeeded", 100, f"Profile {self.operation} 并读回验证成功", {"profile_id": profile_id, "cloud_profile_id": str(payload.get("cloud_profile_id", "")), "readback": True, "operation": self.operation})
 
 
-def factory(operation: str):
-    return lambda client, agent_id: ProfileMutationExecutor(client, agent_id, operation)
+def factory(operation: str, bitbrowser: BitBrowserClient):
+    """Bind the operation and the BitBrowser client, leaving a `(client, agent_id)` seam.
+
+    The BitBrowser argument is mandatory: an optional default would hand the
+    factory back the self-construction seam T-04 removed from the executors.
+    """
+    return lambda client, agent_id: ProfileMutationExecutor(
+        client, agent_id, operation, bitbrowser
+    )

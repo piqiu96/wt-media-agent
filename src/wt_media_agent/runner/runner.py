@@ -10,7 +10,6 @@ from typing import Optional
 from wt_media_agent.clients.cloud import CloudAgentClient, SessionInvalidError
 from wt_media_agent.executors.protocol import ExecutorFactory
 from wt_media_agent.runner.config import TaskRunnerConfig
-from wt_media_agent.runner.registry import default_executor_factories
 from wt_media_agent.storage.checkpoint_store import (
     CheckpointStore,
     OfflineResult,
@@ -29,12 +28,17 @@ class TaskRunner:
         client: CloudAgentClient,
         store: CheckpointStore,
         config: TaskRunnerConfig,
+        *,
+        executors: Mapping[str, ExecutorFactory] | None = None,
     ) -> None:
         self.client = client
         self.store = store
         self.config = config
         self._running = False
-        self._executors: dict[str, ExecutorFactory] = default_executor_factories()
+        # Empty by default, on purpose: a runner that was never wired up must
+        # fail closed on `no_executor` rather than reach Cloud and BitBrowser
+        # through a registry it built behind the caller's back.
+        self._executors: dict[str, ExecutorFactory] = dict(executors or {})
 
     def register_executor(self, task_type: str, factory: ExecutorFactory) -> None:
         self._executors[task_type] = factory

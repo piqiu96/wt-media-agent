@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from wt_media_agent.clients.cloud import CloudAgentClient
-from wt_media_agent.clients.bitbrowser import bitbrowser_from_config
-from wt_media_agent.runtime.config import get_config
+from wt_media_agent.clients.bitbrowser import BitBrowserClient
 
 
 class ProxyMutationExecutor:
-    def __init__(self, client: CloudAgentClient, agent_id: str) -> None:
+    def __init__(
+        self, client: CloudAgentClient, agent_id: str, bitbrowser: BitBrowserClient
+    ) -> None:
         self.client, self.agent_id = client, agent_id
-        self.bitbrowser = bitbrowser_from_config(get_config())
+        self.bitbrowser = bitbrowser
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = str(task.get("task_id", "")); payload = task.get("payload") if isinstance(task.get("payload"), Mapping) else task
