@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -101,7 +102,9 @@ def default_db_path(data_dir: Path | None = None) -> Path:
 def apply_migrations(db_path: str | Path) -> list[AppliedMigration]:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as db:
+    # `closing` for the connection, `db` for the transaction: `with connection`
+    # alone commits but never closes, so this leaked one connection per call.
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from wt_media_agent.storage import CheckpointStore, OfflineResult, TaskCheckpoint
@@ -30,7 +31,7 @@ class SqliteConnectTest(unittest.TestCase):
             connect(db).close()
             # A plain connection must observe WAL, otherwise the pragma was
             # not actually persisted to the database header.
-            with sqlite3.connect(db) as plain:
+            with closing(sqlite3.connect(db)) as plain:
                 mode = plain.execute("PRAGMA journal_mode").fetchone()[0]
             self.assertEqual(mode.lower(), "wal")
 

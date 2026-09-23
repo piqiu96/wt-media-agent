@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from wt_media_agent.storage import migration
@@ -17,7 +18,7 @@ class StorageMigrationTest(unittest.TestCase):
             self.assertEqual([item.version for item in first], ["0001_base", "0002_task_checkpoints"])
             self.assertEqual(second, [])
 
-            with sqlite3.connect(db_path) as db:
+            with closing(sqlite3.connect(db_path)) as db:
                 tables = {
                     row[0]
                     for row in db.execute(

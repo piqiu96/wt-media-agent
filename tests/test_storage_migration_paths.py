@@ -1,11 +1,15 @@
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from wt_media_agent.runtime.config import reset_config_cache
+from wt_media_agent.storage import migration
 from wt_media_agent.storage.migration import (
     DEFAULT_DB_NAME,
+    apply_migrations,
     default_data_dir,
     default_db_path,
     main,
@@ -90,6 +94,35 @@ class MainTest(DataDirTestCase):
             reset_config_cache()
             self.assertEqual(main([]), 0)
             self.assertTrue((Path(tmp) / DEFAULT_DB_NAME).is_file())
+
+
+class ConnectionLifetimeTest(unittest.TestCase):
+    """`apply_migrations` must not leak its connection.
+
+    `with sqlite3.connect(...) as db:` is a trap: the context manager commits
+    the transaction but never closes the connection. This function runs on the
+    Agent's startup path, so a leak here is one connection per boot -- and in
+    the test suite it showed up as 20 `ResourceWarning: unclosed database`
+    lines that no assertion was watching.
+    """
+
+    def test_apply_migrations_closes_its_connection(self):
+        created: list[sqlite3.Connection] = []
+        real_connect = sqlite3.connect
+
+        def spy(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            created.append(connection)
+            return connection
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(migration.sqlite3, "connect", spy):
+                apply_migrations(Path(tmp) / "leak-check.sqlite3")
+
+        self.assertTrue(created, "apply_migrations opened no connection at all")
+        for connection in created:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
 
 
 if __name__ == "__main__":
