@@ -88,6 +88,19 @@ def _as_float(raw: object) -> float:
         raise ConfigError(f"expected a number, got {raw!r}") from exc
 
 
+def _as_log_level(raw: object) -> str:
+    """Return a level name the `logging` module will accept.
+
+    `logging.config.dictConfig` raises a bare `ValueError: Unknown level` on a
+    typo, naming neither the file nor the key. Failing here instead keeps every
+    rejected value reported the same way -- by key path.
+    """
+    name = _as_str(raw).upper()
+    if name not in logging.getLevelNamesMapping():
+        raise ConfigError(f"expected a log level name, got {raw!r}")
+    return name
+
+
 def _as_optional_float(raw: object) -> float | None:
     """Optional override: unset or unparseable both mean "not configured".
 
@@ -130,10 +143,16 @@ _SPEC: tuple[Field, ...] = (
     Field("bitbrowser_create_timeout_seconds", "bitbrowser.create_timeout_seconds", ("WT_MEDIA_BITBROWSER_CREATE_TIMEOUT_SECONDS",), None, _as_optional_float),
     Field("bitbrowser_mutation_timeout_seconds", "bitbrowser.mutation_timeout_seconds", ("WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS",), None, _as_optional_float),
     Field("data_dir", "agent.data_dir", ("WT_MEDIA_AGENT_DATA_DIR",), "", _as_str),
-    # Canonical name first: the two WT_MEDIA_AGENT_LOG_* names are kept working
-    # because scripts/start-health.sh:10-11 sets them.
-    Field("log_level", "logging.level", ("WT_MEDIA_LOG_LEVEL", "WT_MEDIA_AGENT_LOG_LEVEL"), "INFO", _as_str),
-    Field("log_file", "logging.file", ("WT_MEDIA_LOG_FILE", "WT_MEDIA_AGENT_LOG_FILE"), "", _as_str),
+    # WT_MEDIA_AGENT_LOG_LEVEL is a compatibility alias: it is what
+    # local_api/server.py read before T-03, and what
+    # wt-media-workspace/scripts/m2b_local_acceptance.py still exports.
+    # WT_MEDIA_AGENT_LOG_FILE has no alias deliberately -- it is the health
+    # scripts' own variable for the file they redirect stdout/stderr into
+    # (scripts/README.md), and no Agent code ever read it. Aliasing it would
+    # make the Agent install a second handler on the very file its caller is
+    # already redirecting into.
+    Field("log_level", "logging.level", ("WT_MEDIA_LOG_LEVEL", "WT_MEDIA_AGENT_LOG_LEVEL"), "INFO", _as_log_level),
+    Field("log_file", "logging.file", ("WT_MEDIA_LOG_FILE",), "", _as_str),
     # Environment-only. A value in the TOML is ignored by construction.
     Field("runtime_token", "runtime_token", ("WT_MEDIA_AGENT_RUNTIME_TOKEN",), "", _as_str, secret=True),
 )

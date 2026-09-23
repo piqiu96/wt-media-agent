@@ -35,7 +35,9 @@ from wt_media_agent.services.net.proxy import (
     check_proxy_connectivity,
     parse_first_proxy_address,
 )
+from wt_media_agent.runtime.config import get_config
 from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
+from wt_media_agent.runtime.logging import configure_from
 
 logger = logging.getLogger(__name__)
 
@@ -558,10 +560,7 @@ def serve(
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=os.getenv("WT_MEDIA_AGENT_LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_from(get_config())
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)

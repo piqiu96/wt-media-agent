@@ -129,25 +129,30 @@ class EnvLayerTest(unittest.TestCase):
         self.assertEqual(cfg.log_level, "WARNING")
         self.assertEqual(cfg.log_file, "/tmp/a.log")
 
-    def test_compatibility_aliases_still_work(self):
-        """scripts/start-health.sh sets the WT_MEDIA_AGENT_LOG_* names."""
-        cfg = load(
-            env={
-                "WT_MEDIA_AGENT_LOG_LEVEL": "ERROR",
-                "WT_MEDIA_AGENT_LOG_FILE": "/tmp/agent.log",
-            }
-        )
+    def test_the_level_alias_is_still_honoured(self):
+        """local_api/server.py read this name before T-03; m2b still exports it."""
+        cfg = load(env={"WT_MEDIA_AGENT_LOG_LEVEL": "ERROR"})
         self.assertEqual(cfg.log_level, "ERROR")
-        self.assertEqual(cfg.log_file, "/tmp/agent.log")
 
-    def test_canonical_name_wins_when_both_are_present(self):
-        cfg = load(
-            env={
-                "WT_MEDIA_LOG_FILE": "/canonical.log",
-                "WT_MEDIA_AGENT_LOG_FILE": "/alias.log",
-            }
-        )
-        self.assertEqual(cfg.log_file, "/canonical.log")
+    def test_the_canonical_level_wins_over_the_alias(self):
+        cfg = load(env={"WT_MEDIA_LOG_LEVEL": "WARNING", "WT_MEDIA_AGENT_LOG_LEVEL": "ERROR"})
+        self.assertEqual(cfg.log_level, "WARNING")
+
+    def test_the_health_scripts_log_file_variable_is_not_agent_config(self):
+        """`WT_MEDIA_AGENT_LOG_FILE` names where start-health.sh redirects *its*
+        child's stdout/stderr. No Agent module ever read it, and honouring it
+        here would put a second handler on the file the caller already owns."""
+        cfg = load(env={"WT_MEDIA_AGENT_LOG_FILE": "/tmp/health-redirect.log"})
+        self.assertEqual(cfg.log_file, "")
+
+    def test_a_bad_log_level_is_rejected_by_key_path(self):
+        with self.assertRaises(ConfigError) as caught:
+            load(env={"WT_MEDIA_LOG_LEVEL": "chatty"})
+        self.assertIn("logging.level", str(caught.exception))
+
+    def test_log_levels_are_normalised_and_keep_the_stdlib_spellings(self):
+        self.assertEqual(load(env={"WT_MEDIA_LOG_LEVEL": "debug"}).log_level, "DEBUG")
+        self.assertEqual(load(env={"WT_MEDIA_LOG_LEVEL": "WARN"}).log_level, "WARN")
 
     def test_every_spec_field_has_at_least_one_env_name(self):
         for spec in _SPEC:
