@@ -12,9 +12,8 @@ import json
 import os
 import socket
 import struct
-import time
 import urllib.request
-from typing import Any, Callable
+from typing import Any
 
 
 class CDPError(RuntimeError):

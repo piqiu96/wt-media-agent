@@ -9,7 +9,6 @@ import platform
 import re
 import shutil
 import subprocess
-import sys
 from typing import Callable, Protocol
 
 from wt_media_agent.runtime.version import __version__
