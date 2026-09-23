@@ -53,7 +53,7 @@ class ErrorClient(CookieClient):
 
 class LocalAccountCheckTests(unittest.TestCase):
     def test_bilibili_nav_data_fills_name_and_avatar(self) -> None:
-        from wt_media_agent.local_api.server import _identify_bilibili
+        from wt_media_agent.clients.bilibili.identity import identify_bilibili
 
         cookies = [
             {"name": "DedeUserID", "value": "293793435"},
@@ -61,7 +61,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         ]
         nav = {"code": 0, "data": {"mid": 293793435, "uname": "测试用户", "face": "http://avatar", "isLogin": True}}
 
-        result = _identify_bilibili(cookies, nav_data=nav)
+        result = identify_bilibili(cookies, nav_data=nav)
 
         self.assertEqual(result["platform_account_id"], "293793435")
         self.assertEqual(result["name"], "测试用户")

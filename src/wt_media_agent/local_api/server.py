@@ -21,13 +21,16 @@ from wt_media_agent.local_api.reporting import (
 )
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
-from wt_media_agent.services.browser import cdp
 from wt_media_agent.clients.bitbrowser import (
     BitBrowserClient,
     BitBrowserIdentityError,
     BitBrowserResponseError,
     ProfileSnapshot,
 )
+from wt_media_agent.clients import platform_identity
+from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
+from wt_media_agent.clients.bilibili import identity as bilibili_identity
+from wt_media_agent.services.browser import cookies as browser_cookies
 from wt_media_agent.services.net.proxy import (
     check_proxy_connectivity,
     parse_first_proxy_address,
@@ -326,7 +329,7 @@ class LocalApiServer:
         devtools = ""
         try:
             devtools = self.bitbrowser.open_profile_with_devtools(profile_id)
-            cookies = _read_account_cookies(self.bitbrowser, profile_id, devtools)
+            cookies = browser_cookies.read_account_cookies(self.bitbrowser, profile_id, devtools)
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
         except BitBrowserResponseError as e:
@@ -334,14 +337,14 @@ class LocalApiServer:
 
         nav_data = None
         if platform == "bilibili" and devtools:
-            nav_data = _bilibili_nav_via_cdp(devtools)
+            nav_data = bilibili_identity.fetch_nav_via_cdp(devtools)
 
         if platform == "baijiahao":
-            result = _identify_baijiahao(cookies)
+            result = baijiahao_identity.identify_baijiahao(cookies)
         elif platform == "bilibili":
-            result = _identify_bilibili(cookies, nav_data)
+            result = bilibili_identity.identify_bilibili(cookies, nav_data)
         else:
-            result = _identify_platform_account(platform, cookies)
+            result = platform_identity.identify_platform_account(platform, cookies)
         if expected_id and result.get("platform_account_id") and result["platform_account_id"] != expected_id:
             result["login_status"] = "account_mismatch"
             result["message"] = "当前窗口登录账号与媒体账号台账不一致"
@@ -534,188 +537,6 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
     return AgentHandler
-
-
-def _read_account_cookies(bitbrowser, profile_id: str, devtools: str) -> list[dict[str, object]]:
-    """Read the profile's cookies: live via CDP when a DevTools endpoint is available,
-    otherwise fall back to /browser/detail saved cookies."""
-    if devtools:
-        try:
-            return cdp.read_live_cookies(devtools)
-        except Exception:  # noqa: BLE001 - fall back to saved cookies
-            pass
-    return bitbrowser.read_cookies(profile_id)
-
-
-def _bilibili_nav_via_cdp(devtools: str) -> dict[str, object] | None:
-    """Fetch Bilibili nav (mid/uname/face) from inside the page to bypass risk control."""
-    try:
-        nav = cdp.eval_fetch_json(devtools, "https://api.bilibili.com/x/web-interface/nav")
-        if nav.get("status") == 200:
-            return nav.get("json") or {}
-    except Exception:  # noqa: BLE001 - best-effort, never block identification
-        pass
-    return None
-
-
-def _identify_platform_account(platform: str, cookies: list[dict[str, object]]) -> dict[str, object]:
-    """Extract only safe platform identity facts. Cookie values never leave this function except known public IDs."""
-    cookie_by_name: dict[str, str] = {}
-    for cookie in cookies:
-        if not isinstance(cookie, dict):
-            continue
-        name = str(cookie.get("name", "")).strip()
-        value = str(cookie.get("value", "")).strip()
-        if name and value:
-            cookie_by_name[name] = value
-
-    if not cookie_by_name:
-        return {
-            "platform_account_id": "",
-            "name": "",
-            "avatar_url": "",
-            "login_status": "not_logged_in",
-            "message": "当前窗口未读取到登录Cookie",
-        }
-
-    if platform == "bilibili":
-        uid = cookie_by_name.get("DedeUserID", "").strip()
-        if uid:
-            return {
-                "platform_account_id": uid,
-                "name": "",
-                "avatar_url": "",
-                "login_status": "normal",
-                "message": "已读取到哔哩哔哩账号UID",
-            }
-
-    return {
-        "platform_account_id": "",
-        "name": "",
-        "avatar_url": "",
-        "login_status": "environment_error",
-        "message": "当前平台暂未读取到可确认的平台账号UID",
-    }
-
-
-def _identify_baijiahao(cookies: list[dict[str, object]]) -> dict[str, object]:
-    """Identify a Baijiahao/Baidu account via the public logininfo API.
-
-    Baijiahao UID is not derivable from cookies alone (BDUSS is encrypted), so
-    the Agent calls image.baidu.com/user/logininfo server-side with the BDUSS
-    cookie to read uid / nickname / portrait.
-    """
-    cookie_by_name: dict[str, str] = {}
-    for cookie in cookies:
-        if not isinstance(cookie, dict):
-            continue
-        name = str(cookie.get("name", "")).strip()
-        value = str(cookie.get("value", "")).strip()
-        if name and value:
-            cookie_by_name[name] = value
-    bduss = cookie_by_name.get("BDUSS", "").strip()
-    if not bduss:
-        return {
-            "platform_account_id": "",
-            "name": "",
-            "avatar_url": "",
-            "login_status": "not_logged_in",
-            "message": "未读取到百度登录凭证(BDUSS)",
-        }
-    try:
-        url = f"https://image.baidu.com/user/logininfo?time={int(time.time() * 1000)}&src=pc&page=index"
-        req = urlrequest.Request(
-            url,
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Referer": "https://image.baidu.com/",
-                "Cookie": f"BDUSS={urlparse.quote(bduss)}",
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-                ),
-            },
-        )
-        body = urlrequest.urlopen(req, timeout=10).read().decode(errors="replace")
-        payload = json.loads(body)
-        status = payload.get("status") or {}
-        if status.get("code") != 0:
-            return {
-                "platform_account_id": "",
-                "name": "",
-                "avatar_url": "",
-                "login_status": "expired",
-                "message": f"百度登录校验失败: {status.get('msg', '')}",
-            }
-        user = payload.get("data", {}).get("user") or {}
-        uid = str(user.get("user_id", "") or "").strip()
-        name = str(user.get("user_name", "") or "").strip()
-        portrait = str(user.get("portrait", "") or "").strip()
-        if not uid:
-            return {
-                "platform_account_id": "",
-                "name": "",
-                "avatar_url": "",
-                "login_status": "not_logged_in",
-                "message": "未读取到百度账号UID",
-            }
-        avatar_url = f"https://himg.bdimg.com/sys/portraitn/item/{portrait}" if portrait else ""
-        return {
-            "platform_account_id": uid,
-            "name": name,
-            "avatar_url": avatar_url,
-            "login_status": "normal",
-            "message": "已读取到百家号账号信息",
-        }
-    except Exception as exc:  # noqa: BLE001 - surface readable message, never leak cookie
-        return {
-            "platform_account_id": "",
-            "name": "",
-            "avatar_url": "",
-            "login_status": "environment_error",
-            "message": f"百家号信息接口调用失败: {exc}",
-        }
-
-
-def _identify_bilibili(cookies: list[dict[str, object]], nav_data: dict[str, object] | None = None) -> dict[str, object]:
-    """Identify a Bilibili account from cookies.
-
-    UID comes reliably from the DedeUserID cookie. Nickname/avatar come from the
-    in-page nav fetch (nav_data) when available; Bilibili's newer API enforces
-    bili_ticket / fingerprint risk control that rejects server-side requests
-    (-101 / -799), so a failed nav never downgrades a valid DedeUserID login.
-    """
-    cookie_by_name: dict[str, str] = {}
-    for cookie in cookies:
-        if not isinstance(cookie, dict):
-            continue
-        name = str(cookie.get("name", "")).strip()
-        value = str(cookie.get("value", "")).strip()
-        if name and value:
-            cookie_by_name[name] = value
-    uid = cookie_by_name.get("DedeUserID", "").strip()
-    if not uid:
-        return {
-            "platform_account_id": "",
-            "name": "",
-            "avatar_url": "",
-            "login_status": "not_logged_in",
-            "message": "未读取到B站登录Cookie(DedeUserID)",
-        }
-    name = ""
-    face = ""
-    nav = nav_data if isinstance(nav_data, dict) else None
-    if nav and nav.get("code") == 0:
-        data = nav.get("data") or {}
-        name = str(data.get("uname", "") or "").strip()
-        face = str(data.get("face", "") or "").strip()
-    return {
-        "platform_account_id": uid,
-        "name": name,
-        "avatar_url": face,
-        "login_status": "normal",
-        "message": "已读取到B站账号UID" + ("" if name else "（昵称/头像需页面内验证）"),
-    }
 
 
 def serve(
