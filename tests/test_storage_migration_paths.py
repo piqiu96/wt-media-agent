@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from wt_media_agent.runtime.config import reset_config_cache
+from wt_media_agent.runtime.config import load_config, reset_config_cache
 from wt_media_agent.storage import migration
 from wt_media_agent.storage.migration import (
     DEFAULT_DB_NAME,
@@ -15,7 +15,6 @@ from wt_media_agent.storage.migration import (
     main,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 OLD_DEV_DIR = Path.home() / ".wt-media-agent"
 #: The environment this function genuinely reads. Removed for each test so the
 #: developer's shell cannot decide the outcome.
@@ -42,8 +41,32 @@ class DefaultDataDirTest(DataDirTestCase):
         reset_config_cache()
         self.assertEqual(default_data_dir(), Path("/tmp/wt-pinned"))
 
-    def test_a_checkout_writes_to_the_repository_local_directory(self):
-        self.assertEqual(default_data_dir(), REPO_ROOT / ".local" / "data")
+    def test_a_development_checkout_resolves_inside_its_own_tree(self):
+        """The dev rule, asserted on an *injected* root (CHG-057 T-02).
+
+        This used to compare against `Path(__file__).resolve().parents[1] /
+        ".local" / "data"` -- the live checkout. That made the checkout a
+        *resolved runtime location* in the suite, which D-09 (the user's ruling)
+        and architecture baseline §5.13 forbid: once the Agent writes logs by
+        default, any test that reached `ensure()` on such a config would write
+        into the developer's own tree, and on a clean clone create it.
+
+        `load_config` takes `repo_root`, `home` and `env`, so the same property --
+        a non-production, non-frozen run stays inside its own checkout rather
+        than going to `$HOME` -- is assertable without naming this machine.
+        """
+        cfg = load_config(
+            config_dir=Path("/nonexistent"),
+            env={},
+            frozen=False,
+            home=Path("/home/nobody"),
+            repo_root=Path("/checkout"),
+        )
+
+        self.assertEqual(cfg.paths.origin, "dev")
+        self.assertEqual(cfg.paths.data_dir, Path("/checkout/.local/data"))
+        self.assertEqual(cfg.paths.logs_dir, Path("/checkout/.local/logs"))
+        self.assertNotIn("nobody", str(cfg.paths.data_dir), "dev must not use $HOME")
 
     def test_production_uses_the_installed_location(self):
         os.environ["WT_MEDIA_ENV"] = "production"
