@@ -4,7 +4,8 @@ Three files, written by one entry point (CHG-057 T-04; the user's ruling 三):
 
 - `agent.log` -- everything, and the only file a traceback appears in.
 - `task.log`  -- the task narrative: records from `wt_media_agent.runner.*`.
-- `error.log` -- ERROR and above, as a record rather than a stack dump.
+- `error.log` -- ERROR and above, as a record rather than a stack dump, carrying
+  `error_code` / `task_id` / `context` beside the message (T-05).
 
 They are plain text with one line per record; the ruling explicitly does not
 want a JSON log system. `configure_from` is the single caller (bootstrap), and
@@ -43,6 +44,34 @@ TASK_LOGGER_PREFIX = "wt_media_agent.runner"
 FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
+#: The ruling's fields for `error.log` (三). They are carried by `extra={...}`
+#: on the logging call and defaulted by the formatter. `error_code` is required
+#: there, so an event that has no code says so rather than dropping the field;
+#: `task_id` and `context` are optional and are left out when unset.
+ERROR_CODE_FIELD = "error_code"
+TASK_ID_FIELD = "task_id"
+CONTEXT_FIELD = "context"
+
+#: What a required field reads as when the record has no value for it. Not the
+#: empty string: a reader must be able to tell "this event has no code" from
+#: "the field never made it into the line".
+NO_VALUE = "none"
+
+# The codes that exist today, and there is no registry behind them (CHG-057
+# measured that). This Task builds the channel, not the vocabulary, so nothing
+# validates a code and a new one needs no change here. Current sources:
+# `runner/runner.py` -- `no_executor`, `session_invalidated_result_uncertain`,
+# `executor_error` (the code its checkpoint records for any executor failure);
+# `contracts/local-error-codes/v1/bitbrowser.yaml` -- `not_found`,
+# `bitbrowser_identity_unverifiable`, `bitbrowser_response_error`.
+
+#: The one place the fields are rendered. `agent.log` and `task.log` keep `FMT`:
+#: `agent.log` is the full-fidelity file, and the message already names the task.
+ERROR_FMT = (
+    f"%(asctime)s [%(levelname)s] %(name)s: {ERROR_CODE_FIELD}=%(error_code)s"
+    f"%(extra_fields)s %(message)s"
+)
+
 
 class TaskLogFilter(logging.Filter):
     """Keep `task.log` to the runner's records."""
@@ -75,12 +104,53 @@ class NoTracebackFormatter(logging.Formatter):
     traceback from `agent.log` too.
     """
 
-    def format(self, record: logging.LogRecord) -> str:
+    def isolate(self, record: logging.LogRecord) -> logging.LogRecord:
+        """A copy of the record with everything that renders a traceback cleared."""
         isolated = logging.makeLogRecord(record.__dict__)
         isolated.exc_info = None
         isolated.exc_text = None
         isolated.stack_info = None
-        return super().format(isolated)
+        return isolated
+
+    def format(self, record: logging.LogRecord) -> str:
+        return super().format(self.isolate(record))
+
+
+def _field(record: logging.LogRecord, name: str) -> str:
+    """One field's value as a single line of text, or "" if the record has none.
+
+    Newlines are escaped, not stripped: `task_id` arrives from Cloud and is
+    interpolated verbatim, so a value carrying a newline would otherwise forge a
+    record in a file whose whole contract is one line per record. Values are
+    expected to be tokens; T-06 owns redacting anything sensitive inside them.
+    """
+    value = getattr(record, name, "")
+    if not value:
+        return ""
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
+class ErrorRecordFormatter(NoTracebackFormatter):
+    """`error.log`'s line: the record's fields, then the message (CHG-057 三).
+
+    The defaults live here rather than in `setLogRecordFactory`, because the two
+    halves of the convention cannot coexist: a factory that pre-populated
+    `error_code` on every record would make `Logger.makeRecord` reject
+    `extra={"error_code": ...}` with a KeyError -- the very call this channel is
+    built on. The tests assert that collision so the choice stays a decision.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        isolated = self.isolate(record)
+        isolated.error_code = _field(record, ERROR_CODE_FIELD) or NO_VALUE
+        isolated.extra_fields = "".join(
+            f" {name}={_field(record, name)}"
+            for name in (TASK_ID_FIELD, CONTEXT_FIELD)
+            if _field(record, name)
+        )
+        # The base *class*, not `super()`: `NoTracebackFormatter.format` would
+        # isolate the record a second time for no reason.
+        return logging.Formatter.format(self, isolated)
 
 
 def configure_logging(
@@ -128,7 +198,7 @@ def configure_logging(
         handlers["error"] = file_handler(
             directory / ERROR_LOG_NAME,
             filters=["errors_only"],
-            formatter="no_traceback",
+            formatter="error_record",
         )
 
     config: dict[str, object] = {
@@ -139,9 +209,11 @@ def configure_logging(
                 "format": FMT,
                 "datefmt": DATEFMT,
             },
-            "no_traceback": {
-                "()": NoTracebackFormatter,
-                "format": FMT,
+            # `error.log` only: the ruling's fields are rendered here, and this
+            # is also the handler that must not print a traceback.
+            "error_record": {
+                "()": ErrorRecordFormatter,
+                "format": ERROR_FMT,
                 "datefmt": DATEFMT,
             },
         },

@@ -185,6 +185,129 @@ class ConfigureFromTest(LoggingStateTestCase):
         self.assertEqual(kinds.count("RotatingFileHandler"), 3)
 
 
+class ErrorRecordFieldsTest(LoggingStateTestCase):
+    """CHG-057 T-05 (the ruling 三): `error.log` lines carry the fields.
+
+    `timestamp`, `error_code`, `task_id` (optional), `context` (optional),
+    `message`. The channel is `extra=`; this asserts what reaches the file in
+    both directions -- a record that carries codes shows them, and a record
+    that carries none still renders (as `error_code=none`) rather than raising.
+
+    Only `error.log` renders them. `agent.log` is the full-fidelity file and
+    keeps the documented plain shape, which is asserted below so a future
+    change cannot quietly turn it into a second structured format.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.directory = Path(self._tmp.name)
+        configure_from(config(WT_MEDIA_LOG_FILE=str(self.directory / AGENT_LOG_NAME)))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        super().tearDown()
+
+    def read(self, name: str) -> str:
+        path = self.directory / name
+        return path.read_text() if path.is_file() else ""
+
+    def test_an_error_that_carries_a_code_and_a_task_renders_both(self):
+        logging.getLogger("wt_media_agent.runner.runner").error(
+            "task t-1 failed: boom",
+            extra={"error_code": "executor_error", "task_id": "t-1"},
+        )
+        line = self.read(ERROR_LOG_NAME)
+        self.assertIn("error_code=executor_error", line)
+        self.assertIn("task_id=t-1", line)
+        # The message is the part a human reads: the fields are added beside
+        # it, not instead of it.
+        self.assertIn("task t-1 failed: boom", line)
+
+    def test_an_error_that_carries_nothing_states_no_code_instead_of_raising(self):
+        """Today most ERROR sites have no code; they must still be writable.
+
+        `error_code` is a required field in the ruling, so its absence is
+        *stated* (`error_code=none`) rather than left blank -- a reader can tell
+        "this event has no code" from "the field was dropped".
+        """
+        logging.getLogger("wt_media_agent.somewhere").error("plain failure")
+        line = self.read(ERROR_LOG_NAME)
+        self.assertIn("error_code=none", line)
+        self.assertIn("plain failure", line)
+
+    def test_the_optional_fields_are_absent_when_unset(self):
+        logging.getLogger("wt_media_agent.somewhere").error("plain failure")
+        line = self.read(ERROR_LOG_NAME)
+        self.assertNotIn("task_id=", line)
+        self.assertNotIn("context=", line)
+
+    def test_context_is_rendered_when_it_is_given(self):
+        logging.getLogger("wt_media_agent.somewhere").error(
+            "offline delivery failed", extra={"context": "offline_result"}
+        )
+        self.assertIn("context=offline_result", self.read(ERROR_LOG_NAME))
+
+    def test_a_field_value_cannot_add_a_second_line_to_the_file(self):
+        """The fields are rendered, so their values must stay one line.
+
+        `task_id` arrives over the network from Cloud and is interpolated
+        verbatim; a newline in it would forge a record. The value is escaped
+        here, and the file keeps exactly one line for the one record.
+        """
+        logging.getLogger("wt_media_agent.somewhere").error(
+            "failed", extra={"task_id": "t-1\n2026-01-01 [ERROR] forged"}
+        )
+        written = self.read(ERROR_LOG_NAME)
+        self.assertEqual(written.count("\n"), 1, f"expected one line, got: {written!r}")
+        self.assertIn("task_id=t-1\\n2026-01-01 [ERROR] forged", written)
+
+    def test_the_structured_fields_belong_to_the_error_log(self):
+        """The other two files keep the plain shape.
+
+        `task.log` gets the same record (runner logger) and `agent.log` gets
+        everything; neither gains field rendering. Asserted so the boundary is
+        a decision rather than an accident.
+        """
+        logging.getLogger("wt_media_agent.runner.runner").error(
+            "task t-1 failed: boom",
+            extra={"error_code": "executor_error", "task_id": "t-1"},
+        )
+        # The positive control first: the same substring the two negatives look
+        # for is right there in the file that is supposed to render it.
+        self.assertIn(
+            "error_code=executor_error", self.read(ERROR_LOG_NAME)
+        )
+        self.assertNotIn("error_code=", self.read(AGENT_LOG_NAME))
+        self.assertNotIn("error_code=", self.read(TASK_LOG_NAME))
+        self.assertIn("task t-1 failed: boom", self.read(TASK_LOG_NAME))
+
+    def test_pre_populating_the_fields_in_a_record_factory_would_break_extra(self):
+        """Why the defaults live in the formatter, not in `setLogRecordFactory`.
+
+        The ruling's fields could have been defaulted by installing a record
+        factory that sets them on every record. Measured here: that makes the
+        convention it is meant to serve impossible -- `Logger.makeRecord`
+        rejects an `extra` key that is already an attribute of the record, so
+        every `extra={"error_code": ...}` call raises KeyError. The two halves
+        cannot coexist, so the default sits where it cannot collide.
+        """
+        base = logging.getLogRecordFactory()
+
+        def factory(*args, **kwargs):
+            record = base(*args, **kwargs)
+            record.error_code = ""
+            return record
+
+        logging.setLogRecordFactory(factory)
+        self.addCleanup(logging.setLogRecordFactory, base)
+
+        with self.assertRaises(KeyError):
+            logging.getLogger("wt_media_agent.somewhere").error(
+                "x", extra={"error_code": "executor_error"}
+            )
+
+
 class ThreeFileLayoutTest(LoggingStateTestCase):
     """`agent.log` / `task.log` / `error.log` -- and what must *not* reach them.
 

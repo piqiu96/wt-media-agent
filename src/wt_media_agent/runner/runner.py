@@ -19,6 +19,11 @@ from wt_media_agent.utils.time import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
+# Every record below with a task in scope names it twice (CHG-057 T-05): in the
+# message, where a reader has always found it, and as an `extra` field, which is
+# what `error.log` renders as `task_id=`. The message is not the field's carrier:
+# a task id that only ever appears inside a sentence cannot be filtered on.
+
 
 class TaskRunner:
     """Polls Cloud for tasks, executes them with checkpoints, and recovers on restart."""
@@ -70,9 +75,11 @@ class TaskRunner:
         logger.info("recovering %d incomplete task(s)", len(incomplete))
         for cp in incomplete:
             if cp.checkpoint_status == "claimed":
-                logger.info("re-claiming task %s (previous claim)", cp.task_id)
+                logger.info("re-claiming task %s (previous claim)", cp.task_id,
+                            extra={"task_id": cp.task_id})
             elif cp.checkpoint_status == "running":
-                logger.info("resuming task %s at progress %d", cp.task_id, cp.progress)
+                logger.info("resuming task %s at progress %d", cp.task_id, cp.progress,
+                            extra={"task_id": cp.task_id})
 
     def _flush_offline_queue(self) -> None:
         """Deliver any results queued while Cloud was unreachable."""
@@ -87,9 +94,11 @@ class TaskRunner:
                     result.status, result.progress, result.message or "",
                 )
                 self.store.mark_delivered(result.id)
-                logger.info("delivered offline result for task %s", result.task_id)
+                logger.info("delivered offline result for task %s", result.task_id,
+                            extra={"task_id": result.task_id})
             except Exception as exc:
-                logger.warning("offline delivery failed for task %s: %s", result.task_id, exc)
+                logger.warning("offline delivery failed for task %s: %s", result.task_id, exc,
+                               extra={"task_id": result.task_id})
 
     # ---- Poll Loop ----
 
@@ -105,25 +114,33 @@ class TaskRunner:
         self._save_claimed(task_id, task_type)
         executor = self._executors.get(task_type)
         if executor is None:
-            logger.warning("no executor for task type %s", task_type)
+            logger.warning("no executor for task type %s", task_type,
+                           extra={"task_id": task_id, "error_code": "no_executor"})
             self._report_failed(task_id, "no_executor")
             return
 
         try:
-            logger.info("executing task %s (type=%s)", task_id, task_type)
+            logger.info("executing task %s (type=%s)", task_id, task_type,
+                        extra={"task_id": task_id})
             self._save_running(task_id, task_type, progress=0, message="executing")
             instance = executor(self.client, self.config.agent_id)
             if hasattr(instance, "execute"):
                 instance.execute(task_data)
             self._save_completed(task_id, task_type)
             self.store.remove_checkpoint(task_id)
-            logger.info("task %s succeeded", task_id)
+            logger.info("task %s succeeded", task_id, extra={"task_id": task_id})
         except SessionInvalidError as exc:
             self._running = False
-            logger.error("task %s result is uncertain after session invalidation: %s", task_id, exc)
+            logger.error(
+                "task %s result is uncertain after session invalidation: %s", task_id, exc,
+                extra={"task_id": task_id, "error_code": "session_invalidated_result_uncertain"},
+            )
             self._save_failed(task_id, task_type, "session_invalidated_result_uncertain")
         except Exception as exc:
-            logger.error("task %s failed: %s", task_id, exc)
+            logger.error(
+                "task %s failed: %s", task_id, exc,
+                extra={"task_id": task_id, "error_code": "executor_error"},
+            )
             self._save_failed(task_id, task_type, str(exc))
 
     def _claim_task(self) -> Optional[Mapping[str, object]]:
