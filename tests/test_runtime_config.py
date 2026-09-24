@@ -54,7 +54,10 @@ class DefaultsTest(unittest.TestCase):
         self.assertIsNone(cfg.bitbrowser_mutation_timeout_seconds)
         self.assertEqual(cfg.data_dir, "")
         self.assertEqual(cfg.log_level, "INFO")
-        self.assertEqual(cfg.log_file, "")
+        # Not "" since CHG-057 T-03: an unset `file` resolves to the deployment
+        # shape's `<logs_dir>/agent.log`, dev included. Asserted against the
+        # resolved paths rather than the literal, so the two cannot drift.
+        self.assertEqual(cfg.log_file, str(cfg.paths.logs_dir / "agent.log"))
         self.assertEqual(cfg.runtime_token, "")
         self.assertEqual(cfg.paths.origin, "dev")
         self.assertFalse(cfg.is_production)
@@ -141,9 +144,16 @@ class EnvLayerTest(unittest.TestCase):
     def test_the_health_scripts_log_file_variable_is_not_agent_config(self):
         """`WT_MEDIA_AGENT_LOG_FILE` names where start-health.sh redirects *its*
         child's stdout/stderr. No Agent module ever read it, and honouring it
-        here would put a second handler on the file the caller already owns."""
+        here would put a second handler on the file the caller already owns.
+
+        Since CHG-057 T-03 the variable being ignored no longer shows up as a
+        blank `log_file` -- that now names the deployment's own file. So the
+        claim is asserted directly: whatever it is, it is *not* the health
+        script's path.
+        """
         cfg = load(env={"WT_MEDIA_AGENT_LOG_FILE": "/tmp/health-redirect.log"})
-        self.assertEqual(cfg.log_file, "")
+        self.assertEqual(cfg.log_file, str(cfg.paths.logs_dir / "agent.log"))
+        self.assertNotEqual(cfg.log_file, "/tmp/health-redirect.log")
 
     def test_a_bad_log_level_is_rejected_by_key_path(self):
         with self.assertRaises(ConfigError) as caught:

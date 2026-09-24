@@ -69,16 +69,45 @@ class RuntimePathsResolveTest(unittest.TestCase):
 
 
 class DefaultLogFileTest(unittest.TestCase):
-    def test_dev_and_override_leave_logs_on_stderr(self):
+    def test_every_deployment_shape_writes_a_real_file(self):
+        """All three origins land on `<logs_dir>/agent.log` (CHG-057 T-03).
+
+        Until T-03 dev and override returned "" and left the developer with the
+        terminal alone. The user's ruling (十一) requires the opposite: a
+        development run's `.local/logs/` must not be empty -- "日志有轮转" cannot
+        be true of a file nothing writes. The stderr handler is still installed
+        unconditionally (`configure_logging`), so nothing was traded away: a
+        developer keeps the live view *and* gets the file.
+        """
+        cases = (
+            (
+                {"environment": "development", "frozen": False, "repo_root": Path("/repo")},
+                "/repo/.local/logs/agent.log",
+            ),
+            ({"data_dir": "/tmp/wt-override"}, "/tmp/wt-override/logs/agent.log"),
+            (
+                {"environment": "production", "frozen": False, "home": Path("/Users/dev")},
+                "/Users/dev/Library/Logs/WTMedia/Agent/agent.log",
+            ),
+        )
+        for kwargs, expected in cases:
+            with self.subTest(origin=kwargs):
+                self.assertEqual(RuntimePaths.resolve(**kwargs).default_log_file, expected)
+
+    def test_the_file_is_always_under_the_resolved_logs_dir(self):
+        """The property, not the three paths: origin never redirects the file.
+
+        A shape that resolved logs somewhere else and wrote somewhere else would
+        pass the table above and still be wrong -- this is what forbids it.
+        """
         for kwargs in (
             {"environment": "development", "frozen": False, "repo_root": Path("/repo")},
             {"data_dir": "/tmp/wt-override"},
+            {"environment": "production", "frozen": False, "home": Path("/Users/dev")},
         ):
-            self.assertEqual(RuntimePaths.resolve(**kwargs).default_log_file, "")
-
-    def test_installed_writes_a_real_file(self):
-        rp = RuntimePaths.resolve(environment="production", frozen=False, home=Path("/Users/dev"))
-        self.assertEqual(rp.default_log_file, "/Users/dev/Library/Logs/WTMedia/Agent/agent.log")
+            with self.subTest(origin=kwargs):
+                rp = RuntimePaths.resolve(**kwargs)
+                self.assertEqual(rp.default_log_file, str(rp.logs_dir / "agent.log"))
 
 
 class EnsureTest(unittest.TestCase):

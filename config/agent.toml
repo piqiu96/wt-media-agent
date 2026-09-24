@@ -53,6 +53,10 @@ data_dir = ""
 
 [logging]
 level = "INFO"
-# Empty means "decide from the deployment shape": a source checkout logs to
-# stderr, an installed agent to <logs_dir>/agent.log.
+# Empty means "use <logs_dir>/agent.log" -- the resolved logs directory, which
+# is <repo>/.local/logs in a source checkout and
+# ~/Library/Logs/WTMedia/Agent when installed. Records reach the terminal as
+# well: the stderr handler is always installed, so setting this adds a file
+# rather than replacing the live view. (Before CHG-057 T-03 a source checkout
+# wrote no file at all, so this key was the only way to get one.)
 file = ""

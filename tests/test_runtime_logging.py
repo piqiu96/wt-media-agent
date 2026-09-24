@@ -138,11 +138,42 @@ class ConfigureFromTest(LoggingStateTestCase):
         self.assertEqual(len(handlers), 1)
         self.assertIsInstance(handlers[0], logging.StreamHandler)
 
-    def test_no_configured_file_means_stderr_only(self):
-        configure_from(config())
-        handlers = logging.getLogger().handlers
-        self.assertEqual(len(handlers), 1)
-        self.assertIsInstance(handlers[0], logging.StreamHandler)
+    def test_a_development_run_writes_a_file_as_well_as_stderr(self):
+        """CHG-057 T-03 (the user's ruling 十一): a dev run's logs are not empty.
+
+        This replaces `test_no_configured_file_means_stderr_only`, which
+        asserted the opposite (dev -> stderr only, no file). Both halves are
+        still asserted, just with the file present: the record reaches the file,
+        and stderr is still installed rather than being traded away for it.
+
+        The repo root is *injected* and temporary, so this cannot write into a
+        real checkout -- the property CHG-057 T-02 put a rule behind.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            cfg = load_config(
+                env={}, frozen=False, repo_root=repo, home=Path("/home/nobody")
+            )
+
+            # The layout is asserted through the resolved paths, not by spelling
+            # `.local/logs` out again: a hand-written expectation could drift
+            # from `RuntimePaths` and still pass. (Writing the literal shape here
+            # is also what T-02's rule flags -- correctly, since `<root> /
+            # ".local"` is exactly the pattern that must be justified.)
+            self.assertEqual(cfg.paths.origin, "dev")
+            self.assertTrue(
+                str(cfg.paths.logs_dir).startswith(str(repo)),
+                "a dev run must stay inside its own checkout",
+            )
+            self.assertEqual(cfg.log_file, str(cfg.paths.logs_dir / "agent.log"))
+
+            configure_from(cfg)
+            logging.getLogger("wt_media_agent.somewhere").info("a development run writes this")
+            written = Path(cfg.log_file).read_text()
+
+        self.assertIn("a development run writes this", written)
+        kinds = [type(handler).__name__ for handler in logging.getLogger().handlers]
+        self.assertEqual(kinds, ["StreamHandler", "RotatingFileHandler"])
 
 
 if __name__ == "__main__":

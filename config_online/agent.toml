@@ -51,6 +51,8 @@ data_dir = ""
 
 [logging]
 level = "INFO"
-# Empty resolves to <logs_dir>/agent.log for the same reason: a bundled sidecar
-# has no terminal to log to.
+# Empty resolves to <logs_dir>/agent.log, i.e.
+# ~/Library/Logs/WTMedia/Agent with the `environment` above. A bundled sidecar
+# has no terminal to log to, which is why the file is always written -- and
+# since CHG-057 T-03 a source checkout writes one too, into .local/logs.
 file = ""

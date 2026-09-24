@@ -97,14 +97,20 @@ class RuntimePaths:
 
     @property
     def default_log_file(self) -> str:
-        """Where logs go when `log_file` is left unset.
+        """Where logs go when `log_file` is left unset: always a real file.
 
-        Dev returns "" so the developer reads the terminal. Installed returns a
-        real file: a bundled sidecar has no terminal -- Desktop currently
-        discards the sidecar's stdout and stderr -- so stderr-only would mean
-        the logs go nowhere.
+        Installed mode has always written one, for the reason a bundled sidecar
+        has no terminal. Dev and override now do too (CHG-057 T-03, per the
+        user's ruling 十一: a development run's `.local/logs/` must not be
+        empty). Until then dev returned "" and the file never existed -- so
+        "logs are rotated" was true of nothing.
+
+        Nothing was traded for it: `configure_logging` installs the stderr
+        handler unconditionally, so a developer keeps the live view as well as
+        the file, and a log directory that cannot be created degrades to that
+        handler alone (`configure_from`).
         """
-        return "" if self.origin in {"dev", "override"} else str(self.logs_dir / "agent.log")
+        return str(self.logs_dir / "agent.log")
 
     def ensure(self) -> tuple[Path, ...]:
         """Create the three directories, skipping any creation that fails.
