@@ -1,4 +1,5 @@
 import logging
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +7,11 @@ from pathlib import Path
 import wt_media_agent
 from wt_media_agent.runtime.config import load_config
 from wt_media_agent.runtime.logging import (
+    AGENT_LOG_NAME,
     DEFAULT_COMPONENT,
+    ERROR_LOG_NAME,
+    TASK_LOG_NAME,
+    NoTracebackFormatter,
     configure_from,
     configure_logging,
 )
@@ -172,8 +177,115 @@ class ConfigureFromTest(LoggingStateTestCase):
             written = Path(cfg.log_file).read_text()
 
         self.assertIn("a development run writes this", written)
+        # Since T-04 there are three files, not one. The terminal is still a
+        # target -- asserted as a count, so "stderr was kept" cannot quietly
+        # become "stderr was replaced by the files".
         kinds = [type(handler).__name__ for handler in logging.getLogger().handlers]
-        self.assertEqual(kinds, ["StreamHandler", "RotatingFileHandler"])
+        self.assertEqual(kinds[0], "StreamHandler", "the terminal must still be a target")
+        self.assertEqual(kinds.count("RotatingFileHandler"), 3)
+
+
+class ThreeFileLayoutTest(LoggingStateTestCase):
+    """`agent.log` / `task.log` / `error.log` -- and what must *not* reach them.
+
+    The negative half is the point. A routing rule that wrote every record to
+    every file would satisfy every positive assertion in here, and the ruling's
+    requirement is separation, not duplication.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.directory = Path(self._tmp.name)
+        configure_from(config(WT_MEDIA_LOG_FILE=str(self.directory / AGENT_LOG_NAME)))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        super().tearDown()
+
+    def read(self, name: str) -> str:
+        path = self.directory / name
+        return path.read_text() if path.is_file() else ""
+
+    def test_all_three_files_are_created(self):
+        for name in (AGENT_LOG_NAME, TASK_LOG_NAME, ERROR_LOG_NAME):
+            with self.subTest(name=name):
+                self.assertTrue((self.directory / name).is_file(), f"{name} missing")
+
+    def test_the_task_narrative_goes_to_the_task_log_as_well_as_the_agent_log(self):
+        logging.getLogger("wt_media_agent.runner.runner").info("executing task abc")
+        self.assertIn("executing task abc", self.read(TASK_LOG_NAME))
+        self.assertIn("executing task abc", self.read(AGENT_LOG_NAME))
+
+    def test_a_non_runner_record_stays_out_of_the_task_log(self):
+        logging.getLogger("wt_media_agent.local_api.server").info("local_api.status.start")
+        self.assertIn("local_api.status.start", self.read(AGENT_LOG_NAME))
+        self.assertNotIn("local_api.status.start", self.read(TASK_LOG_NAME))
+
+    def test_a_similar_name_is_not_the_runner(self):
+        """The prefix matches on a dotted boundary, not a string prefix.
+
+        `wt_media_agent.runner_pool` is a different component; sweeping it into
+        the task narrative would be the kind of drift nobody notices.
+        """
+        logging.getLogger("wt_media_agent.runner_pool").info("not a task node")
+        self.assertIn("not a task node", self.read(AGENT_LOG_NAME))
+        self.assertNotIn("not a task node", self.read(TASK_LOG_NAME))
+
+    def test_errors_reach_the_error_log_as_well_as_the_agent_log(self):
+        logging.getLogger("wt_media_agent.somewhere").error("could not write the file")
+        self.assertIn("could not write the file", self.read(ERROR_LOG_NAME))
+        self.assertIn("could not write the file", self.read(AGENT_LOG_NAME))
+
+    def test_an_info_record_stays_out_of_the_error_log(self):
+        logging.getLogger("wt_media_agent.somewhere").info("ordinary progress")
+        self.assertIn("ordinary progress", self.read(AGENT_LOG_NAME))
+        self.assertNotIn("ordinary progress", self.read(ERROR_LOG_NAME))
+
+    def test_the_traceback_is_in_the_agent_log_and_not_the_error_log(self):
+        """The ruling's split: `error.log` is a record, not a stack dump.
+
+        `local_api/server.py:108` already emits a real one of these through
+        `logger.exception`, so this is not a hypothetical shape.
+        """
+        try:
+            raise ValueError("the reason it failed")
+        except ValueError:
+            logging.getLogger("wt_media_agent.somewhere").exception("failed to write the file")
+
+        agent, error = self.read(AGENT_LOG_NAME), self.read(ERROR_LOG_NAME)
+        self.assertIn("failed to write the file", error)
+        self.assertIn("Traceback (most recent call last)", agent)
+        self.assertIn("ValueError: the reason it failed", agent)
+        self.assertNotIn("Traceback", error)
+        self.assertNotIn("the reason it failed", error)
+
+    def test_the_no_traceback_formatter_ignores_a_traceback_cached_by_another_handler(self):
+        """Reproduces the trap directly, independently of handler order.
+
+        A record is one object handed to every handler, and the base formatter
+        *caches* the rendered traceback on `record.exc_text`. So a formatter
+        that merely returned "" from `formatException` would still print the
+        traceback into `error.log` whenever `agent.log`'s handler had run first
+        -- which is the order `configure_logging` happens to install. This
+        asserts the second render, not the first, so ordering cannot hide it.
+        """
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            record = logging.LogRecord(
+                "wt_media_agent.somewhere",
+                logging.ERROR,
+                __file__,
+                1,
+                "the message",
+                (),
+                sys.exc_info(),
+            )
+
+        standard = logging.Formatter("%(message)s")
+        self.assertIn("ValueError: boom", standard.format(record))
+        self.assertNotIn("ValueError", NoTracebackFormatter("%(message)s").format(record))
 
 
 if __name__ == "__main__":
