@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from http.server import ThreadingHTTPServer
 
-from support import UnusedBitBrowser
+from support import LoggingStateTestCase, UnusedBitBrowser
 
 from wt_media_agent import runtime
 from wt_media_agent.bootstrap import cloud as cloud_mode
@@ -45,8 +45,17 @@ def declared_task_types() -> set[str]:
     }
 
 
-class ComponentTestCase(unittest.TestCase):
-    """Builds components against a throwaway repo root and an empty environment."""
+class ComponentTestCase(LoggingStateTestCase):
+    """Builds components against a throwaway repo root and an empty environment.
+
+    Restores logging state on the way out, because `build_components` is the
+    single Logger entry point (the user's ruling 二/五): assembling the Agent
+    here installs three file handlers aimed at this test's throwaway directory,
+    and a test that left them installed would hand every later test a handler
+    whose file no longer exists. That is measured, not hypothetical -- leaving
+    it installed made six later tests print `--- Logging error ---
+    FileNotFoundError` (CHG-057 T-06).
+    """
 
     def build(self, **env):
         tmp = tempfile.TemporaryDirectory()
@@ -64,6 +73,9 @@ class ComponentTestCase(unittest.TestCase):
 
 class AssemblyTests(ComponentTestCase):
     def setUp(self):
+        # Before `self.build()`: it is what installs the handlers this test's
+        # tearDown has to put back, and the state has to be captured first.
+        super().setUp()
         self.components = self.build()
         self.config = self.components.config
 
@@ -107,6 +119,26 @@ class AssemblyTests(ComponentTestCase):
 
         self.assertEqual(components.config.runtime_token, token)
         self.assertNotIn(token, json.dumps(cloud_mode.environment_facts(components)))
+
+    def test_a_credential_inside_a_configured_url_is_masked_in_the_environment_facts(self):
+        """The other half of "no credentials": one can hide *inside* a value.
+
+        `cloud.base_url` takes a `https://user:password@host` shape when a proxy
+        or a private Cloud needs one, and its key looks harmless -- so the value
+        is masked instead of trusted. Measured before the mask existed: the
+        password reached the facts verbatim (CHG-057 T-06).
+        """
+        password, host = "pw123456", "cloud.example.test"
+        components = self.build(
+            WT_MEDIA_CLOUD_BASE_URL=f"https://alice:{password}@{host}/api"
+        )
+
+        facts = cloud_mode.environment_facts(components)
+        # Positive controls first: the field is there and still readable, so the
+        # negative below cannot pass by the value having been emptied.
+        self.assertIn(host, str(facts["cloud_base_url"]))
+        self.assertIn("alice", str(facts["cloud_base_url"]))
+        self.assertNotIn(password, json.dumps(facts))
 
 
 class CloudModeTests(ComponentTestCase):
@@ -176,6 +208,7 @@ class HealthzAuthenticationTests(ComponentTestCase):
             httpd.server_close()
 
     def setUp(self):
+        super().setUp()
         self.components = None
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

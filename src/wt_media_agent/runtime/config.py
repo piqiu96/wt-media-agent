@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -199,7 +199,11 @@ class AgentConfig:
     run_runner: bool
     log_level: str
     log_file: str
-    runtime_token: str
+    #: `repr=False`: the ruling 十 forbids a sensitive object printing itself,
+    #: and a dataclass repr is what a debugger, a traceback and `print` all use.
+    #: Excluding the field is one word that cannot drift; a hand-written
+    #: `__repr__` would have to be kept in step with every field added here.
+    runtime_token: str = field(repr=False)
     #: Derived from `environment` and `data_dir`, not configured directly.
     paths: RuntimePaths
 

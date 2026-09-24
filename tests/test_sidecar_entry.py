@@ -12,9 +12,19 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
+
+from support import LoggingStateTestCase
 
 
-class SidecarEntryTests(unittest.TestCase):
+class SidecarEntryTests(LoggingStateTestCase):
+    """Restores logging state: one test below runs the real sidecar entry.
+
+    `bootstrap.sidecar.run` assembles the Agent, which initializes the Logger
+    (the user's ruling 二/五) and installs three file handlers on this test's
+    throwaway directory. Leaving them installed is what CHG-057 T-06 measured
+    as the source of the suite's stray `Logging error` tracebacks.
+    """
     def test_macos_build_uses_adhoc_signing_for_embedded_python(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "build_desktop_sidecar", ROOT / "scripts" / "build_desktop_sidecar.py"

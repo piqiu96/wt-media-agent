@@ -1,14 +1,18 @@
-"""Shared test doubles. Not a test module -- `test*.py` is the discover pattern.
+"""Shared test doubles and test infrastructure. Not a test module -- `test*.py`
+is the discover pattern.
 
 Kept to things that are only useful *because* they are shared: a double defined
-next to a single test tends to inherit that test's assumptions.
+next to a single test tends to inherit that test's assumptions, and global state
+that only one file knows how to put back is global state nobody else can use.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import tempfile
+import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -81,4 +85,52 @@ def isolated_paths() -> Iterator[IsolatedPaths]:
                 os.environ.pop("WT_MEDIA_AGENT_DATA_DIR", None)
             else:
                 os.environ["WT_MEDIA_AGENT_DATA_DIR"] = saved
-            reset_config_cache()
+            reset_config_cache()#: Every logger name `dictConfig` may touch, so a test can restore all of them
+#: even when it mutates which one is configured.
+CONFIGURED_LOGGER_NAMES = ("wt_media_agent", "wt-media-agent")
+
+
+class LoggingStateTestCase(unittest.TestCase):
+    """`dictConfig` rewrites global logging state; every test must put it back.
+
+    The state is global and outlives the test that set it up, so a test that
+    does not restore it fails in a way that looks like somebody else's problem:
+    `configure_from` installs file handlers aimed at a throwaway directory
+    (three of them, since CHG-057 T-04), and once that directory is deleted
+    every later test to log through those loggers prints a stray
+    `--- Logging error --- FileNotFoundError` traceback attributed to an
+    unrelated test. Measured in CHG-057 T-06: two modules that assemble the
+    Agent without restoring left a dead set installed for the whole run, and
+    six later tests emitted into it. `tests/test_logging_state_isolation.py`
+    is the rule that keeps a new module from repeating it.
+    """
+
+    def setUp(self):
+        root = logging.getLogger()
+        self._root_level = root.level
+        self._root_handlers = list(root.handlers)
+        self._logger_state = {
+            name: (
+                list(logging.getLogger(name).handlers),
+                logging.getLogger(name).level,
+                logging.getLogger(name).propagate,
+            )
+            for name in dict.fromkeys(CONFIGURED_LOGGER_NAMES)
+        }
+
+    def tearDown(self):
+        root = logging.getLogger()
+        for handler in root.handlers:
+            if handler not in self._root_handlers:
+                handler.close()
+        root.handlers[:] = self._root_handlers
+        root.setLevel(self._root_level)
+
+        for name, (handlers, level, propagate) in self._logger_state.items():
+            logger = logging.getLogger(name)
+            for handler in logger.handlers:
+                if handler not in handlers:
+                    handler.close()
+            logger.handlers[:] = handlers
+            logger.setLevel(level)
+            logger.propagate = propagate
