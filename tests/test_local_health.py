@@ -365,6 +365,7 @@ class RouteTest(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
+            # network-ok: the loopback HTTP server this call drives, started above
             with urlrequest.urlopen(f"http://127.0.0.1:{server.server_port}{path}") as response:
                 return response.status, response.read()
         finally:

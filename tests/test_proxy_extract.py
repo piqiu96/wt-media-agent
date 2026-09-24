@@ -70,6 +70,7 @@ class ProxyExtractTests(unittest.TestCase):
                     method="POST",
                 )
                 try:
+                    # network-ok: the loopback HTTP server started above
                     with urlrequest.urlopen(request) as response:
                         status, body = response.status, response.read()
                 except urlerror.HTTPError as error:

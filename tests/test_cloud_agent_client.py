@@ -201,12 +201,14 @@ class RequestTimeoutTest(unittest.TestCase):
         return urlopen.call_args.kwargs["timeout"]
 
     def test_the_configured_timeout_reaches_the_request(self) -> None:
+        # network-ok: the real transport is the subject; `_call` patches urlopen
         client = CloudAgentClient("http://cloud.test", timeout=42.5)
 
         self.assertEqual(self._call(client), 42.5)
 
     def test_an_omitted_timeout_keeps_the_historical_default(self) -> None:
         """Callers that pass no timeout must keep behaving exactly as before."""
+        # network-ok: the real transport is the subject; `_call` patches urlopen
         client = CloudAgentClient("http://cloud.test")
 
         self.assertEqual(self._call(client), 10)

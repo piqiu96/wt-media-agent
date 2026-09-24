@@ -198,6 +198,7 @@ class HealthzAuthenticationTests(ComponentTestCase):
             if header:
                 request.add_header("authorization", header)
             try:
+                # network-ok: the loopback HTTP server started above
                 with urlrequest.urlopen(request) as response:
                     return response.status, json.loads(response.read())
             except urlerror.HTTPError as error:
