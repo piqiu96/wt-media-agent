@@ -61,4 +61,4 @@
 3. `DIRECTORY_MAP.md`（目录导航，含 Local/Cloud 适用范围标注）
 4. 只读目标模块的代码、直接依赖与 `tests/` 对应测试
 
-治理上下文（当前 CHG、执行契约）在 `../wt-media-workspace`，按其 `.ai/CURRENT_CONTEXT.md` 指引加载。禁止默认扫描 `generated/`、`__pycache__`、锁文件。
+治理上下文（当前 CHG、执行契约）在 `../wt-media-workspace`，按其 `.ai/CURRENT_CONTEXT.md` 指引加载。禁止默认扫描 `__pycache__`、锁文件。

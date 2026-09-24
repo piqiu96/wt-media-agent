@@ -95,13 +95,13 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 
 `utils/time.py`：UTC 时间戳格式化的唯一实现，供落库与比较共用。
 
-## 九、占位与生成（如实标注）
+## 九、占位包（如实标注）
 
 | 路径 | 现状 |
 |---|---|
-| `src/wt_media_agent/modes/` | 模式选择占位，尚无实现 |
 | `src/wt_media_agent/adapters/` | 平台适配占位，尚无实现（平台 Playwright 适配未来在此引入） |
-| `src/wt_media_agent/generated/` | 生成的契约类型，**禁止手改** |
+
+`modes/` 与 `generated/` 已删除（架构基线 §5.2 明写不保留这两者，是目录一直没跟上）。
 
 ## 十、契约、配置与测试
 
@@ -114,5 +114,4 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 
 ## 十一、禁止扫描区
 
-- `src/wt_media_agent/generated/`（生成代码，除非任务就是核对生成结果）
 - `__pycache__/`、`.venv/`、`uv.lock`、`dependency.lock`（除非诊断依赖问题）

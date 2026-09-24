@@ -22,9 +22,7 @@ Agent 执行任务，但不拥有正式业务事实：不连 Cloud MySQL，不�
 - `storage`: SQLite 检查点存储（`checkpoint_store.py`）、连接策略（`sqlite.py`）与本地存储迁移（`migration.py`，含冻结符号）。
 - `runner`: 任务执行 Runner（`runner.py`）、配置（`config.py`）与任务类型注册表（`registry.py`）。
 - `executors`: 任务类型编排：`protocol.py`（`Executor`/`ExecutorFactory`，不得 import `runner/`）、`profile.py`、`account_check.py`、`cookie.py`、`proxy.py`、`proxy_mutation.py`、`noop.py`。
-- `modes`: 模式选择占位，尚无实现。
 - `adapters`: 平台适配占位，尚无实现。
-- `generated`: 仅存放生成的契约类型。
 
 ## Rules
 
@@ -33,4 +31,4 @@ Agent 执行任务，但不拥有正式业务事实：不连 Cloud MySQL，不�
 - 平台适配（未来 CHG 引入后）不得直接修改 Cloud 状态。
 - 高风险外部操作结果无法确认时必须如实上报，禁止盲目重试。
 - 发布构建不依赖系统 Python 或系统 PATH FFmpeg。
-- `src/wt_media_agent/generated` 禁止手改。
+- 依赖锁文件（`uv.lock`、`dependency.lock`）禁止手改。
