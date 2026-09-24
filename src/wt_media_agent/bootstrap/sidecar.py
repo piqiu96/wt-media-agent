@@ -31,5 +31,6 @@ def run() -> int:
         checkpoint_store=components.store,
         state=components.state,
         auth_token=config.runtime_token,
+        cloud_base_url=config.cloud_base_url,
     )
     return 0

@@ -1,7 +1,8 @@
 openapi: 3.0.3
 info:
   title: WT Media Local Agent Loopback API
-  version: 2026.09.06.1
+  # Bumped by CHG-20260923-057 T-08: /api/v1/health added, /healthz untouched.
+  version: 2026.09.24.1
 servers:
   - url: http://127.0.0.1:8765
 paths:
@@ -14,6 +15,30 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Health'}
+  /api/v1/health:
+    get:
+      operationId: localAgentAggregateHealth
+      description: |
+        Aggregate health: Agent version and Agent status, plus the status of
+        Cloud, BitBrowser and Storage (CHG-20260923-057 T-08; architecture
+        baseline §5.6, ADR-0016 §10). `/healthz` is frozen and is not this.
+
+        Two guarantees, both about what this endpoint does *not* do:
+
+        - It sends no outbound write request for any reason -- no heartbeat, no
+          task claim, nothing that changes state on the far side. Cloud is
+          probed with a TCP connection to the configured host and port and
+          nothing else, so `cloud.status` is *reachability*: a Cloud that
+          accepts the connection and then rejects this Agent's token still
+          reports `normal`.
+        - It never fails because a dependency is unavailable. Each dependency
+          degrades on its own and the response is 200 either way.
+      responses:
+        '200':
+          description: Aggregate health; one or more dependencies may be degraded.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AggregateHealth'}
   /api/v1/status:
     get:
       operationId: localAgentStatus
@@ -166,6 +191,45 @@ components:
         status: {type: string, enum: [idle, running, draining, offline]}
         current_task_id: {type: string, nullable: true}
         pending_result_count: {type: integer, minimum: 0}
+    DependencyStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [normal, unreachable, abnormal, unknown]
+          description: |
+            `normal` the dependency answered for itself; `unreachable`
+            BitBrowser's local API could not be reached (the same value
+            `/api/v1/status` reports as `bitbrowser_status`); `abnormal` the
+            dependency is configured and not answering; `unknown` this probe
+            could not tell -- no endpoint configured, or a failure nobody
+            anticipated, which is logged with its traceback rather than
+            reported as an outage.
+      additionalProperties: false
+    AggregateHealth:
+      type: object
+      required: [status, service, agent_version, agent_status, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ok, abnormal]
+          description: |
+            `ok` only when all three dependencies report `normal`. `unknown`
+            counts as degraded: "nobody can tell" is not "fine", and this is
+            the field a monitor reads.
+        service: {type: string, enum: [wt-media-agent]}
+        agent_version: {type: string, description: The Agent version, normalized to its numeric form; `/api/v1/status` reports the same string.}
+        agent_status: {type: string, description: The Agent's own status; the roll-up is the top-level status.}
+        dependencies:
+          type: object
+          required: [cloud, bitbrowser, storage]
+          properties:
+            cloud: {$ref: '#/components/schemas/DependencyStatus'}
+            bitbrowser: {$ref: '#/components/schemas/DependencyStatus'}
+            storage: {$ref: '#/components/schemas/DependencyStatus'}
+          additionalProperties: false
+      additionalProperties: false
     ProfileSnapshot:
       type: object
       required: [main_user_id, profiles]

@@ -49,6 +49,37 @@ class CheckpointStore:
     def _connect(self) -> sqlite3.Connection:
         return connect(self._db_path)
 
+    def probe(self) -> None:
+        """Read one row and nothing else, to answer "is storage usable here?".
+
+        The health endpoint calls this (CHG-057 T-08). Three decisions are worth
+        naming:
+
+        - It reads from `task_checkpoints` rather than running `SELECT 1`: an
+          answer of "the file opens" would call a database that never migrated
+          `normal`, and an Agent whose schema is missing cannot execute a task.
+        - A missing file is a failure, not something to create.
+          `sqlite3.connect` would happily make an empty database, and a probe
+          that creates what it was asked to verify reports success for a storage
+          layer that is not there. Schema creation belongs to
+          `storage/migration.py` at bootstrap, never to a probe.
+        - It writes nothing: the SELECT opens no transaction, so the `with`
+          block commits nothing.
+        - It closes its connection, unlike the methods below. The `with` form
+          commits but does not close (see `storage/sqlite.py`), which is
+          tolerable for a write that happens once per task and is not
+          tolerable for an endpoint a Desktop health poll can call every few
+          seconds.
+        """
+        if not self._db_path.exists():
+            raise FileNotFoundError(f"no database at {self._db_path}")
+        connection = self._connect()
+        try:
+            with connection:
+                connection.execute("SELECT 1 FROM task_checkpoints LIMIT 1").fetchone()
+        finally:
+            connection.close()
+
     # ---- Task Checkpoints ----
 
     def save_checkpoint(self, cp: TaskCheckpoint) -> None:

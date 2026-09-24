@@ -14,6 +14,7 @@ from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 from wt_media_agent.bootstrap.app import build_components
+from wt_media_agent.local_api.health import CloudReachability, health_report
 from wt_media_agent.local_api.reporting import (
     _build_account_check_items,
     _duration_ms,
@@ -61,10 +62,16 @@ class LocalApiServer:
         bitbrowser: ProfileScanner,
         checkpoint_store: Optional[CheckpointStore] = None,
         auth_token: str = "",
+        cloud_base_url: str = "",
     ) -> None:
         self.state = state or LocalAgentState()
         self.store = checkpoint_store
         self.auth_token = auth_token or ""
+        # The configured Cloud endpoint, handed in rather than read here (the
+        # configuration layer is the only reader of `config/` and the
+        # environment). Empty means this process has no Cloud to report on,
+        # which `/api/v1/health` says as `unknown`.
+        self.cloud = CloudReachability(base_url=cloud_base_url)
         self._event_queue: queue.Queue[dict[str, object]] = queue.Queue()
         # Mandatory, and with no default: this class used to build a client
         # from the environment when none was passed, which meant every route
@@ -79,7 +86,24 @@ class LocalApiServer:
         return auth == f"Bearer {self.auth_token}"
 
     def health(self) -> dict[str, str]:
+        """`/healthz`. Frozen: three keys, and it stays that way.
+
+        Desktop's `http/local_agent.rs` parses exactly this body, and the
+        architecture baseline §5.6 lists the path as a contract that must not be
+        extended. The aggregate belongs to `health_report` below.
+        """
         return {"status": "ok", "service": "wt-media-agent", "mode": "m1"}
+
+    def health_report_response(self) -> dict[str, object]:
+        """`/api/v1/health`: the aggregate, and never a raised dependency error.
+
+        `local_api/health.py` owns the probes and the degradation vocabulary;
+        this is the surface that exposes them, with the same arguments the
+        process was assembled with.
+        """
+        return health_report(
+            self.state, self.bitbrowser, self.store, self.cloud
+        ).to_dict()
 
     def status(self) -> dict[str, object]:
         started_at = time.monotonic()
@@ -388,6 +412,8 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/healthz":
                 self._write_json(200, api.health())
+            elif self.path == "/api/v1/health":
+                self._write_json(200, api.health_report_response())
             elif self.path == "/api/v1/status":
                 self._write_json(200, {"data": api.status()})
             elif self.path == "/api/v1/events":
@@ -549,12 +575,14 @@ def serve(
     checkpoint_store: Optional[CheckpointStore] = None,
     state: Optional[LocalAgentState] = None,
     auth_token: str = "",
+    cloud_base_url: str = "",
 ) -> None:
     api = LocalApiServer(
         state,
         bitbrowser=bitbrowser,
         checkpoint_store=checkpoint_store,
         auth_token=auth_token,
+        cloud_base_url=cloud_base_url,
     )
     httpd = ThreadingHTTPServer((host, port), make_handler(api))
     logger.info("wt-media-agent local API listening on %s:%s", host, port)
@@ -596,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_store=components.store,
         state=components.state,
         auth_token=args.auth_token or config.runtime_token,
+        cloud_base_url=config.cloud_base_url,
     )
     return 0
 
