@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.local_api.server import LocalApiServer
 from wt_media_agent.clients.bitbrowser import BitBrowserResponseError
 
@@ -46,7 +47,7 @@ class ErrorClient(CookieClient):
 
 class LocalCookieReadTests(unittest.TestCase):
     def test_cookie_read_returns_real_cookies(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([
+        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([
             {"name": "DedeUserID", "value": "123456"},
             {"name": "SESSDATA", "value": "session"},
         ]))
@@ -58,7 +59,7 @@ class LocalCookieReadTests(unittest.TestCase):
         self.assertTrue(server.bitbrowser.opened == ["profile-1"])
 
     def test_cookie_read_requires_profile_id(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([]))
 
         status, payload = server.cookie_read_response({})
 
@@ -66,7 +67,7 @@ class LocalCookieReadTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "cookie_read_input_invalid")
 
     def test_cookie_read_maps_bitbrowser_failure(self) -> None:
-        server = LocalApiServer(bitbrowser=ErrorClient([]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=ErrorClient([]))
 
         status, payload = server.cookie_read_response({"profile_id": "profile-1"})
 

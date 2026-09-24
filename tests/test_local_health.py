@@ -401,6 +401,7 @@ class RouteTest(unittest.TestCase):
         """
         with isolated_paths() as paths:
             api = LocalApiServer(
+                LocalAgentState(),
                 bitbrowser=UnreachableBrowser(),
                 checkpoint_store=CheckpointStore(paths.data / "absent.db"),
                 cloud_base_url="http://127.0.0.1:1",
@@ -418,6 +419,7 @@ class RouteTest(unittest.TestCase):
     def test_healthz_is_byte_for_byte_unchanged(self) -> None:
         """`http/local_agent.rs` parses this body; the aggregate must not move it."""
         api = LocalApiServer(
+            LocalAgentState(),
             bitbrowser=HealthyBrowser(),
             cloud_base_url="http://127.0.0.1:1",
         )
@@ -429,7 +431,7 @@ class RouteTest(unittest.TestCase):
 
     def test_the_two_paths_are_separate(self) -> None:
         """/healthz stays the frozen three keys even where the aggregate is rich."""
-        api = LocalApiServer(bitbrowser=HealthyBrowser())
+        api = LocalApiServer(LocalAgentState(), bitbrowser=HealthyBrowser())
 
         _, frozen = self._get(api, "/healthz")
         _, aggregate = self._get(api, "/api/v1/health")

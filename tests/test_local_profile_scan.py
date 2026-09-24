@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.local_api.server import LocalApiServer
 from wt_media_agent.clients.bitbrowser import (
     BitBrowserIdentityError,
@@ -51,7 +52,7 @@ class ErrorClient:
 
 class LocalProfileScanTests(unittest.TestCase):
     def test_returns_secret_free_scan_payload(self) -> None:
-        status, payload = LocalApiServer(bitbrowser=SnapshotClient()).profile_scan_response()
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=SnapshotClient()).profile_scan_response()
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["main_user_id"], "main-user-1")
@@ -66,6 +67,7 @@ class LocalProfileScanTests(unittest.TestCase):
 
     def test_maps_identity_failure_without_raw_response(self) -> None:
         status, payload = LocalApiServer(
+            LocalAgentState(),
             bitbrowser=ErrorClient(BitBrowserIdentityError("mixed secret diagnostic"))
         ).profile_scan_response()
 
@@ -74,6 +76,7 @@ class LocalProfileScanTests(unittest.TestCase):
 
     def test_maps_local_api_failure(self) -> None:
         status, payload = LocalApiServer(
+            LocalAgentState(),
             bitbrowser=ErrorClient(BitBrowserResponseError("raw upstream failure"))
         ).profile_scan_response()
 

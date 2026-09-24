@@ -36,9 +36,16 @@ from wt_media_agent.services.net.proxy import (
     parse_first_proxy_address,
 )
 from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
-from wt_media_agent.runtime.logging import configure_from
 
-logger = logging.getLogger(__name__)
+#: Spelled out rather than `__name__`. `scripts/verify-health.sh` and
+#: `scripts/start-health.sh` both run this module with `-m`, where `__name__`
+#: is `__main__` -- so the logger was named `__main__` and every HTTP-side
+#: record lost the component it came from (T-07 measured it, T-09 fixed it).
+#: The literal is what `__name__` already produced on the import path, so
+#: nothing moved for the entry points that import the module.
+LOGGER_NAME = "wt_media_agent.local_api.server"
+
+logger = logging.getLogger(LOGGER_NAME)
 
 
 class ProfileScanner(Protocol):
@@ -57,14 +64,19 @@ class LocalApiServer:
 
     def __init__(
         self,
-        state: Optional[LocalAgentState] = None,
+        state: LocalAgentState,
         *,
         bitbrowser: ProfileScanner,
         checkpoint_store: Optional[CheckpointStore] = None,
         auth_token: str = "",
         cloud_base_url: str = "",
     ) -> None:
-        self.state = state or LocalAgentState()
+        # Mandatory, like `bitbrowser` below and for the same reason (T-09):
+        # `state or LocalAgentState()` gave a caller that forgot the argument a
+        # fresh, plausible-looking state -- agent_id "local-agent-dev", status
+        # "idle" -- so `/api/v1/status` would have described an agent that was
+        # not the one running, with nothing to show that it had.
+        self.state = state
         self.store = checkpoint_store
         self.auth_token = auth_token or ""
         # The configured Cloud endpoint, handed in rather than read here (the
@@ -573,7 +585,7 @@ def serve(
     *,
     bitbrowser: ProfileScanner,
     checkpoint_store: Optional[CheckpointStore] = None,
-    state: Optional[LocalAgentState] = None,
+    state: LocalAgentState,
     auth_token: str = "",
     cloud_base_url: str = "",
 ) -> None:
@@ -616,7 +628,10 @@ def main(argv: list[str] | None = None) -> int:
 
     components = build_components()
     config = components.config
-    configure_from(config)
+    # No logging call here, deliberately: `build_components()` has already
+    # initialized it (bootstrap/app.py), and the second call this used to make
+    # was both redundant and invisible. One initializer, in bootstrap --
+    # `test_dependency_boundaries.py` R11 keeps it that way.
     serve(
         args.host or config.local_api_host,
         args.port or config.local_api_port,

@@ -166,6 +166,12 @@ FROZEN_CONSOLE_SCRIPTS = {
     "wt-media-agent-storage-migrate": "wt_media_agent.storage.migration:main",
 }
 
+#: R11 (CHG-057 T-09): the one module allowed to initialize configuration and
+#: logging. Every other module receives what it needs.
+LOGGING_INITIALIZER = f"{PACKAGE}.runtime.logging"
+LOGGING_INITIALIZER_SYMBOLS = ("configure_from", "configure_logging")
+LOGGING_INITIALIZER_ALLOWED = f"{PACKAGE}/bootstrap/app.py"
+
 #: R10: the layer-to-layer edges as observed at T-05. Any new pair fails.
 FROZEN_LAYER_EDGES = frozenset(
     {
@@ -593,6 +599,83 @@ def r10_layer_edges(files: dict[str, str]) -> list[str]:
     return violations
 
 
+def r11_single_logging_initializer(files: dict[str, str]) -> list[str]:
+    """Only `bootstrap/app.py` reaches for the logging initializer.
+
+    CHG-057 裁定二 orders the startup as "main 入口 → 加载配置 → 初始化 Logger →
+    创建 Runtime → 创建 Components → 启动 Server" and forbids "server 重复初始化
+    Config、component 初始化 Logger". Before T-09 `local_api/server.py` imported
+    `configure_from` and called it a second time on the same config, one line
+    after `build_components()` had already done it -- so the second call was
+    invisible *and* redundant, which is the pair of properties that let a
+    duplicate initializer survive.
+
+    The rule fires on the *import*, not on the call, so both spellings are
+    caught: `from ...logging import configure_from` binds the initializer, and
+    `from ... import logging as rt` binds the module and reaches it through
+    that. Matching only one spelling is the blind spot that made T-08's import
+    check incapable of failing until a mutation exposed it.
+
+    It is deliberately narrower than "nobody but bootstrap may import this
+    module": `runtime/logging.py` also holds pure helpers, and
+    `bootstrap/cloud.py` imports `redact` from it. A rule that banned the
+    import would report that working code as a violation and would be the first
+    thing someone weakened -- so it names the two initializers and the two ways
+    to reach them, and nothing else.
+
+    The last check is the denominator: the initializer has to be imported
+    *somewhere*, or the tree has no logging initializer at all, which is a worse
+    state than a duplicate one.
+    """
+    violations: list[str] = []
+    importer_of_initializer: list[str] = []
+    for relpath in sorted(files):
+        source = files[relpath]
+        allowed = relpath == LOGGING_INITIALIZER_ALLOWED
+        found = False
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                # `import wt_media_agent.runtime.logging` binds the module.
+                if any(alias.name == LOGGING_INITIALIZER for alias in node.names):
+                    found = True
+                    if not allowed:
+                        violations.append(
+                            f"R11 {relpath}:{node.lineno}: imports {LOGGING_INITIALIZER}, "
+                            "which reaches both initializers (CHG-057 T-09: one initializer, in bootstrap)"
+                        )
+                continue
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            bound = [alias.name for alias in node.names]
+            if node.module == LOGGING_INITIALIZER:
+                if any(name in LOGGING_INITIALIZER_SYMBOLS for name in bound):
+                    found = True
+                    if not allowed:
+                        for name in bound:
+                            if name in LOGGING_INITIALIZER_SYMBOLS:
+                                violations.append(
+                                    f"R11 {relpath}:{node.lineno}: imports {name} from "
+                                    f"{LOGGING_INITIALIZER} (CHG-057 T-09: one initializer, in bootstrap)"
+                                )
+            elif node.module == PACKAGE + ".runtime" and "logging" in bound:
+                # `from ...runtime import logging` binds the same module under
+                # another spelling; `imports_of` records it as `runtime`.
+                found = True
+                if not allowed:
+                    violations.append(
+                        f"R11 {relpath}:{node.lineno}: binds the {LOGGING_INITIALIZER} module "
+                        "(CHG-057 T-09: one initializer, in bootstrap)"
+                    )
+        if found:
+            importer_of_initializer.append(relpath)
+    if not importer_of_initializer:
+        violations.append(
+            f"R11: no module imports {LOGGING_INITIALIZER}'s initializers; the tree has "
+            f"no logging initializer (expected {LOGGING_INITIALIZER_ALLOWED})"
+        )
+    return violations
+
+
 # --- the assertions -----------------------------------------------------------
 
 
@@ -647,6 +730,9 @@ class BoundaryScanTests(unittest.TestCase):
 
     def test_r10_no_new_cross_layer_edge(self):
         self.assertEqual(r10_layer_edges(self.files), [])
+
+    def test_r11_only_bootstrap_initializes_logging(self):
+        self.assertEqual(r11_single_logging_initializer(self.files), [])
 
 
 class BoundaryRuleControls(unittest.TestCase):
@@ -783,6 +869,40 @@ class BoundaryRuleControls(unittest.TestCase):
         files = dict(self.files)
         files[f"{PACKAGE}/runtimes/bitbrowser.py"] = '"""Bring back the old directory."""\n'
         self.assertTrue(any("runtimes" in v for v in r1_unknown_modules(files)))
+
+    def test_r11_control_for_the_symbol_spelling(self):
+        """The spelling `local_api/server.py` actually used before T-09."""
+        files = self.plant(f"{PACKAGE}/local_api/server.py", f"\nfrom {LOGGING_INITIALIZER} import configure_from\n")
+        self.assertTrue(any("local_api/server.py" in v for v in r11_single_logging_initializer(files)))
+
+    def test_r11_control_for_the_module_spelling(self):
+        """`from ... import logging as rt` + `rt.configure_from(...)`.
+
+        Without this control the rule could match only the dotted path it was
+        written as and still look green -- the same blind spot T-08 hit.
+        """
+        files = self.plant(
+            f"{PACKAGE}/local_api/server.py",
+            f"\nfrom {PACKAGE}.runtime import logging as rt_logging\n\n"
+            "def _init() -> None:\n    rt_logging.configure_from(None)\n",
+        )
+        self.assertTrue(any("logging" in v for v in r11_single_logging_initializer(files)))
+
+    def test_r11_control_for_a_tree_with_no_initializer(self):
+        """Deleting the initializer everywhere is a violation, not a clean tree.
+
+        The import is stripped from *every* file, not just the allowed one:
+        leaving the real tree's own violation in place would make this control
+        red for the wrong reason while it was being written, and it would stay
+        entangled with the tree afterwards.
+        """
+        files = {
+            relpath: source.replace(f"from {LOGGING_INITIALIZER} import configure_from\n", "")
+            for relpath, source in self.files.items()
+        }
+        violations = r11_single_logging_initializer(files)
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("no module imports", violations[0])
 
     def test_r1_control_for_a_placeholder_that_grew_code(self):
         files = dict(self.files)

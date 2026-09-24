@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.local_api.server import LocalApiServer
 from wt_media_agent.clients.bitbrowser import BitProfile, ProfileSnapshot
 
@@ -43,7 +44,7 @@ class MutationClient:
 class ProxyMutationTests(unittest.TestCase):
     def test_mutation_writes_then_returns_secret_free_readback(self) -> None:
         client = MutationClient()
-        status, payload = LocalApiServer(bitbrowser=client).proxy_mutation_response({
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=client).proxy_mutation_response({
             "profile_id": "bit-profile-1", "proxy_protocol": "socks5", "host": "127.0.0.1", "port": 1080,
             "username": "secret-user", "password": "secret-password",
         })
@@ -55,7 +56,7 @@ class ProxyMutationTests(unittest.TestCase):
 
     def test_mutation_does_not_report_success_when_readback_differs(self) -> None:
         client = MutationClient()
-        status, payload = LocalApiServer(bitbrowser=client).proxy_mutation_response({
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=client).proxy_mutation_response({
             "profile_id": "bit-profile-1", "proxy_protocol": "http", "host": "127.0.0.1", "port": 1080,
         })
 
@@ -65,7 +66,7 @@ class ProxyMutationTests(unittest.TestCase):
     def test_unbind_writes_no_proxy_and_requires_no_proxy_readback(self) -> None:
         client = MutationClient(apply_updates=True)
 
-        status, payload = LocalApiServer(bitbrowser=client).proxy_mutation_response({
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=client).proxy_mutation_response({
             "operation": "unbind", "profile_id": "bit-profile-1",
         })
 
@@ -80,7 +81,7 @@ class ProxyMutationTests(unittest.TestCase):
     def test_unbind_rejects_readback_with_residual_proxy_address(self) -> None:
         client = MutationClient(apply_updates=True, clear_proxy_on_unbind=False)
 
-        status, payload = LocalApiServer(bitbrowser=client).proxy_mutation_response({
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=client).proxy_mutation_response({
             "operation": "unbind", "profile_id": "bit-profile-1",
         })
 

@@ -17,12 +17,13 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from support import UnusedBitBrowser
 
+from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.local_api.server import LocalApiServer, make_handler
 
 
 class ProxyExtractTests(unittest.TestCase):
     def test_local_api_exposes_dynamic_proxy_extraction(self) -> None:
-        api = LocalApiServer(bitbrowser=UnusedBitBrowser())
+        api = LocalApiServer(LocalAgentState(), bitbrowser=UnusedBitBrowser())
 
         self.assertTrue(callable(getattr(api, "proxy_extract_response", None)))
 
@@ -31,7 +32,7 @@ class ProxyExtractTests(unittest.TestCase):
         response = urlopen.return_value.__enter__.return_value
         response.read.return_value = b"\n  203.0.113.9:1080:user:pass\n198.51.100.8:80\n"
 
-        status, payload = LocalApiServer(bitbrowser=UnusedBitBrowser()).proxy_extract_response({
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=UnusedBitBrowser()).proxy_extract_response({
             "extract_url": "https://provider.example/extract?token=secret",
             "proxy_protocol": "socks5",
         })
@@ -49,14 +50,14 @@ class ProxyExtractTests(unittest.TestCase):
 
     @patch("wt_media_agent.local_api.server.urlrequest.urlopen")
     def test_rejects_non_http_source_without_fetching(self, urlopen) -> None:
-        status, payload = LocalApiServer(bitbrowser=UnusedBitBrowser()).proxy_extract_response({"extract_url": "file:///tmp/proxy.txt"})
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=UnusedBitBrowser()).proxy_extract_response({"extract_url": "file:///tmp/proxy.txt"})
 
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["code"], "proxy_extract_input_invalid")
         urlopen.assert_not_called()
 
     def test_loopback_endpoint_routes_dynamic_extraction(self) -> None:
-        api = LocalApiServer(bitbrowser=UnusedBitBrowser())
+        api = LocalApiServer(LocalAgentState(), bitbrowser=UnusedBitBrowser())
         with patch.object(api, "proxy_extract_response", return_value=(200, {"data": {"host": "203.0.113.9", "port": 1080}})) as extract:
             server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(api))
             thread = threading.Thread(target=server.serve_forever)

@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.local_api.server import LocalApiServer
 from wt_media_agent.clients.bitbrowser import BitBrowserResponseError
 
@@ -70,7 +71,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertNotIn("secret-session", str(result))
 
     def test_bilibili_uid_from_cookie_without_nav(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([{"name": "DedeUserID", "value": "37069716"}]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "DedeUserID", "value": "37069716"}]))
 
         status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "bilibili"})
 
@@ -79,7 +80,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertEqual(payload["data"]["login_status"], "normal")
 
     def test_expected_uid_mismatch_returns_account_mismatch(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([{"name": "DedeUserID", "value": "293793435"}]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "DedeUserID", "value": "293793435"}]))
 
         status, payload = server.account_check_response({
             "profile_id": "profile-1",
@@ -91,7 +92,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertEqual(payload["data"]["login_status"], "account_mismatch")
 
     def test_unknown_platform_identity_is_not_success(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([{"name": "passport_csrf_token", "value": "secret"}]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "passport_csrf_token", "value": "secret"}]))
 
         status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "douyin"})
 
@@ -107,7 +108,7 @@ class LocalAccountCheckTests(unittest.TestCase):
             "status": {"code": 0, "msg": ""},
             "data": {"user": {"user_id": 6572476037, "user_name": "你阿邱爷", "portrait": "abc123", "is_login": 1}},
         })
-        server = LocalApiServer(bitbrowser=CookieClient([{"name": "BDUSS", "value": "real-bduss"}]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "BDUSS", "value": "real-bduss"}]))
 
         with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
             urlopen.return_value.read.return_value = fake_body.encode()
@@ -120,7 +121,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertIn("avatar_url", payload["data"])
 
     def test_baijiahao_without_bduss_is_not_logged_in(self) -> None:
-        server = LocalApiServer(bitbrowser=CookieClient([{"name": "PSTM", "value": "17"}]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "PSTM", "value": "17"}]))
         from unittest import mock
         with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
             status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "baijiahao"})
@@ -129,7 +130,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         urlopen.assert_not_called()
 
     def test_bitbrowser_failure_is_mapped_without_cookie_payload(self) -> None:
-        server = LocalApiServer(bitbrowser=ErrorClient([]))
+        server = LocalApiServer(LocalAgentState(), bitbrowser=ErrorClient([]))
 
         status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "bilibili"})
 

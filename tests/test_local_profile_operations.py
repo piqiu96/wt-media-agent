@@ -8,6 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.local_api.server import LocalApiServer
 
 
@@ -56,7 +57,7 @@ class LenientOpenClient(ProfileOperationClient):
 
 class LocalProfileOperationTests(unittest.TestCase):
     def test_profile_groups_returns_safe_group_list(self) -> None:
-        server = LocalApiServer(bitbrowser=ProfileOperationClient())
+        server = LocalApiServer(LocalAgentState(), bitbrowser=ProfileOperationClient())
 
         status, payload = server.profile_groups_response()
 
@@ -67,7 +68,7 @@ class LocalProfileOperationTests(unittest.TestCase):
         ])
 
     def test_opening_profile_state_is_not_masked_by_route(self) -> None:
-        server = LocalApiServer(bitbrowser=LenientOpenClient())
+        server = LocalApiServer(LocalAgentState(), bitbrowser=LenientOpenClient())
 
         status, payload = server.profile_open_response({"id": "profile-1"})
 
@@ -76,7 +77,7 @@ class LocalProfileOperationTests(unittest.TestCase):
 
     def test_profile_create_delegates_to_bitbrowser(self) -> None:
         client = ProfileOperationClient()
-        server = LocalApiServer(bitbrowser=client)
+        server = LocalApiServer(LocalAgentState(), bitbrowser=client)
 
         status, payload = server.profile_create_response({"name": "窗口", "groupId": "group-1"})
 
@@ -86,7 +87,7 @@ class LocalProfileOperationTests(unittest.TestCase):
 
     def test_open_close_delegate_to_bitbrowser(self) -> None:
         client = ProfileOperationClient()
-        server = LocalApiServer(bitbrowser=client)
+        server = LocalApiServer(LocalAgentState(), bitbrowser=client)
 
         open_status, open_payload = server.profile_open_response({"id": "profile-1"})
         close_status, close_payload = server.profile_close_response({"id": "profile-1"})
