@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from support import isolated_paths
+from support import LoggingStateTestCase, isolated_paths
 
 from wt_media_agent.clients.cloud.client import SessionInvalidError
 from wt_media_agent.runtime.config import load_config
@@ -77,18 +77,11 @@ class InvalidatingExecutor:
         raise SessionInvalidError("session revoked mid-task")
 
 
-class RunnerFieldsTestCase(unittest.TestCase):
-    """Runs the real runner against a real log directory.
-
-    `configure_from` rewrites global logging state, so it is saved and restored
-    here (the same dance `test_runtime_logging.py` does, kept local so this file
-    stands on its own).
-    """
+class RunnerFieldsTestCase(LoggingStateTestCase):
+    """Runs the real runner against a real log directory."""
 
     def setUp(self):
-        root = logging.getLogger()
-        self._root_handlers = list(root.handlers)
-        self._root_level = root.level
+        super().setUp()
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.directory = Path(self._tmp.name)
@@ -104,14 +97,6 @@ class RunnerFieldsTestCase(unittest.TestCase):
             home=self.directory / "home",
         )
         configure_from(cfg)
-
-    def tearDown(self):
-        root = logging.getLogger()
-        for handler in root.handlers:
-            if handler not in self._root_handlers:
-                handler.close()
-        root.handlers[:] = self._root_handlers
-        root.setLevel(self._root_level)
 
     def build(self, *, cloud: Cloud, register: str = "failing") -> TaskRunner:
         db_path = self.directory / "agent.db"

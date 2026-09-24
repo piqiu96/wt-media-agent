@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 import wt_media_agent
+from support import LoggingStateTestCase
+
 from wt_media_agent.runtime.config import load_config
 from wt_media_agent.runtime.logging import (
     AGENT_LOG_NAME,
@@ -22,10 +24,6 @@ from wt_media_agent.runtime.logging import (
 #: value under test.
 PACKAGE_LOGGER = wt_media_agent.__name__
 
-#: Every logger name `dictConfig` may touch, so `tearDown` can restore all of
-#: them even when a test mutates which one is configured.
-LOGGER_NAMES = (PACKAGE_LOGGER, DEFAULT_COMPONENT, "wt-media-agent")
-
 SILENT_ENV: dict[str, str] = {}
 
 
@@ -36,40 +34,6 @@ def config(**env: str):
         repo_root=Path("/repo"),
         home=Path("/Users/dev"),
     )
-
-
-class LoggingStateTestCase(unittest.TestCase):
-    """`dictConfig` rewrites global logging state; every test must put it back."""
-
-    def setUp(self):
-        root = logging.getLogger()
-        self._root_level = root.level
-        self._root_handlers = list(root.handlers)
-        self._saved = {
-            name: (
-                list(logging.getLogger(name).handlers),
-                logging.getLogger(name).level,
-                logging.getLogger(name).propagate,
-            )
-            for name in dict.fromkeys(LOGGER_NAMES)
-        }
-
-    def tearDown(self):
-        root = logging.getLogger()
-        for handler in root.handlers:
-            if handler not in self._root_handlers:
-                handler.close()
-        root.handlers[:] = self._root_handlers
-        root.setLevel(self._root_level)
-
-        for name, (handlers, level, propagate) in self._saved.items():
-            logger = logging.getLogger(name)
-            for handler in logger.handlers:
-                if handler not in handlers:
-                    handler.close()
-            logger.handlers[:] = handlers
-            logger.setLevel(level)
-            logger.propagate = propagate
 
 
 class ConfigureLoggingTest(LoggingStateTestCase):
