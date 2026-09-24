@@ -56,11 +56,11 @@ level = "INFO"
 # has no terminal to log to, which is why the file is always written -- and
 # since CHG-057 T-03 a source checkout writes one too, into .local/logs.
 file = ""
-# The four bounds (CHG-057 T-07): a file rolls on a date change and at
-# max_bytes, an oversized record is truncated and marked
-# `truncate=true original_size=<n>`, rolled files survive retention_days, and
-# all three files are kept under total_bytes. Override the built-in
-# 20 MB / 14 days / 400 MB here if a deployment has less disk.
-# max_bytes = 20971520
+# Retention (CHG-058 T-02): each file rolls hourly (live `agent.log`, archive
+# `agent.log.<YYYY-MM-DD-HH>`), an oversized record is truncated and marked
+# `truncate=true original_size=<n>`, and rolled files survive retention_days.
+# Nothing bounds a file's size or the three files together -- only how long
+# history stays. Override the built-in 1 MiB / 14 days here if a deployment
+# wants a smaller line cap or a shorter window.
+# max_record_bytes = 1048576
 # retention_days = 14
-# total_bytes = 419430400

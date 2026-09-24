@@ -39,15 +39,20 @@ DEFAULT_LOCAL_API_PORT = 8765
 DEFAULT_BITBROWSER_API_URL = "http://127.0.0.1:54345"
 DEFAULT_BITBROWSER_TIMEOUT = 5.0
 
-# Log retention (CHG-057 T-07; the ruling 六). The Agent's own log footprint is
-# bounded four ways: one file at 20 MB, one record at 20 MB (it is truncated, not
-# rolled), history at 14 days, and all three files together at 400 MB. The total
-# was the ruling's one open number -- it comes from the CHG-053 draft, which is
-# where "Agent ~400MB / Desktop 100MB" is written, and T-18 writes it back into
-# the programme baseline so it stops being an oral tradition.
-DEFAULT_LOG_MAX_BYTES = 20 * 1024 * 1024
+# Log retention (CHG-057 T-07, rewritten by CHG-058 T-02; the rulings 六 and 三).
+# Two bounds remain: a record too large for one line is truncated and marked
+# rather than allowed to grow the file, and a rolled file older than 14 days is
+# deleted. Neither bounds volume -- how long history stays is bounded, how much of
+# it there is is not.
+#
+# The single-file cap (20 MB) and the three files' shared total (400 MB) are
+# gone. The user's 2026-09-24 ruling is explicit that volume is not bounded --
+# only how long history is kept ("不需要控制总量，只需要控制能保留多少天超过7天
+# 或14天自动删除"). 1 MiB is the answer to CHG-058 Q-01: large enough for any real
+# traceback, and the same number the Desktop truncates at, so a line that is
+# marked on one side is marked at the same length on the other.
+DEFAULT_LOG_MAX_RECORD_BYTES = 1024 * 1024
 DEFAULT_LOG_RETENTION_DAYS = 14
-DEFAULT_LOG_TOTAL_BYTES = 400 * 1024 * 1024
 
 # Lease.
 DEFAULT_LEASE_SECONDS = 60

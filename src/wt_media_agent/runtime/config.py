@@ -31,9 +31,8 @@ from wt_media_agent.runtime.constants import (
     DEFAULT_CLOUD_BASE_URL,
     DEFAULT_LOCAL_API_HOST,
     DEFAULT_LOCAL_API_PORT,
-    DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_LOG_MAX_RECORD_BYTES,
     DEFAULT_LOG_RETENTION_DAYS,
-    DEFAULT_LOG_TOTAL_BYTES,
 )
 from wt_media_agent.runtime.paths import RuntimePaths, repository_root
 
@@ -122,12 +121,13 @@ def _as_log_level(raw: object) -> str:
 
 
 def _as_positive_int(raw: object) -> int:
-    """A size or a count, in bytes or days. Zero and below are rejected.
+    """A size or a window, in bytes or days. Zero and below are rejected.
 
-    A zero cap is not a stricter setting, it is an unbounded log: the four
-    bounds in this family are all "delete when over X", and `over 0` is true of
-    every file. Failing here reports the key path; accepting it would turn a
-    typo into a log directory that grows until the disk is full.
+    Zero reads like "no limit" and means the opposite for both of the log keys,
+    which is why it is refused rather than clamped: a record of no bytes cannot
+    be written at all, and a window of no days deletes every archive at the next
+    roll. Failing here reports the key path; accepting it would turn a typo into
+    either a log that loses its history or one that is never trimmed.
     """
     value = _as_int(raw)
     if value <= 0:
@@ -193,12 +193,15 @@ _SPEC: tuple[Field, ...] = (
     # already redirecting into.
     Field("log_level", "logging.level", ("WT_MEDIA_LOG_LEVEL", "WT_MEDIA_AGENT_LOG_LEVEL"), "INFO", _as_log_level),
     Field("log_file", "logging.file", ("WT_MEDIA_LOG_FILE",), "", _as_str),
-    # The four retention bounds (the ruling 六). Each is overridable because a
-    # deployment may have less disk than the default assumes; the shipped
-    # numbers live in `runtime/constants.py` and are asserted by the tests.
-    Field("log_max_bytes", "logging.max_bytes", ("WT_MEDIA_LOG_MAX_BYTES",), DEFAULT_LOG_MAX_BYTES, _as_positive_int),
+    # Log retention (the rulings 六 and 三). Both are overridable because a
+    # deployment may want a shorter window than the default; the shipped numbers
+    # live in `runtime/constants.py` and are asserted by the tests.
+    #
+    # There is deliberately no `max_bytes` and no `total_bytes` any more
+    # (CHG-058 T-02): the user's 2026-09-24 ruling bounds how long history stays,
+    # not how much of it there is.
+    Field("log_max_record_bytes", "logging.max_record_bytes", ("WT_MEDIA_LOG_MAX_RECORD_BYTES",), DEFAULT_LOG_MAX_RECORD_BYTES, _as_positive_int),
     Field("log_retention_days", "logging.retention_days", ("WT_MEDIA_LOG_RETENTION_DAYS",), DEFAULT_LOG_RETENTION_DAYS, _as_positive_int),
-    Field("log_total_bytes", "logging.total_bytes", ("WT_MEDIA_LOG_TOTAL_BYTES",), DEFAULT_LOG_TOTAL_BYTES, _as_positive_int),
     # Environment-only. A value in the TOML is ignored by construction.
     Field("runtime_token", "runtime_token", ("WT_MEDIA_AGENT_RUNTIME_TOKEN",), "", _as_str, secret=True),
 )
@@ -222,9 +225,8 @@ class AgentConfig:
     run_runner: bool
     log_level: str
     log_file: str
-    log_max_bytes: int
+    log_max_record_bytes: int
     log_retention_days: int
-    log_total_bytes: int
     #: `repr=False`: the ruling 十 forbids a sensitive object printing itself,
     #: and a dataclass repr is what a debugger, a traceback and `print` all use.
     #: Excluding the field is one word that cannot drift; a hand-written
@@ -338,16 +340,10 @@ def load_config(
         except ConfigError as exc:
             raise ConfigError(f"{spec.path}: {exc}") from exc
 
-    # `total_bytes` bounds all three files together, so a total below one file's
-    # cap is a contradiction: the single-file bound would be unreachable, and the
-    # budget would be exceeded by one file that is still within its own limit.
-    # Rejected by key path rather than clamped, because silently picking one of
-    # the two numbers is how a deployment ends up with a bound nobody set.
-    if values["log_total_bytes"] < values["log_max_bytes"]:
-        raise ConfigError(
-            "logging.total_bytes: must be at least logging.max_bytes "
-            f"({values['log_total_bytes']} < {values['log_max_bytes']})"
-        )
+    # The cross-check that lived here -- a total budget below one file's cap is a
+    # contradiction -- has nothing left to compare (CHG-058 T-02): both numbers
+    # are gone, and `log_max_record_bytes` is a per-line bound that no other key
+    # constrains.
 
     paths = RuntimePaths.resolve(
         data_dir=str(values["data_dir"]),
