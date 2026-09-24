@@ -75,9 +75,11 @@ KNOWN_LAYERS = frozenset(
     }
 )
 
-#: Declared empty. `adapters/` emptied when M3 dropped discovery, `platforms/`
-#: was revoked by ADR-0016 §5 and has never existed; all three are placeholders.
-PLACEHOLDER_PACKAGES = frozenset({"adapters", "modes", "generated"})
+#: Declared empty. `adapters/` was emptied when M3 dropped discovery and is the
+#: only one left: `modes/` and `generated/` no longer exist — the architecture
+#: baseline §5.2 never kept either of them, so the directories were the side that
+#: was out of step; `platforms/` was revoked by ADR-0016 §5 and has never existed.
+PLACEHOLDER_PACKAGES = frozenset({"adapters"})
 
 #: Modules that sit at the package root instead of in a layer: the package face,
 #: the two re-export shims (`tests/test_runner_session.py` imports their old
