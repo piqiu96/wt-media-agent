@@ -18,6 +18,7 @@ the surrounding text is asserted to survive in every row.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -144,6 +145,51 @@ CASES: list[tuple[str, str, list[str], list[str]]] = [
 ]
 
 
+#: The 20 lines T-13 ran through *both* redactors, each with the string the
+#: Desktop implementation produced for it. Those strings were measured on that
+#: implementation (a probe test that printed `redact` on these 20 inputs) rather
+#: than copied from its test table, because the point of the table is parity, and
+#: a copy of an expectation is not a measurement of an implementation.
+#:
+#: Three of the rows came out different on the Agent's side, and two of the three
+#: were real leaks -- a second credential on the same line, and the second value
+#: of a plural `cookies:` key. The third was a shape error: the JSON key lost its
+#: closing quote. All three are now the same on both sides, which is what this
+#: table asserts; `test_the_three_rows_that_used_to_differ_are_named` keeps the
+#: reason each one was wrong visible.
+DIFFERENTIAL_ROWS: list[tuple[str, str]] = [
+    ("Cookie: session=abc123def456; theme=dark", "Cookie: session=***; theme=***"),
+    ("Set-Cookie: session=abc123def456; Path=/", "Set-Cookie: session=***; Path=***"),
+    (
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig",
+        "Authorization: ***",
+    ),
+    ("authorization=Basic dXNlcjpwYXNz", "authorization=***"),
+    ("proxy_password=hunter2hunter2", "proxy_password=***"),
+    ("password: hunter2", "password: ***"),
+    ('{"client_secret": "s3cr3tvalue"}', '{"client_secret": "***"}'),
+    ('refresh_token="rt-abcdefghijklmnop"', 'refresh_token="***"'),
+    ("X-Api-Key: ak-abcdefghijkl", "X-Api-Key: ***"),
+    (
+        "GET https://api.example/v1/tasks?token=abcdefghijkl&page=2",
+        "GET https://api.example/v1/tasks?token=***&page=2",
+    ),
+    (
+        "dial https://alice:s3cretpw@agent.local:8765/healthz",
+        "dial https://alice:***@agent.local:8765/healthz",
+    ),
+    ("payload eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl", "payload ***"),
+    ("token=aaa password=bbb", "token=*** password=***"),
+    ("runtime_token=rt-abcdefghijklmnop", "runtime_token=***"),
+    ("basic auth is described in the manual", "basic auth is described in the manual"),
+    ("cookies: a=1; b=2", "cookies: a=***; b=***"),
+    ("mytoken=abcdefghijkl", "mytoken=abcdefghijkl"),
+    ("the tokenizer finished in 12ms", "the tokenizer finished in 12ms"),
+    ("token=a", "token=***"),
+    ("launch tid=abc123def456 in flight", "launch tid=abc123def456 in flight"),
+]
+
+
 class RedactTableTest(unittest.TestCase):
     """Every row is a shape; both columns of every row are asserted."""
 
@@ -211,6 +257,107 @@ class RedactTableTest(unittest.TestCase):
         """A short value would redact ordinary prose wherever its letters appear."""
         masked = redact("the abc report for abc", secrets=["abc"])
         self.assertEqual(masked, "the abc report for abc")
+
+
+class DifferentialParityTest(unittest.TestCase):
+    """T-20: the same 20 rows on both implementations, asserted as whole lines.
+
+    The table above asserts "the credential is gone and the text around it
+    survives". That style cannot see the third difference T-13 measured: on
+    `{"client_secret: "***"}` the key is still there and the value is gone, so
+    both of its columns pass while the line has stopped being valid JSON. An
+    exact-string assertion is the only style that catches a *shape* error, and it
+    is also the stronger statement for the two real leaks: it pins the whole line,
+    not the absence of one needle.
+    """
+
+    def test_every_row_matches_the_desktop_reference(self):
+        self.assertEqual(len(DIFFERENTIAL_ROWS), 20, "the table T-13 ran")
+        self.assertEqual(
+            len({line for line, _ in DIFFERENTIAL_ROWS}), 20, "rows must be distinct"
+        )
+        for line, expected in DIFFERENTIAL_ROWS:
+            with self.subTest(line=line):
+                self.assertEqual(redact(line), expected)
+
+    def test_the_three_rows_that_used_to_differ_are_named(self):
+        """The rows T-13 measured as differences, with what each one was.
+
+        Two are leaks -- the second credential on a line, and the second value of
+        a plural `cookies:` key -- and one is a shape error. The rows are already
+        pinned above; this method exists so the reason survives a table edit.
+        """
+        # Leak: the keyed pass replaced a whole-line tail in one match, so the
+        # scan resumed after the line and never looked at `password=bbb`.
+        self.assertEqual(redact("token=aaa password=bbb"), "token=*** password=***")
+        # Leak: `cookies` is in the vocabulary but not in `endswith("cookie")`,
+        # so the plural took the generic path and masked only up to the `;`.
+        self.assertEqual(redact("cookies: a=1; b=2"), "cookies: a=***; b=***")
+        # Shape: the pattern stepped over the JSON key's closing quote to reach
+        # the separator, and the echo was rebuilt from `key + separator`.
+        self.assertEqual(
+            redact('{"client_secret": "s3cr3tvalue"}'), '{"client_secret": "***"}'
+        )
+
+    def test_the_json_row_is_still_json(self):
+        """The shape error, judged by a parser rather than by an eye.
+
+        The control comes first: the same parse succeeds on the input, so a
+        failure below is the redactor's doing and not the fixture's.
+        """
+        line = '{"client_secret": "s3cr3tvalue", "port": 8765}'
+        self.assertEqual(json.loads(line)["port"], 8765, "control: the input parses")
+
+        masked = redact(line)
+        self.assertEqual(masked, '{"client_secret": "***", "port": 8765}')
+        self.assertEqual(json.loads(masked)["port"], 8765)
+        self.assertEqual(json.loads(masked)["client_secret"], REDACTED)
+
+    def test_a_lookalike_key_no_longer_hides_the_credential_behind_it(self):
+        """The fourth finding, which T-13's table could not see.
+
+        That table lists `mytoken=` and `tokenizer` as "left alone by both sides",
+        and for *those lines* that is right. What it misses is the line where a
+        lookalike key comes first: `mytoken=` matched, the match took the whole
+        rest of the line, and the real `password=zzz` behind it was never scanned
+        -- the masking was switched off silently rather than partially.
+        """
+        self.assertEqual(
+            redact("mytoken=abcdefghijkl password=zzz"),
+            "mytoken=abcdefghijkl password=***",
+        )
+        # The half that holds back, asserted rather than assumed: the lookalike's
+        # own value is not a credential to this function -- no name in the
+        # vocabulary reaches it -- so it stays. That is the documented limit, and
+        # it is why the fix is "the match stops at the value" and not "lookalikes
+        # become sensitive".
+        self.assertEqual(redact("mytoken=abcdefghijkl"), "mytoken=abcdefghijkl")
+
+    def test_masking_the_new_rows_twice_changes_nothing_more(self):
+        for line, _expected in DIFFERENTIAL_ROWS:
+            with self.subTest(line=line):
+                once = redact(line)
+                self.assertEqual(redact(once), once)
+
+    def test_the_tail_families_reach_the_end_of_the_line_on_both_sides(self):
+        """How far a tail family reaches, which the fixture rows cannot show.
+
+        Every row above ends with its payload, so none of them says anything
+        about text that follows a cookie header on the same line. These three
+        lines were run through the Desktop implementation as well, and it returns
+        the same three strings: reaching to the end of the line is the reach both
+        sides chose, not a divergence introduced here.
+
+        The cost is real and is registered rather than hidden: text after a
+        cookie header is masked with it. A bounded reach would be a different
+        design, and this fix is not the place to change one implementation's
+        answer to a question both already answered the same way.
+        """
+        self.assertEqual(redact("cookies: a=1; b=2 group_id=g-1"), "cookies: a=***; b=***")
+        self.assertEqual(redact("Cookie: a=1; b=2 group_id=g-1"), "Cookie: a=***; b=***")
+        self.assertEqual(
+            redact("Authorization: Bearer aaabbbcccddd group_id=g-1"), "Authorization: ***"
+        )
 
 
 class RedactingFormatterTest(unittest.TestCase):

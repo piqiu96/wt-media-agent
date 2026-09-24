@@ -112,11 +112,21 @@ _BEARER_SCHEMES = "Bearer|Basic|Token|Digest"
 _TOKEN = r"[A-Za-z0-9\-._~+/=]{8,}"
 _QUOTED_OR_TOKEN = r"\"[^\"]*\"|'[^']*'|[^\s,;\"'&}\]]+"
 
-#: The value group is the rest of the line so each key family can decide how far
-#: its reach goes: a cookie header's whole tail, an `Authorization` value's whole
-#: tail, and for the rest just the leading token.
-_KEYED = re.compile(rf"(?i)\b({_KEY})[\"']?(\s*[:=]\s*)([^\n]*)")
 _LEADING_VALUE = re.compile(rf"(?:(?:{_BEARER_SCHEMES})\s+)?(?:{_QUOTED_OR_TOKEN})")
+
+#: Two patterns, split by how far each key family's value reaches -- and one
+#: callback each, so the two passes are independent of their order.
+#:
+#: A cookie header's tail and an `Authorization` value both run to the end of the
+#: line: they carry several credentials of their own (`a=1; session=xyz`, and a
+#: scheme word in front of a blob), so their pattern takes the whole tail.
+_TAIL_KEYED = re.compile(rf"(?i)\b({_KEY})[\"']?(\s*[:=]\s*)([^\n]*)")
+#: Every other family takes exactly one leading token, and the match *ends* with
+#: it. That bound is the whole point: `re.sub` resumes scanning after the match,
+#: so a value that reached to the end of the line would swallow whatever follows
+#: it and stop the scan -- `token=aaa password=bbb` masked the first credential,
+#: swallowed the second, and left it in the log.
+_VALUE_KEYED = re.compile(rf"(?i)\b({_KEY})[\"']?(\s*[:=]\s*)({_LEADING_VALUE.pattern})")
 _BEARER = re.compile(rf"(?i)\b({_BEARER_SCHEMES})\s+({_TOKEN})")
 #: A JWT is three base64url segments; `eyJ` is the encoding of `{"`, which is
 #: what every JOSE header starts with. Narrow on purpose: a blanket "long random
@@ -139,7 +149,12 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _is_cookie_key(key: str) -> bool:
-    return _normalized(key).endswith("cookie")
+    # Both spellings, because the vocabulary has both: `cookie` and `cookies` are
+    # each a name the config loader refuses a value for. Matching only the
+    # singular sent the plural down the generic path, which stops at the first
+    # `;` and left every later pair of the header in the log.
+    normalized = _normalized(key)
+    return normalized.endswith("cookie") or normalized.endswith("cookies")
 
 
 def _is_opaque_key(key: str) -> bool:
@@ -171,21 +186,34 @@ def _mask_cookie_pairs(value: str) -> str:
     return ";".join(masked)
 
 
-def _mask_keyed(match: re.Match[str]) -> str:
-    """Mask one keyed credential, keeping whatever follows it in the line.
+def _mask_tail_keyed(match: re.Match[str]) -> str:
+    """Mask a family whose value runs to the end of the line.
 
-    The key and its separator are echoed as they arrived; only the value is
-    replaced, and only as far as this key's family reaches.
+    Every other family is left to `_mask_value_keyed`; returning the match
+    unchanged here is what keeps this pass from reaching past its own families.
     """
     key, separator, tail = match.groups()
     if _is_cookie_key(key):
         return f"{key}{separator}{_mask_cookie_pairs(tail)}"
     if _is_opaque_key(key):
         return f"{key}{separator}{REDACTED}"
-    leading = _LEADING_VALUE.match(tail)
-    if not _is_sensitive_key(key) or leading is None:
+    return match.group(0)
+
+
+def _mask_value_keyed(match: re.Match[str]) -> str:
+    """Mask one bounded value, echoing the key exactly as it arrived.
+
+    The echo is the matched text up to the value, not `key + separator` rebuilt
+    from the groups. The pattern has to step over the closing quote of a JSON key
+    to reach the separator -- `"client_secret": ` -- so a rebuilt prefix drops
+    that quote and writes `{"client_secret: "***"}`, a line that is no longer
+    JSON and no longer says which field was masked.
+    """
+    key, _separator, value = match.groups()
+    if _is_cookie_key(key) or _is_opaque_key(key) or not _is_sensitive_key(key):
         return match.group(0)
-    return f"{key}{separator}{_quote_like(leading.group(0))}{tail[leading.end():]}"
+    prefix = match.group(0)[: match.start(3) - match.start()]
+    return f"{prefix}{_quote_like(value)}"
 
 
 def _mask_known(text: str, secrets: Iterable[str]) -> str:
@@ -205,7 +233,8 @@ def redact(text: str, secrets: Iterable[str] = ()) -> str:
 
     Masking is idempotent, because a record is formatted once per handler.
     """
-    text = _KEYED.sub(_mask_keyed, text)
+    text = _VALUE_KEYED.sub(_mask_value_keyed, text)
+    text = _TAIL_KEYED.sub(_mask_tail_keyed, text)
     text = _USERINFO.sub(lambda m: f"://{m.group(1)}:{REDACTED}@", text)
     text = _BEARER.sub(lambda m: f"{m.group(1)} {REDACTED}", text)
     text = _JWT.sub(REDACTED, text)
