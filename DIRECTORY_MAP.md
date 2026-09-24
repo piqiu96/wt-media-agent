@@ -26,7 +26,7 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 |---|---|---|
 | `runtime/config.py` | 配置加载：强类型 `AgentConfig` + 声明式键表，优先级 env > 文件 > 默认值。**全 `src/` 只允许本模块读环境变量**。凭据键仅环境变量可给，文件里出现即按名忽略 | 改配置键、改优先级 |
 | `runtime/paths.py` | 数据/日志/版本目录解析的唯一事实源（override / dev / installed 三态）。**dev/override 也解析到日志文件**（CHG-057 T-03，此前开发态只走 stderr） | 改落盘位置 |
-| `runtime/logging.py` | 日志：**三文件布局与路由**（`agent.log` 全量且唯一含 traceback / `task.log` 只收 `wt_media_agent.runner.*` / `error.log` 只收 ERROR、无 traceback、每行带 `error_code`）、脱敏（词表来自 `config.SENSITIVE_KEY_NAMES`，落点在 formatter 之后）、按天保留与总量上限、单条截断标 `truncate=true original_size=<n>`、目录不可创建时降级到 stderr 且不阻断。请求级 `operation_id` 的字段通道也在这里（`begin_operation`/`end_operation`；值的生成在 `local_api/server.py`） | 改日志 |
+| `runtime/logging.py` | 日志：**三文件布局与路由**（`agent.log` 全量且唯一含 traceback / `task.log` 只收 `wt_media_agent.runner.*` / `error.log` 只收 ERROR、无 traceback、每行带 `error_code`）、脱敏（词表来自 `config.SENSITIVE_KEY_NAMES`，落点在 formatter 之后）、**按小时切割**（活文件恒为稳定名 `agent.log`，归档名为 `agent.log.<YYYY-MM-DD-HH>`，本机时区、对齐整点）与**只按天保留**（默认 14 天；**没有总量上限也没有单文件上限**——被限定的是历史留多久）、单条截断标 `truncate=true original_size=<n>`、目录不可创建时降级到 stderr 且不阻断。请求级 `operation_id` 的字段通道也在这里（`begin_operation`/`end_operation`；值的生成在 `local_api/server.py`） | 改日志 |
 | `runtime/environment.py` | 运行环境检测（frozen / production / dev 判定） | 改环境校验 |
 | `runtime/constants.py` | 全局常量 | — |
 | `runtime/version.py` | 版本字符串唯一来源 | 改版本号 |

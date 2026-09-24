@@ -19,7 +19,7 @@
 - 本机实际操作（Local）：BitBrowser 调用、Profile 与窗口操作、代理写入与实际状态读取、Cookie 与登录环境、本地文件、浏览器自动化（`clients/`、`services/`、`executors/`、`local_api/`）。
 - 与 Cloud 的通信客户端（`clients/cloud/`）。
 - 平台适配（API、页面元素、操作步骤、执行状态识别）——当前 `adapters/` 为占位，未来平台 Playwright 适配在此引入。
-- **Agent 自己的日志**（`runtime/logging.py`）：三个纯文本文件（`agent.log` / `task.log` / `error.log`）、按 logger 名与级别路由、轮转与保留、单条截断、脱敏。**dev 也落盘**（`<repo>/.local/logs/`，装态 `~/Library/Logs/WTMedia/Agent/`）。Desktop 的日志是**另一套**，见 `../wt-media-desktop`；Agent 不写 Desktop 的文件，也不被 Desktop 转存。
+- **Agent 自己的日志**（`runtime/logging.py`）：三个纯文本文件（`agent.log` / `task.log` / `error.log`）、按 logger 名与级别路由、**按小时切割**（活文件恒为稳定名 `agent.log`，归档 `agent.log.<YYYY-MM-DD-HH>`，本机时区、对齐整点）、**只按天保留**（默认 14 天，**不控总量**）、单条截断、脱敏。**dev 也落盘**（`<repo>/.local/logs/`，装态 `~/Library/Logs/WTMedia/Agent/`）。Desktop 的日志是**另一套**，见 `../wt-media-desktop`；Agent 不写 Desktop 的文件，也不被 Desktop 转存。**两侧机制有意不对称**：Desktop 的按天删除由 `file-rotate` 承担，Agent 的仍由 `LogBudget` 承担（标准库没有按天删除）。
 
 ## 本仓库不拥有
 
@@ -33,7 +33,7 @@
 | 需求是 | 去哪里 |
 |---|---|
 | 改进程装配与启动顺序 | `src/wt_media_agent/bootstrap/app.py`（唯一装配入口） |
-| 改配置键、数据目录、日志 | `src/wt_media_agent/runtime/`（`config.py` 是全 `src/` 唯一读环境变量的模块）。日志落点、三文件路由、轮转、保留、截断与脱敏都在 `runtime/logging.py`；**Logger 只允许在 `bootstrap/app.py` 装配一次**（有 AST 规则钉着，server/component/executor 都不得再初始化） |
+| 改配置键、数据目录、日志 | `src/wt_media_agent/runtime/`（`config.py` 是全 `src/` 唯一读环境变量的模块）。日志落点、三文件路由、小时切割、按天保留、截断与脱敏都在 `runtime/logging.py`；**Logger 只允许在 `bootstrap/app.py` 装配一次**（有 AST 规则钉着，server/component/executor 都不得再初始化） |
 | 改 BitBrowser 实际执行 | `src/wt_media_agent/clients/bitbrowser/` |
 | 改浏览器自动化底层（CDP） | `src/wt_media_agent/services/browser/cdp.py` |
 | 改 Cookie 提取 / 平台身份 | `src/wt_media_agent/services/browser/cookies.py`、`clients/{bilibili,baijiahao}/identity.py`、`clients/platform_identity.py` |
