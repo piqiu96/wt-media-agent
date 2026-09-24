@@ -143,10 +143,12 @@ class ConfigureFromTest(LoggingStateTestCase):
         self.assertIn("a development run writes this", written)
         # Since T-04 there are three files, not one. The terminal is still a
         # target -- asserted as a count, so "stderr was kept" cannot quietly
-        # become "stderr was replaced by the files".
+        # become "stderr was replaced by the files". T-07 replaced the stdlib
+        # handler with the bounded one (its `backupCount` shape could express
+        # neither the 14-day window nor the total budget nor the record cap).
         kinds = [type(handler).__name__ for handler in logging.getLogger().handlers]
         self.assertEqual(kinds[0], "StreamHandler", "the terminal must still be a target")
-        self.assertEqual(kinds.count("RotatingFileHandler"), 3)
+        self.assertEqual(kinds.count("BoundedFileHandler"), 3)
 
 
 class ErrorRecordFieldsTest(LoggingStateTestCase):

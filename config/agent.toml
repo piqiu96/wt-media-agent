@@ -60,3 +60,11 @@ level = "INFO"
 # rather than replacing the live view. (Before CHG-057 T-03 a source checkout
 # wrote no file at all, so this key was the only way to get one.)
 file = ""
+# The four bounds (CHG-057 T-07). Each file rolls on a date change and at
+# max_bytes; a record that cannot fit is truncated with
+# `truncate=true original_size=<n>`; rolled files survive retention_days and all
+# three files together are kept under total_bytes. Uncomment to override the
+# built-in 20 MB / 14 days / 400 MB.
+# max_bytes = 20971520
+# retention_days = 14
+# total_bytes = 419430400

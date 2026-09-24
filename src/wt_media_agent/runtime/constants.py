@@ -39,6 +39,16 @@ DEFAULT_LOCAL_API_PORT = 8765
 DEFAULT_BITBROWSER_API_URL = "http://127.0.0.1:54345"
 DEFAULT_BITBROWSER_TIMEOUT = 5.0
 
+# Log retention (CHG-057 T-07; the ruling 六). The Agent's own log footprint is
+# bounded four ways: one file at 20 MB, one record at 20 MB (it is truncated, not
+# rolled), history at 14 days, and all three files together at 400 MB. The total
+# was the ruling's one open number -- it comes from the CHG-053 draft, which is
+# where "Agent ~400MB / Desktop 100MB" is written, and T-18 writes it back into
+# the programme baseline so it stops being an oral tradition.
+DEFAULT_LOG_MAX_BYTES = 20 * 1024 * 1024
+DEFAULT_LOG_RETENTION_DAYS = 14
+DEFAULT_LOG_TOTAL_BYTES = 400 * 1024 * 1024
+
 # Lease.
 DEFAULT_LEASE_SECONDS = 60
 MAX_RETRIES = 3

@@ -12,6 +12,11 @@ want a JSON log system. `configure_from` is the single caller (bootstrap), and
 the stderr handler is installed unconditionally, so a log directory that cannot
 be written degrades to the terminal instead of to silence.
 
+Bounded four ways (T-07; the ruling 六): a file rolls on a date change and when
+it would pass 20 MB, a single oversized record is truncated and marked rather
+than allowed to grow the file, and history is pruned by age (14 days) and by the
+three files' shared budget (400 MB).
+
 Moved here from `wt_media_agent/log_setup.py` (CHG-056 T-03): log setup is
 runtime-layer work (ADR-0016 §4).
 """
@@ -20,12 +25,20 @@ from __future__ import annotations
 
 import logging
 import logging.config
+import os
 import re
 import sys
-from collections.abc import Iterable, Sequence
+import time
+from collections.abc import Callable, Iterable, Sequence
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from wt_media_agent.runtime.config import SENSITIVE_KEY_NAMES, AgentConfig
+from wt_media_agent.runtime.constants import (
+    DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_LOG_RETENTION_DAYS,
+    DEFAULT_LOG_TOTAL_BYTES,
+)
 
 #: Matches the package the modules actually log under (`getLogger(__name__)`
 #: produces `wt_media_agent.<module>`). The pre-T-03 default was the hyphenated
@@ -315,11 +328,307 @@ class ErrorRecordFormatter(NoTracebackFormatter):
         return isolated
 
 
+def _report(message: str) -> None:
+    """Tell the operator something without going back through the logging system.
+
+    This runs on the emit path -- a delete that fails leaves the log growing,
+    which is the failure T-07 exists to prevent, so it cannot be swallowed
+    quietly; but it also cannot be logged, because the handler being written is
+    one of the handlers that record would go to. stderr is the only destination
+    that is both visible and safe (`logging.Handler.handleError` makes the same
+    choice, for the same reason).
+    """
+    if logging.raiseExceptions:
+        sys.stderr.write(f"wt-media-agent logging: {message}\n")
+
+
+def _utc_date(stamp: float) -> date:
+    """The date a moment belongs to, in UTC.
+
+    UTC rather than local time: the rolled name has to keep its meaning across a
+    timezone change (a laptop that crosses a border does not get a second day),
+    and the retention window is compared against the same clock the names use.
+    """
+    return datetime.fromtimestamp(stamp, tz=timezone.utc).date()
+
+
+class LogBudget:
+    """What the three files may occupy together, and how long they may stay.
+
+    Shared by the three handlers on purpose: the total (400 MB as shipped) is the
+    *Agent's* footprint, and one budget per file would silently multiply it by
+    three. It also owns the clock, so a test that moves time moves the naming
+    rule and the retention rule at once.
+
+    It deletes rolled files only. The file a handler is currently writing is
+    never a candidate (the ruling 六: 当前打开的文件永不被删) -- a rolled file is
+    history, the live one is the only copy of what just happened.
+
+    What the total bound is, exactly: pruning happens at a roll and at startup,
+    so between two prunes the three open files may each still grow to their own
+    cap. The on-disk total is therefore bounded by `total_bytes + 3 * max_bytes`
+    (400 MB + 60 MB as shipped), not by `total_bytes` to the byte. The property
+    the ruling asks for -- 总容量受限, a log that does not grow without bound --
+    holds either way; what would not hold is a claim of exactness, and the
+    measured overshoot is pinned by `TotalBudgetTest`.
+    """
+
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        total_bytes: int = DEFAULT_LOG_TOTAL_BYTES,
+        retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.directory = Path(directory)
+        self.total_bytes = total_bytes
+        self.retention_days = retention_days
+        self.clock = clock
+        self._live: set[Path] = set()
+        self._families: list[re.Pattern[str]] = []
+
+    def today(self) -> date:
+        return _utc_date(self.clock())
+
+    def register(self, live: Path) -> None:
+        """Declare one file that is currently open, and so never prunable.
+
+        Idempotent, because `configure_logging` declares the three files before
+        the first prune -- pruning has to know the family names, or it matches
+        nothing and quietly deletes nothing (measured: with the shipped caps, a
+        real run left 1999-dated files in place for its whole lifetime) -- and
+        each handler declares its own again when it is constructed.
+        """
+        if live in self._live:
+            return
+        self._live.add(live)
+        # `agent.log` -> `agent-YYYYMMDD-N.log`. The stem keeps the family, the
+        # index separates two rolls on one day, and the suffix keeps the name
+        # recognisable as a log to whoever is looking at the directory.
+        self._families.append(
+            re.compile(
+                rf"^{re.escape(live.stem)}-(\d{{8}})-(\d+){re.escape(live.suffix)}$"
+            )
+        )
+
+    def rolled(self) -> list[tuple[Path, date, int]]:
+        """This budget's rolled files, oldest first."""
+        found: list[tuple[Path, date, int]] = []
+        for path in self.directory.iterdir():
+            if path in self._live or not path.is_file():
+                continue
+            for pattern in self._families:
+                match = pattern.match(path.name)
+                if match:
+                    found.append(
+                        (
+                            path,
+                            datetime.strptime(match.group(1), "%Y%m%d").date(),
+                            int(match.group(2)),
+                        )
+                    )
+                    break
+        # Index as the tie-break, so two rolls on one day retire in the order
+        # they were written rather than in whatever order the directory lists.
+        found.sort(key=lambda item: (item[1], item[2]))
+        return found
+
+    def prune(self) -> list[Path]:
+        """Delete what is out of the window, then what is over the budget.
+
+        Returns what it deleted, so the decision is visible to a caller (and to
+        a test) instead of being inferred from the directory afterwards.
+        """
+        deleted: list[Path] = []
+        cutoff = self.today() - timedelta(days=self.retention_days)
+        for path, when, _index in self.rolled():
+            # `<=`: a 14-day window is today plus the 13 days before it. A file
+            # dated exactly `retention_days` ago is the 15th day and goes.
+            if when <= cutoff and self._remove(path):
+                deleted.append(path)
+
+        remaining = self.rolled()
+        total = sum(self._size(path) for path in self._live)
+        total += sum(self._size(path) for path, _when, _i in remaining)
+        while total > self.total_bytes and remaining:
+            path, _when, _index = remaining.pop(0)
+            size = self._size(path)
+            if self._remove(path):
+                deleted.append(path)
+                total -= size
+        return deleted
+
+    def _remove(self, path: Path) -> bool:
+        try:
+            path.unlink()
+        except OSError as exc:
+            # Not fatal to the process, but not quiet either: if the deletion
+            # never succeeds the log has no bound left, and a reader wondering
+            # why the directory is full needs this line.
+            _report(f"cannot delete {path} ({type(exc).__name__}: {exc})")
+            return False
+        return True
+
+    @staticmethod
+    def _size(path: Path) -> int:
+        """A file's size, or 0 if it is already gone.
+
+        The three handlers share this budget and run in different threads, so a
+        file can be listed by one prune and renamed away by another handler's
+        roll before it is sized. A missing file contributes nothing to the
+        total, and letting the `FileNotFoundError` out would abort the prune
+        *and* lose the record whose emit triggered it.
+        """
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+
+class BoundedFileHandler(logging.Handler):
+    """One plain-text log file, bounded four ways (the ruling 六).
+
+    Replaces `RotatingFileHandler`: the stdlib policy is `backupCount` files of
+    `maxBytes` each, which expresses none of the four bounds -- no time window,
+    no total budget, and an oversized single record is written whole, taking the
+    file past its own cap.
+
+    The four bounds here: the file rolls on a date change, rolls when the next
+    record would take it past `max_bytes`, truncates a record that cannot fit,
+    and defers history to the shared `LogBudget`.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        max_bytes: int = DEFAULT_LOG_MAX_BYTES,
+        budget: LogBudget,
+        encoding: str = "utf-8",
+    ) -> None:
+        super().__init__()
+        self.base_path = Path(path)
+        # At least one byte, so the arithmetic below cannot be handed a limit of
+        # zero by a caller that skipped the configuration layer's validation.
+        self.max_bytes = max(1, max_bytes)
+        self.budget = budget
+        self.encoding = encoding
+        self._stream = None
+        self._open_date = budget.today()
+        budget.register(self.base_path)
+        # Opened eagerly, like `FileHandler` without `delay`: the Agent must not
+        # be able to start and look as though it has no log configured.
+        self._open()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if self._stream is None:
+                self._open()
+            line = self._bounded(self.format(record)) + "\n"
+            # Bounded first, then asked where it goes: a record too large for an
+            # empty file is truncated rather than rolled, which is what keeps an
+            # oversized record from starting a file of its own (the ruling 六).
+            self._roll_if_needed(len(line.encode(self.encoding)))
+            self._stream.write(line)
+            self._stream.flush()
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        try:
+            if self._stream is not None:
+                self._stream.close()
+                self._stream = None
+        finally:
+            super().close()
+
+    def _bounded(self, text: str) -> str:
+        """The record as it will be written: truncated to one file's worth.
+
+        The cap for a single record *is* the file cap. A record larger than an
+        empty file could never be written at all, and picking some smaller number
+        would invent a bound the ruling does not have. The marker carries the
+        size the record *had*, which is the only way a reader can tell a
+        truncated line from a short one.
+        """
+        raw = text.encode(self.encoding)
+        limit = self.max_bytes - 1  # `emit` appends the newline that ends the line
+        if len(raw) <= limit:
+            return text
+        marker = f" truncate=true original_size={len(raw)}"
+        room = max(limit - len(marker.encode(self.encoding)), 0)
+        # `errors="ignore"`: the cut is on a byte boundary, so it may land inside
+        # a character. Dropping that one character is the point -- emitting half
+        # of it would put a replacement byte in a plain-text file.
+        head = raw[:room].decode(self.encoding, errors="ignore")
+        return head + marker
+
+    def _roll_if_needed(self, size: int) -> None:
+        """Roll if this record does not belong in the open file."""
+        today = self.budget.today()
+        current = self._size()
+        if today == self._open_date and current + size <= self.max_bytes:
+            return
+        if current == 0:
+            # Nothing to preserve: an empty file is not history, and rolling it
+            # would manufacture empty files for a directory left over from
+            # yesterday. Only the date moves.
+            self._open_date = today
+            return
+        self._roll()
+        self._open_date = today
+
+    def _roll(self) -> None:
+        self._stream.close()
+        self._stream = None
+        target = self._free_name(self._open_date)
+        try:
+            # Onto a name this handler just proved free: the index is chosen by
+            # looking, and one handler at a time writes here.
+            self.base_path.rename(target)
+        except OSError as exc:
+            # Reopen the live file before re-raising, so the handler is not left
+            # with no stream at all; the record that triggered this is reported
+            # through `handleError` by `emit`.
+            self._open()
+            raise OSError(f"cannot roll {self.base_path} to {target}: {exc}") from exc
+        self._open()
+        # After the roll, not before: the new live file has to exist when the
+        # budget counts what is on disk.
+        self.budget.prune()
+
+    def _free_name(self, when: date) -> Path:
+        stamp = when.strftime("%Y%m%d")
+        index = 1
+        while True:
+            candidate = self.base_path.with_name(
+                f"{self.base_path.stem}-{stamp}-{index}{self.base_path.suffix}"
+            )
+            if not candidate.exists():
+                return candidate
+            index += 1
+
+    def _size(self) -> int:
+        if self._stream is None:
+            return 0
+        # `fstat`, not `tell()`: on a text stream `tell` is documented as an
+        # opaque cookie, and this number is compared against a byte cap.
+        return os.fstat(self._stream.fileno()).st_size
+
+    def _open(self) -> None:
+        self.base_path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = self.base_path.open("a", encoding=self.encoding)
+
+
 def configure_logging(
     level: str = "INFO",
     log_file: str = "",
     component: str = DEFAULT_COMPONENT,
     secrets: Sequence[str] = (),
+    max_bytes: int = DEFAULT_LOG_MAX_BYTES,
+    retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
+    total_bytes: int = DEFAULT_LOG_TOTAL_BYTES,
 ) -> None:
     """Configure unified logging with consistent format.
 
@@ -332,6 +641,9 @@ def configure_logging(
         component: Component name for log prefix.
         secrets: Values this process holds that must never be written. They are
             masked verbatim in every line, whatever shape they appear in.
+        max_bytes: Cap for a single file, and for a single record inside it.
+        retention_days: How many days of rolled files survive.
+        total_bytes: Cap for the three files together.
     """
     handlers: dict[str, object] = {
         "stderr": {
@@ -342,21 +654,36 @@ def configure_logging(
     }
 
     if log_file:
-        directory = Path(log_file).expanduser().parent
-        # Same rolling policy for all three until T-07 replaces it with the
-        # ruling's 20MB / 14 days / total budget (which also caps the single
-        # record). `agent.log` keeps the caller's path; the others are siblings.
+        agent_path = Path(log_file).expanduser()
+        directory = agent_path.parent
+        budget = LogBudget(
+            directory, total_bytes=total_bytes, retention_days=retention_days
+        )
+        # Declared before the prune, not by the handlers after it: the prune
+        # matches file names against the registered families, so an unregistered
+        # budget deletes nothing. A run in which something rolls later would
+        # still look as though startup cleanup worked.
+        for path in (agent_path, directory / TASK_LOG_NAME, directory / ERROR_LOG_NAME):
+            budget.register(path)
+        # Before the first write, not only on a roll: history that aged out while
+        # the Agent was stopped has to go even if nothing rolls today.
+        budget.prune()
+
+        # The ruling's policy for all three (六): one size cap per file, one
+        # window, one budget -- and the same budget object, which is what makes
+        # 400 MB the Agent's footprint rather than each file's. `agent.log` keeps
+        # the caller's path; the others are siblings.
         def file_handler(path: Path, **extra: object) -> dict[str, object]:
             return {
-                "class": "logging.handlers.RotatingFileHandler",
-                "filename": str(path),
-                "maxBytes": 10 * 1024 * 1024,  # 10 MB
-                "backupCount": 3,
+                "()": BoundedFileHandler,
+                "path": str(path),
+                "max_bytes": max_bytes,
+                "budget": budget,
                 "formatter": "default",
                 **extra,
             }
 
-        handlers["agent"] = file_handler(Path(log_file).expanduser())
+        handlers["agent"] = file_handler(agent_path)
         handlers["task"] = file_handler(
             directory / TASK_LOG_NAME, filters=["task_only"]
         )
@@ -418,9 +745,12 @@ def _prepare_log_dir(log_file: str) -> bool:
 def configure_from(config: AgentConfig) -> None:
     """Configure logging from resolved configuration.
 
-    A log file whose directory cannot be created degrades to stderr rather than
-    raising: the Agent must still start and be able to say why it cannot write
-    its log (the `RuntimePaths.ensure` rule, applied to one file).
+    A log file that cannot be written degrades to stderr rather than raising:
+    the Agent must still start and be able to say why it cannot write its log
+    (the `RuntimePaths.ensure` rule, applied to one file). Two ways it can fail,
+    and both end the same way: the directory cannot be created, or the directory
+    is fine but the file itself cannot be opened -- an unwritable path, or one
+    that is a directory.
     """
     log_file = config.log_file
     # The runtime token is the one credential this process holds in memory and
@@ -431,4 +761,21 @@ def configure_from(config: AgentConfig) -> None:
             "cannot create the directory for %s; logging to stderr only", log_file
         )
         log_file = ""
-    configure_logging(level=config.log_level, log_file=log_file, secrets=secrets)
+    try:
+        configure_logging(
+            level=config.log_level,
+            log_file=log_file,
+            secrets=secrets,
+            max_bytes=config.log_max_bytes,
+            retention_days=config.log_retention_days,
+            total_bytes=config.log_total_bytes,
+        )
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "cannot write the log file %s (%s); logging to stderr only",
+            log_file,
+            type(exc).__name__,
+        )
+        configure_logging(
+            level=config.log_level, log_file="", secrets=secrets
+        )

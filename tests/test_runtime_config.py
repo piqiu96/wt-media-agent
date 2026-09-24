@@ -203,6 +203,76 @@ class InvalidValueTest(unittest.TestCase):
         self.assertEqual(cfg.bitbrowser_create_timeout_seconds, 120.0)
 
 
+class LogRetentionConfigTest(unittest.TestCase):
+    """CHG-057 T-07: the four bounds (the ruling 六) are configuration.
+
+    The shipped numbers are asserted here and applied in
+    `tests/test_log_rollover.py`; what this class owns is the layer between:
+    that an operator can change them, and that a value which cannot mean
+    anything is rejected by key path rather than accepted.
+    """
+
+    def test_the_shipped_bounds_are_the_rulings_numbers(self):
+        cfg = load()
+
+        self.assertEqual(cfg.log_max_bytes, 20 * 1024 * 1024)
+        self.assertEqual(cfg.log_retention_days, 14)
+        self.assertEqual(cfg.log_total_bytes, 400 * 1024 * 1024)
+
+    def test_the_bounds_come_from_the_file_and_the_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_config(Path(tmp), "[logging]\nmax_bytes = 1_000_000\nretention_days = 3\n")
+            from_file = load(config_dir=Path(tmp))
+        from_env = load(
+            env={"WT_MEDIA_LOG_TOTAL_BYTES": "50000000", "WT_MEDIA_LOG_RETENTION_DAYS": "1"}
+        )
+
+        self.assertEqual(from_file.log_max_bytes, 1_000_000)
+        self.assertEqual(from_file.log_retention_days, 3)
+        self.assertEqual(from_file.log_total_bytes, 400 * 1024 * 1024, "unset keeps the default")
+        self.assertEqual(from_env.log_total_bytes, 50_000_000)
+        self.assertEqual(from_env.log_retention_days, 1)
+
+    def test_zero_is_rejected_by_key_path(self):
+        """"No limit" is not what zero means here: every bound is "over X"."""
+        for key, path in (
+            ("WT_MEDIA_LOG_MAX_BYTES", "logging.max_bytes"),
+            ("WT_MEDIA_LOG_RETENTION_DAYS", "logging.retention_days"),
+            ("WT_MEDIA_LOG_TOTAL_BYTES", "logging.total_bytes"),
+        ):
+            with self.subTest(key=key):
+                with self.assertRaises(ConfigError) as caught:
+                    load(env={key: "0"})
+                self.assertIn(path, str(caught.exception))
+
+    def test_a_negative_or_unparseable_bound_is_rejected(self):
+        for value in ("-1", "plenty"):
+            with self.subTest(value=value):
+                with self.assertRaises(ConfigError) as caught:
+                    load(env={"WT_MEDIA_LOG_MAX_BYTES": value})
+                self.assertIn("logging.max_bytes", str(caught.exception))
+
+    def test_a_total_below_the_single_file_cap_is_rejected(self):
+        """The two numbers contradict: one file may not exceed the budget.
+
+        Clamping one of them would leave the deployment with a bound nobody
+        configured, so the pair is rejected and both keys are named.
+        """
+        with self.assertRaises(ConfigError) as caught:
+            load(env={"WT_MEDIA_LOG_MAX_BYTES": "1000", "WT_MEDIA_LOG_TOTAL_BYTES": "999"})
+        message = str(caught.exception)
+
+        self.assertIn("logging.total_bytes", message)
+        self.assertIn("logging.max_bytes", message)
+
+    def test_equal_bounds_are_accepted(self):
+        """The boundary is allowed: one file can be the whole budget."""
+        cfg = load(env={"WT_MEDIA_LOG_MAX_BYTES": "999", "WT_MEDIA_LOG_TOTAL_BYTES": "999"})
+
+        self.assertEqual(cfg.log_max_bytes, 999)
+        self.assertEqual(cfg.log_total_bytes, 999)
+
+
 class CredentialHandlingTest(unittest.TestCase):
     SECRET_VALUE = "sk-live-do-not-log-me"
 
