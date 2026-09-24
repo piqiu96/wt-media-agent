@@ -36,6 +36,7 @@ from wt_media_agent.services.net.proxy import (
     parse_first_proxy_address,
 )
 from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
+from wt_media_agent.runtime.logging import begin_operation, end_operation
 
 #: Spelled out rather than `__name__`. `scripts/verify-health.sh` and
 #: `scripts/start-health.sh` both run this module with `-m`, where `__name__`
@@ -411,6 +412,31 @@ class LocalApiServer:
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     class AgentHandler(BaseHTTPRequestHandler):
         server_version = "WTMediaAgentM1/0.1"
+
+        def handle_one_request(self) -> None:
+            """One request, with one id of its own (T-21).
+
+            Every request begins here, so the id is set here rather than in each
+            `do_*`: a 401, a 404, an OPTIONS preflight and a malformed request
+            line all pass through this method, so all of them are inside an id by
+            construction -- and a route added later cannot forget to set one. The
+            reset is in a `finally` because the id must not outlive the request it
+            names, including when the request ends by raising.
+
+            The generator lives here, not in `runtime.logging`: that module owns
+            where the field goes in a line, while "what counts as one request" is
+            this module's question. `secrets` is already imported for the binding
+            token, so this adds no dependency.
+
+            One consequence, deliberate and registered: an SSE stream is a single
+            `handle_one_request` call, so every record a stream writes shares its
+            id rather than getting one per event.
+            """
+            token = begin_operation(secrets.token_hex(8))
+            try:
+                super().handle_one_request()
+            finally:
+                end_operation(token)
 
         def _check_auth(self) -> bool:
             if not api.auth_token:

@@ -23,6 +23,7 @@ runtime-layer work (ADR-0016 §4).
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import logging.config
 import os
@@ -56,7 +57,13 @@ TASK_LOGGER_PREFIX = "wt_media_agent.runner"
 
 #: Every record routed into the three files. `stderr` deliberately has none:
 #: the terminal must show what the files show, filters and all.
-FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+#:
+#: `%(operation_field)s` renders as the empty string outside a request (T-21),
+#: so the line a request never touched is byte-for-byte what it was before the
+#: field existed. It is a *render slot*, not a record attribute: the name is
+#: deliberately not `operation_id`, so a caller who passes
+#: `extra={"operation_id": ...}` cannot have it silently overwritten here.
+FMT = "%(asctime)s [%(levelname)s] %(name)s:%(operation_field)s %(message)s"
 DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 #: The ruling's fields for `error.log` (三). They are carried by `extra={...}`
@@ -66,6 +73,11 @@ DATEFMT = "%Y-%m-%dT%H:%M:%S"
 ERROR_CODE_FIELD = "error_code"
 TASK_ID_FIELD = "task_id"
 CONTEXT_FIELD = "context"
+
+#: The request-scoped id (T-21). Delivered inside this process only: D-10 keeps
+#: it off the wire, so nothing here is a header, a query parameter or a sidecar
+#: environment variable -- and the tests assert the responses do not carry it.
+OPERATION_ID_FIELD = "operation_id"
 
 #: What a required field reads as when the record has no value for it. Not the
 #: empty string: a reader must be able to tell "this event has no code" from
@@ -82,10 +94,58 @@ NO_VALUE = "none"
 
 #: The one place the fields are rendered. `agent.log` and `task.log` keep `FMT`:
 #: `agent.log` is the full-fidelity file, and the message already names the task.
+#:
+#: `%(operation_field)s` takes the same place it takes in `FMT` -- right after the
+#: logger name, before `error_code` -- so the field a reader looks for sits at one
+#: offset in all three files. D-03's five fields are all still here, in order, with
+#: the message last.
 ERROR_FMT = (
-    f"%(asctime)s [%(levelname)s] %(name)s: {ERROR_CODE_FIELD}=%(error_code)s"
-    f"%(extra_fields)s %(message)s"
+    f"%(asctime)s [%(levelname)s] %(name)s:%(operation_field)s"
+    f" {ERROR_CODE_FIELD}=%(error_code)s%(extra_fields)s %(message)s"
 )
+
+
+#: The id of the request this thread is serving, if it is serving one (T-21).
+#:
+#: A `ContextVar` and not a thread-local: `ThreadingHTTPServer` gives each
+#: connection a thread, so a thread-local would happen to work here -- and would
+#: stop working the moment any part of a request moved to an executor. Setting it
+#: is scoped to the context, and `reset(token)` *restores* the previous value
+#: rather than clearing it, so a request nested inside another hands the outer id
+#: back when it ends.
+_OPERATION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "wt_media_agent_operation_id", default=""
+)
+
+
+def begin_operation(value: str) -> contextvars.Token[str]:
+    """Make `value` this request's id. Pair it with `end_operation` in a `finally`.
+
+    The value comes from the caller -- `local_api.server` generates it with
+    `secrets.token_hex(8)`, so an id is 16 hexadecimal characters -- rather than
+    from here: this module owns where the field goes in a line, and the server owns
+    what counts as one request.
+    """
+    return _OPERATION_ID.set(value)
+
+
+def end_operation(token: contextvars.Token[str]) -> None:
+    """Undo one `begin_operation`, restoring whatever id was in scope before it."""
+    _OPERATION_ID.reset(token)
+
+
+def _operation_field() -> str:
+    """The id as a format field, or "" when no request is in scope.
+
+    Empty is the whole contract for a record written outside a request: the line
+    keeps exactly the shape it had before this field existed. The value is escaped
+    like any other field -- an id is generated here today, but a format field that
+    can carry a newline forges records in a file whose contract is one per line.
+    """
+    value = _OPERATION_ID.get()
+    if not value:
+        return ""
+    return f" {OPERATION_ID_FIELD}={_single_line(value)}"
 
 
 REDACTED = "***"
@@ -282,8 +342,29 @@ class RedactingFormatter(logging.Formatter):
         super().__init__(fmt, datefmt, style)
         self.secrets = tuple(s for s in secrets if len(s) >= MIN_SECRET_LENGTH)
 
+    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+        """The record as this line renders it. Subclass hook.
+
+        The request's id is stamped here, as a *render slot*, rather than carried
+        on the record by whoever logged it -- the same conclusion T-05 reached for
+        `error_code`: a field that is part of the line's shape belongs to the thing
+        that shapes the line, and all three handlers render through this one place.
+        """
+        record.operation_field = _operation_field()
+        return record
+
     def format(self, record: logging.LogRecord) -> str:
-        return redact(super().format(record), self.secrets)
+        """Render one record, then mask what the rendering produced.
+
+        The base *class* call for the rendering, so the record is prepared exactly
+        once: `super().format` would reach the same `logging.Formatter.format`, but
+        going through `self.prepare` is what lets a subclass prepare its own way.
+        Masking after rendering is T-06's rule -- by then the message and the
+        traceback are both text, which is the point, since a traceback is where a
+        credential turns up.
+        """
+        rendered = logging.Formatter.format(self, self.prepare(record))
+        return redact(rendered, self.secrets)
 
 
 class NoTracebackFormatter(RedactingFormatter):
@@ -311,29 +392,26 @@ class NoTracebackFormatter(RedactingFormatter):
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         """The record as this formatter wants to render it. Subclass hook."""
-        return self.isolate(record)
-
-    def format(self, record: logging.LogRecord) -> str:
-        # The base *class* call for the rendering, so the record is isolated
-        # once: `super().format` would be `RedactingFormatter.format`, which
-        # renders first and masks after -- the same order, but it would isolate
-        # again on the way.
-        rendered = logging.Formatter.format(self, self.prepare(record))
-        return redact(rendered, self.secrets)
+        return super().prepare(self.isolate(record))
 
 
-def _field(record: logging.LogRecord, name: str) -> str:
-    """One field's value as a single line of text, or "" if the record has none.
+def _single_line(value: object) -> str:
+    """A field's value as one line of text.
 
     Newlines are escaped, not stripped: `task_id` arrives from Cloud and is
     interpolated verbatim, so a value carrying a newline would otherwise forge a
     record in a file whose whole contract is one line per record. Values are
     expected to be tokens; T-06 owns redacting anything sensitive inside them.
     """
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _field(record: logging.LogRecord, name: str) -> str:
+    """One field's value as a single line of text, or "" if the record has none."""
     value = getattr(record, name, "")
     if not value:
         return ""
-    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+    return _single_line(value)
 
 
 class ErrorRecordFormatter(NoTracebackFormatter):
