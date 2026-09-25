@@ -54,4 +54,4 @@ The storage migration command initializes `local-agent.sqlite3` under `--db-path
 
 The default moved in CHG-056 T-03; it used to be `~/.wt-media-agent` for every deployment shape. A development database left there is not migrated — pass `--db-path ~/.wt-media-agent/local-agent.sqlite3` to reach it.
 
-Runtime configuration lives in `config/agent.toml`, overridden per key by environment variables (see `config/README.md`).
+Runtime configuration lives in `config/agent.toml`, overridden per key by environment variables (see `config/README.md`). `config/` is what the runtime reads and `config_online/` is the release replacement source: shipping copies that directory over this one wholesale, so a release artifact carries the production values while no runtime code ever names `config_online/`. A frozen Agent finds its configuration by where its executable sits rather than by an environment variable, and warns before falling back to the built-in defaults. Credentials are never read from either directory (see `AGENTS.md`).

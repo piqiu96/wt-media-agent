@@ -1,6 +1,8 @@
 # Agent Contracts
 
-Agent owns the following local contract areas. M0 keeps directories only as ownership placeholders; no formal OpenAPI, schema, DTO, SSE event, or error-code definitions are active yet.
+Agent owns the following local contract areas. Every area carries an active formal
+definition under its own `v1/` directory; the area README names the file and states
+the revision it is at.
 
 - `local-agent-api`
 - `local-event-schemas`
