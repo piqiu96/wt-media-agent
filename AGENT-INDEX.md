@@ -1,8 +1,12 @@
 # wt-media-agent Agent Index
 
+> 本文件是本仓**全部正式内容**的唯一落点：定位、职责边界、需求路由、**本仓规则**、禁止项与本仓内加载顺序。`CLAUDE.md` 与 `AGENTS.md` 是指针，只声明本文件的位置，不承载任何规则。
+
 ## 依赖
 
-关于文档等事实都在`../wt-media-workspace`，需要执行时优先考虑对应的约束边界
+关于文档等事实都在`../wt-media-workspace`，需要执行时优先考虑对应的约束边界。
+
+治理上下文（当前 CHG、执行契约）在 `../wt-media-workspace`，按其 `.ai/CURRENT_CONTEXT.md` 指引加载。
 
 ## 定位
 
@@ -45,6 +49,28 @@
 | 改本地控制 API | `src/wt_media_agent/local_api/`（`server.py:main` 是冻结符号） |
 | 改本地 FFmpeg 合成执行 | **尚无实现**：`runtime/environment.py` 只探测 ffmpeg 是否存在 |
 
+## 本仓规则
+
+本仓全部规则的唯一落点。一条一行，写清做什么／不做什么。逐项目录事实与禁止扫描区见 `DIRECTORY_MAP.md`。
+
+### 配置
+
+- `config/` 是运行期唯一读的目录；`config_online/` 是发布替换源——运行期代码零引用它，出货时由 `scripts/build_desktop_sidecar.py --config-dir` **整目录覆盖** `config/`，两个目录的文件名与键集合保持 1:1。
+- 冻结后的 Agent 由**可执行文件的位置**推导配置目录（macOS `.app` 里的 `Contents/Resources/config`，否则可执行文件旁边的 `config/`），命中不了会先 WARNING 再回落内置默认值——「发布包没带配置」正是安静回落会藏住的那件事。
+- 凭证不从这两个目录来：加载器忽略 TOML 里所有敏感键，只报键名、从不报值。
+
+### 平台适配
+
+平台适配（未来 CHG 引入后）不得直接修改 Cloud 状态。
+
+### 发布构建
+
+发布构建不依赖系统 Python 或系统 PATH FFmpeg。
+
+### 依赖锁文件
+
+依赖锁文件（`uv.lock`、`dependency.lock`）由依赖工具生成，**禁止手改**。
+
 ## 禁止
 
 - 直接连 Cloud MySQL。
@@ -55,11 +81,12 @@
 - 重复实现 Cloud 已有的业务规则和数据管理。
 - 为 M3 内容发现重建独立抓取任务体系（该阶段归 Cloud-owned 链路）。
 
-## 上下文加载顺序
+## 本仓内加载顺序
 
-1. 本文件（职责与路由）
-2. `AGENTS.md` 与 `CLAUDE.md`（边界与规则）
-3. `DIRECTORY_MAP.md`（目录导航，含 Local/Cloud 适用范围标注）
-4. 只读目标模块的代码、直接依赖与 `tests/` 对应测试
+本节只写**本仓内**的入口顺序；跨仓读取顺序与全部红线的唯一落点是 `../wt-media-workspace/AGENT-INDEX.md` §4 与 §2，本节不复述。
 
-治理上下文（当前 CHG、执行契约）在 `../wt-media-workspace`，按其 `.ai/CURRENT_CONTEXT.md` 指引加载。禁止默认扫描 `__pycache__`、锁文件。
+1. 本文件（职责、路由与本仓规则）
+2. `DIRECTORY_MAP.md`（目录导航，含 Local/Cloud 适用范围标注）
+3. 只读目标模块的代码、直接依赖与 `tests/` 对应测试
+
+禁止默认扫描的目录见 `DIRECTORY_MAP.md` 的「禁止扫描区」。

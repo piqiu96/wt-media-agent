@@ -18,7 +18,7 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 | `src/wt_media_agent/cloud_main.py` | Cloud 进程入口（`wt-media-cloud-agent`），3 行委托 `bootstrap.cloud` | Cloud | 一般不必进 |
 | `src/wt_media_agent/sidecar_main.py` | Sidecar 入口（由 Desktop 拉起），委托 `bootstrap.sidecar`，自身不接任何命令行参数。**冻结路径**：Desktop 打包直接以本文件为 PyInstaller 入口，不得搬移或改名 | Local | 改 Sidecar 启动行为 |
 
-`local_api/server.py:main` 是第四个进程入口（`wt-media-local-health`、`scripts/verify-health.sh`、workspace 的 m2b/verify 脚本都调它）：保留原位与符号不动，内部同样委托 `bootstrap` 装配。四个入口都是薄壳，装配实现只有 `bootstrap/app.py` 一处。
+`local_api/server.py:main` 是第四个进程入口（`wt-media-local-health`、`scripts/verify-health.sh`、workspace 的 m2b/verify 脚本都调它）：保留原位与符号不动，内部同样委托 `bootstrap` 装配。四个入口都是薄壳，装配实现只有 `bootstrap/app.py` 一处。`src/wt_media_agent` 是可安装 Python 包（`pyproject.toml`）。
 
 ## 二、运行时基础（`src/wt_media_agent/runtime/`，共用）
 
@@ -64,6 +64,7 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 |---|---|---|
 | `local_api/server.py` | 环回控制 API（Desktop Rust 层代理到这里）。`main` 为**冻结符号**：打包与健康脚本按模块路径调用 | 改本地接口 |
 | `local_api/reporting.py` | 本地控制面的响应装配（安全分组投影、检查项拼装、耗时） | 改响应形状 |
+| `local_api/health.py` | 聚合健康（供健康脚本与 Desktop 探活） | 改健康检查项 |
 | `local_api/state.py` | 本地可观测状态与待上报结果队列 | 改状态上报 |
 
 ## 六、执行器（`src/wt_media_agent/executors/`，按任务类型编排）
