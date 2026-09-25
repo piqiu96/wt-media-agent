@@ -41,7 +41,7 @@ from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
 from wt_media_agent.runtime.logging import begin_operation, end_operation
 
 #: Spelled out rather than `__name__`. `scripts/verify-health.sh` and
-#: `scripts/start-health.sh` both run this module with `-m`, where `__name__`
+#: `bin/control.sh` both run this module with `-m`, where `__name__`
 #: is `__main__` -- so the logger was named `__main__` and every HTTP-side
 #: record lost the component it came from (T-07 measured it, T-09 fixed it).
 #: The literal is what `__name__` already produced on the import path, so

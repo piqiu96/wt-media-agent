@@ -13,5 +13,6 @@ wholesale, so that the release artifact carries the production configuration.
   a credential placed here would be ignored, not honoured.
 - `cloud.base_url` holds the loopback value, and that is the decided production
   value: Q-01 was closed on 2026-09-25 (CHG-20260923-059, D-08) in favour of the
-  local Cloud service on `127.0.0.1:18080`. Nothing here is waiting on a
+  local Cloud service. The address itself is a runtime parameter and lives in the
+  TOML beside this file, not in prose here. Nothing here is waiting on a
   decision, so this directory can be copied over `config/` as it stands.

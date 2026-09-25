@@ -151,7 +151,7 @@ class LocalApiServerTests(unittest.TestCase):
 class LoggerNameTests(unittest.TestCase):
     """T-09: the module's records are named after the component, however it started.
 
-    `scripts/verify-health.sh` and `scripts/start-health.sh` both run
+    `scripts/verify-health.sh` and `bin/control.sh` both run
     `python -m wt_media_agent.local_api.server`. Under `-m` the module executes
     as `__main__`, so `getLogger(__name__)` named the logger `__main__` and every
     HTTP-side record lost the component it came from -- the opposite of what

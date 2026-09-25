@@ -142,7 +142,7 @@ class EnvLayerTest(unittest.TestCase):
         self.assertEqual(cfg.log_level, "WARNING")
 
     def test_the_health_scripts_log_file_variable_is_not_agent_config(self):
-        """`WT_MEDIA_AGENT_LOG_FILE` names where start-health.sh redirects *its*
+        """`WT_MEDIA_AGENT_LOG_FILE` names where bin/control.sh redirects *its*
         child's stdout/stderr. No Agent module ever read it, and honouring it
         here would put a second handler on the file the caller already owns.
 

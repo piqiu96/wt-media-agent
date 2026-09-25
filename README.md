@@ -14,7 +14,9 @@ This repository is an installable Python package under `src/wt_media_agent`. All
 
 BitBrowser settings come from `config/agent.toml`; each key can be overridden by environment variables:
 
-- `WT_MEDIA_BITBROWSER_API_URL`: local service base URL, default `http://127.0.0.1:54345`.
+- `WT_MEDIA_BITBROWSER_API_URL`: local service base URL. Its default is a runtime
+  parameter and lives where runtime parameters live — `config/agent.toml`
+  (`runtime/constants.py` carries the built-in fallback). It is not restated here.
 - `WT_MEDIA_BITBROWSER_TIMEOUT_SECONDS`: request timeout, default `5`.
 
 ## Key Directories
@@ -45,10 +47,14 @@ scripts/verify-health.sh
 For local health process management in a terminal:
 
 ```text
-WT_MEDIA_AGENT_HEALTH_PORT=18765 scripts/start-health.sh
-WT_MEDIA_AGENT_HEALTH_PORT=18765 scripts/health.sh
-scripts/stop-health.sh
+bin/control.sh start
+bin/control.sh status
+bin/control.sh stop
 ```
+
+`bin/control.sh status` reports process liveness and endpoint health as two
+separate readings, and exits non-zero unless both hold. `bin/control.sh help`
+lists the remaining verbs.
 
 The storage migration command initializes `local-agent.sqlite3` under `--db-path` if given, else `--data-dir` or `WT_MEDIA_AGENT_DATA_DIR` if given, else the deployment-shaped default: `<repo>/.local/data` from a checkout, `~/Library/Application Support/WTMedia/Agent` when frozen or in production. It prints the database path it used. It records applied versions in `schema_migrations` and skips already applied migrations on repeat runs.
 

@@ -111,7 +111,8 @@ Agent 有两种运行模式：**Local Agent**（运行在运营电脑）与 **Cl
 | `contracts/` | 本地契约：`local-agent-api/`、`local-error-codes/`、`local-event-schemas/`、`local-status-enums/` |
 | `config/` | 运行时唯一读取的配置目录（`agent.toml` + README）；`config_online/` 为发布整目录替换源，运行时代码不得读取（`src/` 内不得出现该字面量） |
 | `tests/` | 单元测试（按文件名对应模块） |
-| `scripts/` | 构建与运行脚本 |
+| `bin/` | 本地开发环境的进程启停与健康检查，唯一入口 `control.sh` |
+| `scripts/` | 开发与验收脚本；分类与落位规则见 `scripts/README.md` |
 
 ## 十一、禁止扫描区
 
