@@ -11,6 +11,7 @@ wholesale, so that the release artifact carries the production configuration.
   file. ADR-0016 §7 permits credentials in this directory; the loader is
   deliberately narrower today (recorded as a deviation in CHG-20260923-056), so
   a credential placed here would be ignored, not honoured.
-- `cloud.base_url` currently holds the loopback value because Q-01
-  (CHG-20260923-056) is still open -- the production Cloud address is undecided.
-  That is the safe reading, not a finished value: resolve it before release.
+- `cloud.base_url` holds the loopback value, and that is the decided production
+  value: Q-01 was closed on 2026-09-25 (CHG-20260923-059, D-08) in favour of the
+  local Cloud service on `127.0.0.1:18080`. Nothing here is waiting on a
+  decision, so this directory can be copied over `config/` as it stands.

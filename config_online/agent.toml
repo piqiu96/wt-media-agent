@@ -15,10 +15,10 @@
 environment = "production"
 
 [cloud]
-# Q-01 (CHG-20260923-056) is still open: whether the production deployment is a
-# local Cloud service on 127.0.0.1:18080 or a remote Cloud host. Until it is
-# decided this keeps the loopback value, which is the safe reading -- a loopback
-# address cannot send credentials off the machine. Resolve before release.
+# Decided (Q-01, closed 2026-09-25): the production deployment is the local
+# Cloud service on 127.0.0.1:18080, so the loopback value below is the release
+# value rather than a placeholder. A loopback address cannot send credentials
+# off the machine, and the desktop window's CSP allows this origin only.
 base_url = "http://127.0.0.1:18080"
 timeout_seconds = 10.0
 

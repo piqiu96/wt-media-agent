@@ -1,11 +1,13 @@
-"""T-05: the release configuration reaches the product wholesale, and unread.
+"""T-05/T-10: the release configuration reaches the product wholesale, and unread.
 
-Two halves of one story, so one file. `config_online/` is copied into the
+Three claims about one story, so one file. `config_online/` is copied into the
 product as a whole directory (`sync_config`, ADR-0016 §6) and has to arrive
 without anything the runtime would refuse to honour (`SENSITIVE_KEY_NAMES`,
-ADR-0016 §7). Both are about shipped bytes rather than about a running Agent,
-which is why they are not in `test_runtime_config.py` -- that file's subject is
-what a process resolves, this one's is what a release ships.
+ADR-0016 §7) and without a comment that states a decision as still pending
+(`UNRESOLVED_MARKERS`, T-10). All three are about shipped bytes rather than
+about a running Agent, which is why they are not in `test_runtime_config.py` --
+that file's subject is what a process resolves, this one's is what a release
+ships.
 """
 
 from __future__ import annotations
@@ -80,6 +82,37 @@ def credential_findings(directory: Path) -> tuple[list[str], int]:
                 findings.append(f"{path.name}: {dotted} is a sensitive key name")
             if _carries_userinfo(value):
                 findings.append(f"{path.name}: {dotted} carries credentials in its value")
+    return findings, scanned
+
+
+#: How a shipped file states that a decision is still pending. Phrasing, not
+#: question ids: naming `Q-01` is fine once the question is answered -- what a
+#: release must not ship is a claim that it is not.
+UNRESOLVED_MARKERS = (
+    "still open",
+    "undecided",
+    "unresolved",
+    "resolve before release",
+)
+
+
+def unresolved_claims(directory: Path) -> tuple[list[str], int]:
+    """Pending-decision claims a release must not carry, plus files looked at.
+
+    Every file in the directory is scanned, not only the `*.toml` ones: the
+    claim that the production Cloud address was undecided lived in a README
+    beside the config as well, and a sentence is not less shipped for being in
+    prose.
+    """
+    findings: list[str] = []
+    scanned = 0
+    for path in sorted(p for p in directory.rglob("*") if p.is_file()):
+        scanned += 1
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            for marker in UNRESOLVED_MARKERS:
+                if marker in lowered:
+                    findings.append(f"{path.name}:{number} states '{marker}'")
     return findings, scanned
 
 
@@ -244,6 +277,57 @@ class ShippedConfigurationTest(unittest.TestCase):
             self.assertIn("planted.toml: agent.Runtime_Token is a sensitive key name", findings)
             self.assertIn("planted.toml: cloud.base_url carries credentials in its value", findings)
             self.assertEqual(len(findings), 2, "the clean file must contribute nothing")
+
+    def test_the_shipped_configuration_claims_no_open_question(self):
+        """A release must not ship "this was never decided" about its own values.
+
+        The value is not the thing that rots here. `cloud.base_url` kept the
+        loopback address through the whole of CHG-056, which is a defensible
+        release value; what made the file wrong was the comment beside it
+        promising a resolution later. That sentence shipped, and the file it
+        shipped in was the one that said what production talks to.
+
+        `Q-01` by name is not a finding: a decided question may be named. See
+        `UNRESOLVED_MARKERS`.
+        """
+        findings, scanned = unresolved_claims(ONLINE_DIR)
+        self.assertGreater(scanned, 0, "the scan must have looked at something")
+        self.assertEqual(
+            findings, [], "a shipped configuration states decisions as made, not as pending"
+        )
+
+    def test_the_pending_decision_scan_finds_its_markers(self):
+        """Positive control, and the reason the markers are phrasing not ids.
+
+        Both halves are planted: the same sentence in a `*.toml` and in a
+        README, because the scan is a whole-directory one and a `*.toml`-only
+        version would pass this control while missing one of the two files that
+        were actually wrong. The third file pins the other direction -- naming
+        an answered question must not be reported.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "README.md").write_text(
+                "- `cloud.base_url` holds the loopback value -- the production address is undecided.\n"
+            )
+            (directory / "agent.toml").write_text(
+                '# Q-01 is still open. Resolve before release.\nbase_url = "http://127.0.0.1:18080"\n'
+            )
+            (directory / "decided.toml").write_text(
+                '# Decided: Q-01 is closed, the production address stays loopback.\n'
+            )
+
+            findings, scanned = unresolved_claims(directory)
+
+            self.assertEqual(scanned, 3)
+            self.assertEqual(
+                findings,
+                [
+                    "README.md:1 states 'undecided'",
+                    "agent.toml:1 states 'still open'",
+                    "agent.toml:1 states 'resolve before release'",
+                ],
+            )
 
 
 if __name__ == "__main__":
