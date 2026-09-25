@@ -4,9 +4,11 @@ import os
 from pathlib import Path
 import importlib.util
 import inspect
+import socket
 import sys
 import tempfile
 import unittest
+from http.server import ThreadingHTTPServer
 from unittest import mock
 
 
@@ -14,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from support import LoggingStateTestCase
+from support import LoggingStateTestCase, UnusedBitBrowser, isolated_paths
 
 
 class SidecarEntryTests(LoggingStateTestCase):
@@ -94,6 +96,94 @@ class SidecarEntryTests(LoggingStateTestCase):
 
         self.assertEqual(list(inspect.signature(sidecar_main.main).parameters), [])
         self.assertEqual(list(inspect.signature(sidecar_surface.run).parameters), [])
+
+
+class ReadinessLineTests(LoggingStateTestCase):
+    """The line Desktop waits for before it calls anything (CHG-059 T-01).
+
+    `wt-media-desktop`'s `sidecar/readiness.rs` parses this line as the first of
+    its two readiness signals, and compares the port on it against the port it is
+    about to call. Nothing checks the two repositories against each other at
+    build time, so the format is pinned here — a reworded print fails in this
+    repository rather than in every launch as a start that times out.
+
+    Being exact about what the test below can say: the *format* is pinned by
+    running the real `serve`, and the **ordering** Desktop depends on — "by the
+    time this line exists, the socket accepts" — is **measured**, by connecting
+    to the announced address at the instant the line is printed. What is not
+    covered here is a frozen sidecar launched by the real Desktop: that is the
+    real-machine arm in this change's evidence.
+
+    One thing the line does **not** claim, registered rather than implied: it
+    names the port `serve` was *asked* for, not the one the socket ended up on.
+    In every real launch those are the same — Desktop passes a concrete
+    `agent.port` — so the difference is unexercised, and a `port=0` launch would
+    announce `0`. Left as it is deliberately: it is the requested port that
+    Desktop compares against, and the two agree wherever it matters.
+    """
+
+    def test_the_readiness_line_is_printed_only_after_the_socket_accepts(self) -> None:
+        from wt_media_agent.local_api.server import serve
+        from wt_media_agent.local_api.state import LocalAgentState
+
+        with isolated_paths():
+            # A concrete port, not 0: the line names the requested port, so a
+            # scratch port the kernel chose would not match what is printed.
+            probe = socket.socket()
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+            probe.close()
+
+            host = "127.0.0.1"
+            expected = f"wt-media-agent local API listening on {host}:{port}"
+
+            printed: list[str] = []
+            accepting: list[bool] = []
+            reached_the_loop: list[bool] = []
+
+            def spy(*args, **kwargs):
+                """Record the line instead of writing it.
+
+                Swallowed rather than forwarded: the suite should not print the
+                Agent's startup line for every run, and the text is what the
+                assertions are about -- `printed` is the reading, stdout is not.
+                """
+                text = " ".join(str(arg) for arg in args)
+                if text == expected:
+                    # Exactly what Desktop does the instant it sees the line.
+                    try:
+                        with socket.create_connection((host, port), timeout=5):
+                            accepting.append(True)
+                    except OSError:
+                        accepting.append(False)
+                printed.append(text)
+
+            def stop_here(self):
+                """Let `serve` return so the test can end.
+
+                Only the loop is replaced; the socket underneath is real, and
+                `serve`'s `finally` still closes it. The control for this being
+                a fair substitution is `reached_the_loop` below.
+                """
+                reached_the_loop.append(True)
+
+            with mock.patch("builtins.print", spy), mock.patch.object(
+                ThreadingHTTPServer, "serve_forever", stop_here
+            ):
+                serve(
+                    host,
+                    port,
+                    bitbrowser=UnusedBitBrowser(),
+                    state=LocalAgentState(agent_id="local-agent-dev", status="idle"),
+                )
+
+            self.assertIn(expected, printed, "the line Desktop parses, verbatim")
+            self.assertEqual(reached_the_loop, [True], "the control: serve got this far")
+            self.assertEqual(
+                accepting,
+                [True],
+                "the line must not appear before the socket accepts connections",
+            )
 
 
 if __name__ == "__main__":
