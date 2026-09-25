@@ -377,6 +377,95 @@ class RunRunnerSwitchTest(unittest.TestCase):
             self.resolve("maybe")
 
 
+class BundledConfigDirTest(unittest.TestCase):
+    """A packaged Agent reads the configuration shipping put beside it.
+
+    ADR-0016 §6: the product's `config/` is a mirror of `config_online/`, and
+    nothing may switch between the two -- no environment variable, no parameter,
+    no flag. The only thing allowed to decide is where the process is running
+    from, which is what these arms pin. The packaged side is measured for real by
+    running a frozen sidecar (`evidence/task-05-config-shipping.md`); these are
+    the checkout-side arms, including the two that a bundle cannot show: the
+    fallback when nothing was shipped, and a checkout that finds itself next to a
+    bundle-shaped directory.
+
+    `frozen`/`exe` are injected because a test process is neither frozen nor
+    located in a `.app`; they are the same kind of seam as `RuntimePaths.resolve`'s
+    `home`/`repo_root`.
+    """
+
+    #: Distinctive, and the same key spelled differently in each arm: a test that
+    #: only compared paths could pass while both files resolved to the same read.
+    RESOURCES_VALUE = "http://127.0.0.1:19080"
+    BESIDE_VALUE = "http://127.0.0.1:19081"
+
+    def app_tree(self, root: Path, *, resources: str | None = None, beside: str | None = None) -> Path:
+        """Build a `.app`-shaped tree; return the executable's resolved path.
+
+        Resolved, because the implementation resolves its own (`sys.executable`
+        is not a symlink but `Path.resolve` is defined for both), and on macOS
+        that turns `/var/...` into `/private/var/...`. A test comparing against
+        the unresolved spelling would fail for a reason that has nothing to do
+        with the bundle.
+        """
+        exe = (root / "WT Media.app" / "Contents" / "MacOS" / "wt-media-agent").resolve()
+        exe.parent.mkdir(parents=True)
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        for directory, value in (
+            (exe.parent.parent / "Resources" / "config", resources),
+            (exe.parent / "config", beside),
+        ):
+            if value is not None:
+                directory.mkdir(parents=True)
+                write_config(directory, f'[cloud]\nbase_url = "{value}"\n')
+        return exe
+
+    def test_a_packaged_agent_reads_the_configuration_in_its_resources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = self.app_tree(Path(tmp), resources=self.RESOURCES_VALUE)
+            directory = default_config_dir(frozen=True, exe=exe)
+            self.assertEqual(directory, exe.parent.parent / "Resources" / "config")
+            self.assertEqual(load(frozen=True, exe=exe).cloud_base_url, self.RESOURCES_VALUE)
+
+    def test_a_packaged_agent_reads_a_flat_configuration_next_to_the_executable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = self.app_tree(Path(tmp), beside=self.BESIDE_VALUE)
+            directory = default_config_dir(frozen=True, exe=exe)
+            self.assertEqual(directory, exe.parent / "config")
+            self.assertEqual(load(frozen=True, exe=exe).cloud_base_url, self.BESIDE_VALUE)
+
+    def test_the_app_layout_wins_over_a_directory_beside_the_executable(self):
+        """Order matters only when both exist, so this arm is what pins the order."""
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = self.app_tree(Path(tmp), resources=self.RESOURCES_VALUE, beside=self.BESIDE_VALUE)
+            self.assertEqual(
+                load(frozen=True, exe=exe).cloud_base_url, self.RESOURCES_VALUE
+            )
+
+    def test_a_bundle_with_nothing_shipped_falls_back_and_says_so(self):
+        """The regression this task fixes must stay audible, not silent.
+
+        A release that lost `bundle.resources` would otherwise start an Agent on
+        the built-in defaults and look exactly like one that shipped them.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = self.app_tree(Path(tmp))
+            with self.assertLogs("wt_media_agent.runtime.config", level="WARNING") as captured:
+                directory = default_config_dir(frozen=True, exe=exe)
+            self.assertEqual(directory, default_config_dir())
+            self.assertIn("no packaged config directory found", captured.output[0])
+            self.assertNotIn(tmp, str(directory), "the fallback is the checkout, not the bundle")
+            self.assertEqual(load(frozen=True, exe=exe, repo_root=FAKE_REPO).local_api_port, 8765)
+
+    def test_a_checkout_ignores_a_bundle_shaped_directory(self):
+        """The other direction: a dev run must not pick up a `.app` next to it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = self.app_tree(Path(tmp), resources=self.RESOURCES_VALUE)
+            with self.assertNoLogs("wt_media_agent.runtime.config", level="WARNING"):
+                directory = default_config_dir(frozen=False, exe=exe)
+            self.assertEqual(directory, default_config_dir())
+
+
 class ConfigMirrorTest(unittest.TestCase):
     """`config_online/` replaces `config/` wholesale, so they must line up."""
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +35,7 @@ from wt_media_agent.runtime.constants import (
     DEFAULT_LOG_MAX_RECORD_BYTES,
     DEFAULT_LOG_RETENTION_DAYS,
 )
-from wt_media_agent.runtime.paths import RuntimePaths, repository_root
+from wt_media_agent.runtime.paths import RuntimePaths, is_frozen, repository_root
 
 logger = logging.getLogger(__name__)
 
@@ -244,13 +245,59 @@ class AgentConfig:
         return self.environment.strip().lower() == "production"
 
 
-def default_config_dir() -> Path:
-    """The checkout's `config/` directory.
+#: The directory a macOS `.app` keeps its sealed resources in. The packaged
+#: branch below looks for `config/` there -- one level up from `Contents/MacOS`,
+#: where the executable sits -- because that is where shipping stages the Agent's
+#: configuration (`wt-media-desktop/scripts/stage-release-config.sh`).
+BUNDLE_RESOURCES_DIR_NAME = "Resources"
 
-    In a frozen bundle this points inside the extraction directory and simply
-    will not exist, which is fine: a missing file means "use the defaults", and
-    a bundled sidecar is configured through the environment by Desktop.
+
+def _bundled_config_dir(exe: Path) -> Path | None:
+    """The config directory a packaged Agent was shipped with, or `None`.
+
+    Derived from `exe` and never from an environment variable: ADR-0016 §6
+    forbids a switch between the checkout's `config/` and the shipped one, so the
+    only thing allowed to decide is where the process is running from.
+
+    Two shapes, in this order: the `.app` layout Tauri produces (resources sealed
+    under `Contents/Resources`), then a plain `config/` beside the executable,
+    which is what an unpacked distribution would carry.
     """
+    directory = exe.resolve().parent
+    candidates = (
+        directory.parent / BUNDLE_RESOURCES_DIR_NAME / CONFIG_DIR_NAME,
+        directory / CONFIG_DIR_NAME,
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    logger.warning(
+        "no packaged config directory found (looked at %s); using the built-in defaults",
+        " and ".join(str(candidate) for candidate in candidates),
+    )
+    return None
+
+
+def default_config_dir(*, frozen: bool | None = None, exe: Path | None = None) -> Path:
+    """The config directory this process reads.
+
+    A packaged Agent reads what shipping put beside it -- `Contents/Resources/
+    config` in a macOS `.app`, `config/` next to the executable otherwise -- and a
+    checkout reads the repository's own `config/`. (That is the same dev/installed
+    split `RuntimePaths.resolve` makes, argued in ADR-0016 §5-§6.)
+
+    `frozen` and `exe` are the seams that let the packaged branch be tested
+    without building a bundle; both default to this process's own values. A
+    packaged Agent that matches neither shape falls back to the checkout path --
+    which inside a bundle is an extraction directory that does not exist, i.e. the
+    built-in defaults -- but says so at WARNING first, because "the release
+    shipped no configuration" is exactly the regression a quiet fallback hides.
+    """
+    frozen = is_frozen() if frozen is None else frozen
+    if frozen:
+        bundled = _bundled_config_dir(exe if exe is not None else Path(sys.executable))
+        if bundled is not None:
+            return bundled
     return repository_root() / CONFIG_DIR_NAME
 
 
@@ -275,14 +322,22 @@ def _leaves(node: Mapping[str, object], prefix: str = "") -> list[tuple[str, str
     return found
 
 
-def _read_document(config_dir: Path | None) -> Mapping[str, object]:
-    """Parse `<config_dir>/agent.toml`.
+def _read_document(
+    config_dir: Path | None, *, frozen: bool | None = None, exe: Path | None = None
+) -> Mapping[str, object]:
+    """Parse `<config_dir>/agent.toml`, resolving the directory when not given.
 
     Missing is not an error -- it means "use the defaults". Malformed is an
     error: a broken file shipping in a release should be loud, not silently
     reinterpreted as an unconfigured agent.
+
+    `frozen`/`exe` are passed through to `default_config_dir` so that a caller
+    asking `load_config` to stand in for a packaged Agent gets the packaged
+    directory too, instead of this process's own.
     """
-    directory = config_dir if config_dir is not None else default_config_dir()
+    directory = (
+        config_dir if config_dir is not None else default_config_dir(frozen=frozen, exe=exe)
+    )
     path = directory / CONFIG_FILE_NAME
     try:
         raw = path.read_bytes()
@@ -318,10 +373,11 @@ def load_config(
     frozen: bool | None = None,
     home: Path | None = None,
     repo_root: Path | None = None,
+    exe: Path | None = None,
 ) -> AgentConfig:
     """Resolve the configuration. Reads the filesystem and the environment."""
     environment = os.environ if env is None else env
-    document = _read_document(config_dir)
+    document = _read_document(config_dir, frozen=frozen, exe=exe)
     _warn_about_ignored_keys(document, frozenset(field.path for field in _SPEC))
 
     values: dict[str, object] = {}
