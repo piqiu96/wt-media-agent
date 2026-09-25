@@ -7,6 +7,8 @@ import json
 import logging
 import queue
 import secrets
+import signal
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Protocol
@@ -605,6 +607,39 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     return AgentHandler
 
 
+def _answer_sigterm(httpd: ThreadingHTTPServer) -> object:
+    """Route SIGTERM to the ordinary exit path, and report the displaced handler.
+
+    Desktop stops this process by **asking**, not by killing
+    (`wt-media-desktop/src-tauri/src/sidecar/mod.rs`, CHG-059 T-03): it sends
+    SIGTERM, waits a grace window, and only then sends SIGKILL. SIGTERM's default
+    disposition is an immediate termination that runs no Python at all, so
+    without this the ask *is* a kill that costs a few seconds — the in-flight
+    work is lost just as surely, and Desktop's two exit readings become
+    indistinguishable.
+
+    What is deliberately **not** written here: any deadline. `shutdown()` stops
+    the accept loop, `server_close()` joins the request threads (see the flag
+    `serve` sets for that), and the deadline belongs to the side that can
+    enforce it — Desktop waits a grace window and then sends SIGKILL. A second
+    SIGTERM during that wait terminates outright, which is the conventional
+    reading of a repeated signal and the escape hatch if the join ever wedges.
+
+    The handler is dispatched to its own thread because it must be: signals are
+    delivered to the main thread, `shutdown()` blocks until `serve_forever`
+    returns, and `serve_forever` is what the main thread is inside. Calling it
+    directly from the handler would deadlock the process.
+    """
+
+    def request_stop(signum: int, frame: object) -> None:  # noqa: ARG001
+        logger.info("收到 SIGTERM，停止接受新请求并等在飞请求收尾")
+        threading.Thread(
+            target=httpd.shutdown, name="wt-media-sigterm", daemon=True
+        ).start()
+
+    return signal.signal(signal.SIGTERM, request_stop)
+
+
 def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
@@ -623,14 +658,43 @@ def serve(
         cloud_base_url=cloud_base_url,
     )
     httpd = ThreadingHTTPServer((host, port), make_handler(api))
+    # **One line, and without it the join below is a no-op.** `ThreadingMixIn`
+    # tracks a request thread so `server_close()` can join it, but its tracker
+    # refuses daemon threads -- `_Threads.append` returns early `if thread.daemon`
+    # -- and `ThreadingHTTPServer` sets `daemon_threads = True`. So the default
+    # pair *looks* like "close waits for in-flight requests" (block_on_close is
+    # True, and server_close does call `_threads.join()`) while the list being
+    # joined is empty. Measured, not read off the class: with a request parked
+    # mid-flight the process exited at once, and only after this flag did it wait.
+    #
+    # The cost of turning it off is that a request that never finishes keeps the
+    # interpreter alive at exit. That is the intended trade, and it is not
+    # unbounded: the waiting side is Desktop, whose grace window ends in SIGKILL.
+    httpd.daemon_threads = False
     logger.info("wt-media-agent local API listening on %s:%s", host, port)
     print(f"wt-media-agent local API listening on {host}:{port}", flush=True)
+    # Installed here rather than in `main`, so that "serving" and "answers
+    # SIGTERM" are the same promise wherever `serve` is called from. It also
+    # means `serve` requires the main thread — `signal.signal` raises otherwise,
+    # and that is the right failure: a `serve` that silently cannot be asked to
+    # stop is the defect this exists to remove, and it should not be a silent one.
+    previous = _answer_sigterm(httpd)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("wt-media-agent local API stopped", flush=True)
+        pass
     finally:
+        # In-flight requests finish here, not before: `server_close()` joins the
+        # request threads, given the flag set above. The handler is restored
+        # **after** that join, so a SIGTERM arriving mid-wait is still answered
+        # rather than killing a process that is doing what it was asked.
         httpd.server_close()
+        signal.signal(signal.SIGTERM, previous)
+    # After the close, not before, and that ordering is the whole value of this
+    # line: it is what Desktop reads out of the sidecar's buffered output to tell
+    # "asked and closed" from "had to be killed". Printed before the join it
+    # would mean only "stopped accepting".
+    print("wt-media-agent local API stopped", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:

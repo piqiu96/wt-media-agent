@@ -4,9 +4,13 @@ import os
 from pathlib import Path
 import importlib.util
 import inspect
+import signal
 import socket
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest import mock
@@ -184,6 +188,208 @@ class ReadinessLineTests(LoggingStateTestCase):
                 [True],
                 "the line must not appear before the socket accepts connections",
             )
+
+
+class SigtermTests(LoggingStateTestCase):
+    """SIGTERM is answered, and its arrival does not cut in-flight requests off.
+
+    Desktop's exit path (`wt-media-desktop/src-tauri/src/sidecar/mod.rs`, CHG-059
+    T-03) sends SIGTERM and waits a grace window before it kills. For that to be
+    anything other than a slower kill, two things have to be true here:
+
+    1. SIGTERM is **answered** — the process leaves by its ordinary exit path,
+       which is the only one that runs `server_close()`;
+    2. that path **waits** for a request already being served.
+
+    Both are measured on a real child process, because both are claims about a
+    signal and about process exit, and neither exists in-process: SIGTERM's
+    default disposition is what the red reading is about, and `signal.signal`
+    only works on the main thread, so a test that called `serve` on a thread
+    could not install the handler it is testing.
+
+    The driver is a real `serve` with stubbed components (`UnusedBitBrowser`),
+    the same substitution `ReadinessLineTests` makes: the socket, the request
+    handling and the exit path are production's.
+    """
+
+    HOST = "127.0.0.1"
+    #: How long the exit is allowed to take when nothing is in flight. The
+    #: server polls its shutdown flag every 0.5 s (`serve_forever`'s default),
+    #: so this is that plus a wide margin -- and it is asserted as a **bounded**
+    #: time, not as "eventually", because the point of the second test is the
+    #: difference between this and a request that is still being served.
+    FREE_EXIT_SECONDS = 1.5
+
+    def _driver(self, directory: Path, port: int) -> Path:
+        script = directory / "serve_driver.py"
+        script.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
+            f"sys.path.insert(0, {str(ROOT / 'tests')!r})\n"
+            "from wt_media_agent.local_api.server import serve\n"
+            "from wt_media_agent.local_api.state import LocalAgentState\n"
+            "from support import UnusedBitBrowser\n"
+            f"serve({self.HOST!r}, {port}, bitbrowser=UnusedBitBrowser(),\n"
+            "      state=LocalAgentState(agent_id='local-agent-dev', status='idle'))\n",
+            encoding="utf-8",
+        )
+        return script
+
+    def _scratch_port(self) -> int:
+        probe = socket.socket()
+        probe.bind((self.HOST, 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        return port
+
+    def _start(self, paths, directory: Path):
+        """A real `serve` in its own process, plus its stdout as it arrives."""
+        port = self._scratch_port()
+        environment = dict(os.environ)
+        environment["WT_MEDIA_AGENT_DATA_DIR"] = str(paths.data)
+        process = subprocess.Popen(
+            [sys.executable, "-u", str(self._driver(directory, port))],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=environment,
+        )
+        # Registered in this order because cleanups run last-in-first-out: the
+        # process is killed before its stdout is closed, not after.
+        self.addCleanup(process.stdout.close)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        lines: list[str] = []
+        threading.Thread(
+            target=lambda: [lines.append(line) for line in process.stdout],
+            daemon=True,
+        ).start()
+
+        announcement = f"wt-media-agent local API listening on {self.HOST}:{port}"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if announcement in "".join(lines):
+                return process, lines, port
+            if process.poll() is not None:
+                break
+            time.sleep(0.02)
+        self.fail(f"the driver never announced readiness: {''.join(lines)!r}")
+
+    def _sigterm_a_serving_agent(self, *, hold_a_request: bool):
+        """Start the driver, optionally park a request mid-flight, send SIGTERM.
+
+        The held connection sends a request line and nothing more, so the handler
+        thread exists and is blocked reading the headers: that is a request
+        **already being served**, which is the state `server_close()` joins on.
+        The caller closes it to release the thread — the read returns empty and
+        the handler finishes.
+        """
+        paths = self.enterContext(isolated_paths())
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        process, lines, port = self._start(paths, Path(directory))
+
+        held = None
+        if hold_a_request:
+            held = socket.create_connection((self.HOST, port), timeout=5)
+            self.addCleanup(held.close)
+            held.sendall(b"GET /healthz HTTP/1.1\r\n")
+
+        process.send_signal(signal.SIGTERM)
+        return process, lines, held
+
+    def test_an_in_process_serve_restores_the_disposition_it_displaced(self) -> None:
+        """A signal disposition is process-wide, so `serve` must put the old one back.
+
+        The subprocess tests above cannot see this: their process dies with the
+        handler still installed and nobody is left to notice. The caller that can
+        notice is an in-process one -- `ReadinessLineTests` above is exactly that,
+        and so is any embedding of this server -- where a leftover
+        `wt-media-sigterm` handler would keep answering SIGTERM for the rest of
+        the host process's life.
+        """
+        from wt_media_agent.local_api.server import serve
+        from wt_media_agent.local_api.state import LocalAgentState
+
+        before = signal.getsignal(signal.SIGTERM)
+        with isolated_paths(), mock.patch.object(
+            ThreadingHTTPServer, "serve_forever", lambda self: None
+        ):
+            serve(
+                self.HOST,
+                0,
+                bitbrowser=UnusedBitBrowser(),
+                state=LocalAgentState(agent_id="local-agent-dev", status="idle"),
+            )
+
+        self.assertEqual(
+            signal.getsignal(signal.SIGTERM),
+            before,
+            "`serve` installs a SIGTERM handler, so it owes the caller the "
+            "disposition it displaced; without that, whoever called `serve` "
+            "answers SIGTERM as this server for good",
+        )
+
+    def test_a_sigterm_is_answered_with_the_ordinary_exit_path(self) -> None:
+        process, lines, _ = self._sigterm_a_serving_agent(hold_a_request=False)
+
+        self.assertEqual(
+            process.wait(timeout=10),
+            0,
+            "SIGTERM must reach the ordinary exit path; the reading this rules out "
+            f"is the default disposition, which reports -{signal.SIGTERM} and never "
+            f"reaches `server_close()`; stdout was {''.join(lines)!r}",
+        )
+        self.assertIn(
+            "wt-media-agent local API stopped",
+            "".join(lines),
+            "the line is printed after `server_close()`, so its presence is what "
+            f"separates 'closed' from 'died'; stdout was {''.join(lines)!r}",
+        )
+
+    def test_a_request_in_flight_when_the_signal_arrives_is_waited_for(self) -> None:
+        process, lines, held = self._sigterm_a_serving_agent(hold_a_request=True)
+
+        time.sleep(self.FREE_EXIT_SECONDS + 0.5)
+        self.assertIsNone(
+            process.poll(),
+            "a request still being served must hold the exit open; the process was "
+            f"gone after {self.FREE_EXIT_SECONDS + 0.5:.1f}s while the connection "
+            f"was open; stdout was {''.join(lines)!r}",
+        )
+        # The ordering Desktop's reader depends on. It reads the tail of the
+        # sidecar's output to tell "asked and closed" from "had to be killed", so
+        # a line printed *before* the join would answer the wrong question.
+        self.assertNotIn(
+            "wt-media-agent local API stopped",
+            "".join(lines),
+            "that line is printed after the join, so it must not exist while a "
+            f"request is still being served; stdout was {''.join(lines)!r}",
+        )
+
+        held.close()
+        self.assertEqual(
+            process.wait(timeout=10),
+            0,
+            "the held request must be the only thing delaying the exit, so releasing "
+            f"it must be followed by the ordinary one; stdout was {''.join(lines)!r}",
+        )
+        self.assertIn("wt-media-agent local API stopped", "".join(lines))
+
+    def test_with_nothing_in_flight_the_exit_is_prompt(self) -> None:
+        """The same setup with nothing in flight exits *well* inside the window.
+
+        Without this, "still alive after 2 s with a request in flight" has a
+        second explanation — an exit path that is simply slow — and the reading
+        would be about timing rather than about the join.
+        """
+        process, _, _ = self._sigterm_a_serving_agent(hold_a_request=False)
+
+        started = time.monotonic()
+        process.wait(timeout=10)
+        self.assertLess(
+            time.monotonic() - started,
+            self.FREE_EXIT_SECONDS,
+            "so the in-flight test's window is longer than this exit takes",
+        )
 
 
 if __name__ == "__main__":
