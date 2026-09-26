@@ -18,6 +18,15 @@ from wt_media_agent.clients.cloud.contract import (
     is_cloud_agent_compatible,
     is_cloud_response_compatible,
 )
+from wt_media_agent.clients.cloud.transfer import (
+    TransferError,
+    TransferIntegrityRejectedError,
+    TransferLease,
+    TransferLeaseLostError,
+    TransferTerminal,
+    TransferTransport,
+    TransferUnavailableError,
+)
 
 __all__ = [
     "API_NAME",
@@ -26,6 +35,13 @@ __all__ = [
     "EXPECTED_MAJOR_VERSION",
     "REQUIRED_CONTRACT_REVISION",
     "SessionInvalidError",
+    "TransferError",
+    "TransferIntegrityRejectedError",
+    "TransferLease",
+    "TransferLeaseLostError",
+    "TransferTerminal",
+    "TransferTransport",
+    "TransferUnavailableError",
     "Transport",
     "is_cloud_agent_compatible",
     "is_cloud_response_compatible",
