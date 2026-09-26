@@ -1,0 +1,37 @@
+schema_version: 1
+revision: "2026.09.27.1"
+
+# Two vocabularies, kept apart because they answer different questions and only one
+# of them is an HTTP answer.
+#
+# `errors` is what the local API returns, and each code carries the status it is
+# returned with -- the same shape `v1/bitbrowser.yaml` uses.
+errors:
+  save_directory_invalid: {http_status: 400}
+
+# `executor_errors` is what the download executor writes down as a task's terminal
+# reason. Nothing calls the Agent to ask why a download failed: the reason travels
+# to Cloud on the task and the Cloud row is where a person reads it. They carry no
+# `http_status` because none of them is returned to anybody, and inventing one would
+# state a fact that is not true.
+#
+# A download that fails is retried while its attempts last; the code below is what
+# survives when they run out, so each one names the thing an operator would change.
+executor_errors:
+  download_save_dir_unset: "no save directory has been chosen on this machine, and the executor does not guess one"
+  download_save_dir_unwritable: "the chosen save directory is no longer writable"
+  download_disk_insufficient: "the chosen save directory's volume has no room for the file"
+  download_source_unavailable: "the source address was refused or has expired"
+  download_integrity_failed: "the bytes delivered do not match the size and digest the task declared"
+  download_stalled: "no bytes arrived for longer than the configured stall window, across every attempt"
+  lease_unconfirmed: "the lease could not be confirmed and the task may belong to another owner"
+  download_name_unusable: "the material's title leaves no usable file name"
+
+secret_policy:
+  forbidden_fields: [source_address, storage_credential, node_credential]
+  # A save directory is an absolute path naming somebody's machine and the account
+  # they run as. It is carried by the API that exists to carry it and appears
+  # nowhere else: not in a log line, not in an error message, and not in the failure
+  # reason a download reports to Cloud.
+  local_paths_echoed_in_errors: false
+  raw_upstream_messages_exposed: false
