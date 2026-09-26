@@ -13,5 +13,17 @@ from wt_media_agent.storage.checkpoint_store import (
     OfflineResult,
     TaskCheckpoint,
 )
+from wt_media_agent.storage.download_sink import (
+    DownloadSink,
+    InsufficientSpaceError,
+    NameUnusableError,
+)
 
-__all__ = ["CheckpointStore", "OfflineResult", "TaskCheckpoint"]
+__all__ = [
+    "CheckpointStore",
+    "DownloadSink",
+    "InsufficientSpaceError",
+    "NameUnusableError",
+    "OfflineResult",
+    "TaskCheckpoint",
+]
