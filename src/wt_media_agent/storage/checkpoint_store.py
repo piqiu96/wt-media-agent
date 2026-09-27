@@ -24,6 +24,12 @@ class TaskCheckpoint:
     created_at: str = ""
     updated_at: str = ""
     retry_count: int = 0
+    #: A `TransferResume` in its encoded form (migration `0003_transfer_resume`).
+    #: Named after the column, and last, because `get_checkpoint` builds this
+    #: dataclass from `dict(row)` over `SELECT *`: a column without a field here
+    #: is a `TypeError` at read time, and a field without a column is a
+    #: `TypeError` at write time. The two lists have to agree exactly.
+    transfer_state_json: Optional[str] = None
 
 
 @dataclass
@@ -88,12 +94,14 @@ class CheckpointStore:
             db.execute(
                 """INSERT OR REPLACE INTO task_checkpoints
                    (task_id, task_type, agent_id, checkpoint_status, progress,
-                    message, result_json, error_code, created_at, updated_at, retry_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ?), ?, ?)""",
+                    message, result_json, error_code, created_at, updated_at, retry_count,
+                    transfer_state_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ?), ?, ?, ?)""",
                 (
                     cp.task_id, cp.task_type, cp.agent_id, cp.checkpoint_status,
                     cp.progress, cp.message, cp.result_json, cp.error_code,
                     cp.created_at or now, cp.created_at or now, now, cp.retry_count,
+                    cp.transfer_state_json,
                 ),
             )
 

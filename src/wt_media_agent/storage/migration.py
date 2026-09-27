@@ -73,6 +73,22 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    # Appended, never folded into 0002. A migration that has been applied is
+    # skipped by version (`apply_migrations`), so editing 0002 to add this column
+    # would reach only databases created after the edit and leave every existing
+    # one silently short a column -- and `get_checkpoint` reads `SELECT *` into a
+    # dataclass, so the symptom would be a `TypeError` on the operator's machine
+    # and nothing here.
+    Migration(
+        version="0003_transfer_resume",
+        name="transfer_resume",
+        statements=(
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN transfer_state_json TEXT DEFAULT NULL
+            """,
+        ),
+    ),
 )
 
 

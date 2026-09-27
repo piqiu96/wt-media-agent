@@ -22,6 +22,7 @@ from wt_media_agent.storage.save_directory import (
     SAVE_DIRECTORY_KEY,
     SaveDirectoryStore,
 )
+from wt_media_agent.storage.transfer_resume import TransferResume
 
 __all__ = [
     "CheckpointStore",
@@ -32,4 +33,5 @@ __all__ = [
     "SAVE_DIRECTORY_KEY",
     "SaveDirectoryStore",
     "TaskCheckpoint",
+    "TransferResume",
 ]

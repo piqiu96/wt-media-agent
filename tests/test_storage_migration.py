@@ -15,7 +15,14 @@ class StorageMigrationTest(unittest.TestCase):
             first = migration.apply_migrations(db_path)
             second = migration.apply_migrations(db_path)
 
-            self.assertEqual([item.version for item in first], ["0001_base", "0002_task_checkpoints"])
+            # The order is `MIGRATIONS` order and the list is written out rather
+            # than derived, so a migration appended without thought has to be
+            # typed in here. Extended for `0003_transfer_resume` (CHG-061 T-04)
+            # in the same commit that appended it.
+            self.assertEqual(
+                [item.version for item in first],
+                ["0001_base", "0002_task_checkpoints", "0003_transfer_resume"],
+            )
             self.assertEqual(second, [])
 
             with closing(sqlite3.connect(db_path)) as db:
@@ -35,7 +42,10 @@ class StorageMigrationTest(unittest.TestCase):
                         "SELECT version FROM schema_migrations ORDER BY version"
                     )
                 ]
-                self.assertEqual(versions, ["0001_base", "0002_task_checkpoints"])
+                self.assertEqual(
+                    versions,
+                    ["0001_base", "0002_task_checkpoints", "0003_transfer_resume"],
+                )
 
 
 if __name__ == "__main__":
