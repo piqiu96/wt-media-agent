@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 import unittest
 from pathlib import Path
 import sys
@@ -189,6 +190,111 @@ class LoggerNameTests(unittest.TestCase):
         self.assertEqual(len(calls), 1, "expected exactly one getLogger call to check")
         names = {node.id for node in ast.walk(calls[0]) if isinstance(node, ast.Name)}
         self.assertNotIn("__name__", names, "getLogger must not take __name__: under -m it is `__main__`")
+
+
+#: A path key in the frozen contract's `paths:` mapping, at its two-space indent.
+CONTRACT_PATH = re.compile(r"^  (/[^\s:]*):")
+#: An operation key nested one level under a path key.
+CONTRACT_METHOD = re.compile(r"^    (get|post|put|patch|delete):")
+#: Where `paths:` ends and the schema definitions begin.
+CONTRACT_COMPONENTS = "components:"
+
+
+def _contract_operations() -> set[tuple[str, str]]:
+    """Every `(METHOD, path)` the frozen Local Agent API promises."""
+    text = (
+        Path(__file__).resolve().parents[1]
+        / "contracts" / "local-agent-api" / "v1" / "local-agent.openapi.yaml"
+    ).read_text()
+
+    operations: set[tuple[str, str]] = set()
+    path: str | None = None
+    in_paths = False
+    for line in text.splitlines():
+        if line.startswith("paths:"):
+            in_paths = True
+            continue
+        if in_paths and line.startswith(CONTRACT_COMPONENTS):
+            break
+        if not in_paths:
+            continue
+        found_path = CONTRACT_PATH.match(line)
+        if found_path:
+            path = found_path.group(1)
+            continue
+        found_method = CONTRACT_METHOD.match(line)
+        if found_method and path is not None:
+            operations.add((found_method.group(1).upper(), path))
+    return operations
+
+
+def _served_operations() -> set[tuple[str, str]]:
+    """Every `(METHOD, path)` the handler's `if self.path ==` chains answer.
+
+    Read out of the AST rather than by calling the routes: one of them is an SSE
+    stream that never returns, and a check that cannot include it would report a
+    contract route as missing for the wrong reason.
+    """
+    tree = ast.parse(
+        (
+            Path(__file__).resolve().parents[1]
+            / "src" / "wt_media_agent" / "local_api" / "server.py"
+        ).read_text()
+    )
+
+    served: set[tuple[str, str]] = set()
+    for handler in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+        for method in handler.body:
+            if not isinstance(method, ast.FunctionDef) or not method.name.startswith("do_"):
+                continue
+            http_method = method.name[len("do_"):]
+            for node in ast.walk(method):
+                if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                    continue
+                if not isinstance(node.ops[0], ast.Eq) or len(node.comparators) != 1:
+                    continue
+                left, right = node.left, node.comparators[0]
+                if not (
+                    isinstance(left, ast.Attribute)
+                    and left.attr == "path"
+                    and isinstance(right, ast.Constant)
+                    and isinstance(right.value, str)
+                ):
+                    continue
+                served.add((http_method, right.value))
+    return served
+
+
+class ContractRouteTests(unittest.TestCase):
+    """Every path the frozen contract promises is a path this server answers.
+
+    The contract is what the Desktop codes against, and the two files are
+    edited in different repositories: a path added to the OpenAPI with no branch
+    behind it reads as a working endpoint and answers `404 not_found`, which is
+    a shape nothing else in the suite distinguishes from a typo in a caller.
+    Both directions were unequal long before this test -- the server also serves
+    paths the contract never listed -- so this asserts the inclusion the
+    contract actually claims, and reports the missing ones by name.
+    """
+
+    def test_every_promised_path_has_a_branch(self) -> None:
+        promised = _contract_operations()
+
+        self.assertGreaterEqual(
+            len(promised), 8, f"the contract was read as {sorted(promised)}"
+        )
+        self.assertEqual(promised - _served_operations(), set())
+
+    def test_the_reader_can_see_a_path_that_is_not_there(self) -> None:
+        """A positive control, because a mis-parsed contract reads as `set()`.
+
+        An empty `promised` would satisfy the inclusion above while checking
+        nothing, and the guard would be green for the rest of its life.
+        """
+        served = _served_operations()
+
+        self.assertIn(("GET", "/api/v1/save-directory"), served)
+        self.assertNotIn(("DELETE", "/api/v1/save-directory"), served)
 
 
 if __name__ == "__main__":

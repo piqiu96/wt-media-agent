@@ -11,6 +11,7 @@ import signal
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Optional, Protocol
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -24,6 +25,8 @@ from wt_media_agent.local_api.reporting import (
 )
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
+from wt_media_agent.storage.download_sink import DownloadSink
+from wt_media_agent.storage.save_directory import SaveDirectoryStore
 from wt_media_agent.clients.bitbrowser import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
@@ -71,6 +74,7 @@ class LocalApiServer:
         *,
         bitbrowser: ProfileScanner,
         checkpoint_store: Optional[CheckpointStore] = None,
+        save_directories: Optional[SaveDirectoryStore] = None,
         auth_token: str = "",
         cloud_base_url: str = "",
     ) -> None:
@@ -81,6 +85,12 @@ class LocalApiServer:
         # not the one running, with nothing to show that it had.
         self.state = state
         self.store = checkpoint_store
+        # Optional for the same reason `checkpoint_store` is: dozens of tests
+        # build this server to exercise one unrelated route. The difference is
+        # that an absent store is *answered* rather than ignored -- see
+        # `save_directory_response` -- so a server wired without one says so
+        # instead of reporting a machine that has chosen no directory.
+        self.save_directories = save_directories
         self.auth_token = auth_token or ""
         # The configured Cloud endpoint, handed in rather than read here (the
         # configuration layer is the only reader of `config/` and the
@@ -195,6 +205,55 @@ class LocalApiServer:
             return 200, {"data": {"groups": _safe_groups(self.bitbrowser.group_list())}}
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
+
+    # ---- save directory ----
+
+    def save_directory_response(self) -> tuple[int, dict[str, object]]:
+        """`GET /api/v1/save-directory`: the stored choice and its facts now."""
+        store = self.save_directories
+        if store is None:
+            return self._no_save_directory_store()
+        return 200, {"data": _save_directory_facts(store)}
+
+    def set_save_directory_response(
+        self, body: dict[str, object]
+    ) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/save-directory`: store the operator's choice.
+
+        The answer is read back from what was **stored**, not from the request,
+        so a caller learns the same facts `GET` would report. Two consequences
+        are deliberate and both are the contract's:
+
+        - A directory that is not writable is still **accepted**. Refusing the
+          choice would leave the operator nowhere to see which of the two facts
+          is wrong, and the download executor refuses to save into it anyway.
+        - Only absolute paths that are already directories are accepted, and the
+          refusal carries no path. This is a local API whose responses the
+          Desktop renders and the log records (CHG-061 §4), and the path is the
+          one thing in the request that is neither a code nor a fact.
+        """
+        store = self.save_directories
+        if store is None:
+            return self._no_save_directory_store()
+        raw = body.get("save_dir")
+        if not isinstance(raw, str):
+            return 400, {"error": {"code": "save_directory_invalid"}}
+        directory = Path(raw.strip())
+        if not directory.is_absolute() or not directory.is_dir():
+            return 400, {"error": {"code": "save_directory_invalid"}}
+        store.set(str(directory))
+        return 200, {"data": _save_directory_facts(store)}
+
+    def _no_save_directory_store(self) -> tuple[int, dict[str, object]]:
+        """What a server with no local storage answers.
+
+        The frozen contract names only `200` and `400` here, because it describes
+        an Agent that has a database -- which is every Agent that runs. This
+        build can be assembled without one, and the truthful answer to "store my
+        choice" is that it cannot, not that it did.
+        """
+        logger.warning("local_api.save_directory.reject reason=no_store")
+        return 503, {"error": {"code": "save_directory_unavailable"}}
 
     def profile_open_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         profile_id = body.get("id", "")
@@ -411,6 +470,29 @@ class LocalApiServer:
         return 200, {"data": {"cookies": cookies}}
 
 
+def _save_directory_facts(store: SaveDirectoryStore) -> dict[str, object]:
+    """The stored choice plus the facts read now.
+
+    `GET` and `POST` both answer from here so that a directory just handed in and
+    the same directory read back later cannot describe themselves differently.
+
+    `free_bytes` is clamped at zero because the contract says `minimum: 0` while
+    `DownloadSink.free_bytes()` answers `-1` for a volume it cannot read -- "not
+    knowable" and "no room" are different facts, and the one field has room for
+    only the second. An unreadable volume still reports `writable: false`, which
+    is what the executor acts on.
+    """
+    directory = store.get()
+    if directory is None:
+        return {"save_dir": None, "writable": False, "free_bytes": 0}
+    sink = DownloadSink(directory)
+    return {
+        "save_dir": directory,
+        "writable": sink.is_writable(),
+        "free_bytes": max(sink.free_bytes(), 0),
+    }
+
+
 def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
     class AgentHandler(BaseHTTPRequestHandler):
         server_version = "WTMediaAgentM1/0.1"
@@ -456,6 +538,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(200, api.health_report_response())
             elif self.path == "/api/v1/status":
                 self._write_json(200, {"data": api.status()})
+            elif self.path == "/api/v1/save-directory":
+                status, payload = api.save_directory_response()
+                self._write_json(status, payload)
             elif self.path == "/api/v1/events":
                 self._handle_sse_stream()
             else:
@@ -500,6 +585,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/cookie-read":
                 status, payload = api.cookie_read_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/save-directory":
+                status, payload = api.set_save_directory_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bind":
                 self._handle_bind()
@@ -646,6 +734,7 @@ def serve(
     *,
     bitbrowser: ProfileScanner,
     checkpoint_store: Optional[CheckpointStore] = None,
+    save_directory_store: Optional[SaveDirectoryStore] = None,
     state: LocalAgentState,
     auth_token: str = "",
     cloud_base_url: str = "",
@@ -654,6 +743,7 @@ def serve(
         state,
         bitbrowser=bitbrowser,
         checkpoint_store=checkpoint_store,
+        save_directories=save_directory_store,
         auth_token=auth_token,
         cloud_base_url=cloud_base_url,
     )
@@ -727,6 +817,7 @@ def main(argv: list[str] | None = None) -> int:
         args.port or config.local_api_port,
         bitbrowser=components.bitbrowser,
         checkpoint_store=components.store,
+        save_directory_store=components.save_directories,
         state=components.state,
         auth_token=args.auth_token or config.runtime_token,
         cloud_base_url=config.cloud_base_url,

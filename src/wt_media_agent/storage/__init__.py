@@ -18,6 +18,10 @@ from wt_media_agent.storage.download_sink import (
     InsufficientSpaceError,
     NameUnusableError,
 )
+from wt_media_agent.storage.save_directory import (
+    SAVE_DIRECTORY_KEY,
+    SaveDirectoryStore,
+)
 
 __all__ = [
     "CheckpointStore",
@@ -25,5 +29,7 @@ __all__ = [
     "InsufficientSpaceError",
     "NameUnusableError",
     "OfflineResult",
+    "SAVE_DIRECTORY_KEY",
+    "SaveDirectoryStore",
     "TaskCheckpoint",
 ]

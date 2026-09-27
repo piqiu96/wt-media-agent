@@ -36,6 +36,7 @@ from wt_media_agent.runtime.constants import DEFAULT_LEASE_SECONDS, MAX_RETRIES
 from wt_media_agent.runtime.logging import configure_from
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import DEFAULT_DB_NAME, apply_migrations
+from wt_media_agent.storage.save_directory import SaveDirectoryStore
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class Components:
     bitbrowser: BitBrowserClient
     cloud: CloudAgentClient
     store: CheckpointStore
+    save_directories: SaveDirectoryStore
     runner: TaskRunner
 
 
@@ -91,6 +93,10 @@ def build_components(config: AgentConfig | None = None) -> Components:
     #    claim, and `apply_migrations` is idempotent.
     apply_migrations(db_path)
     store = CheckpointStore(db_path)
+    # Same file, same schema: the operator's save-directory choice lives in
+    # `agent_metadata`, a table migration 0001 created for exactly this and that
+    # nothing wrote to until now.
+    save_directories = SaveDirectoryStore(db_path)
 
     # 7. Executor factories. `bitbrowser` from step 4 is bound by closure, so
     #    every browser-driving executor shares this one instance and none of
@@ -121,5 +127,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         bitbrowser=bitbrowser,
         cloud=cloud,
         store=store,
+        save_directories=save_directories,
         runner=runner,
     )

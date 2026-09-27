@@ -65,6 +65,11 @@ NETWORK_OK_COUNTS = {
     "test_cloud_agent_client.py": 2,
     "test_local_health.py": 1,
     "test_proxy_extract.py": 1,
+    # CHG-061 T-04: the save-directory routes, over the loopback server the same
+    # helper starts. Marked for the same reason as `test_local_health.py`'s --
+    # the point of those cases is what a real socket answers, and a patched
+    # `urlopen` would be a test of the patch.
+    "test_save_directory.py": 1,
 }
 
 #: This file carries the marker as a *string* -- the constant above, the
