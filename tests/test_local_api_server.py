@@ -297,5 +297,109 @@ class ContractRouteTests(unittest.TestCase):
         self.assertNotIn(("DELETE", "/api/v1/save-directory"), served)
 
 
+#: Where the region keeps the vocabulary for this API's refusals.
+TRANSFER_ERROR_CODES = ROOT / "contracts" / "local-error-codes" / "v1" / "transfer.yaml"
+#: A declared refusal and the status it is returned with, at its two-space indent.
+DECLARED_ERROR = re.compile(r"^  ([a-z_]+):\s*\{http_status:\s*(\d+)\}", re.M)
+#: Where `errors:` ends and the executor's terminal reasons begin. Those are the
+#: other vocabulary in the same file, and it is not this test's to keep.
+EXECUTOR_ERRORS_KEY = "executor_errors:"
+#: What marks a refusal as belonging to this file's scope. The region holds one
+#: file per area and the areas are told apart by their names, so a transfer-area
+#: refusal named outside this prefix escapes the comparison below -- the naming is
+#: what carries the scope, and renaming one out of it is the way to break this.
+TRANSFER_CODE_PREFIX = "save_directory_"
+
+
+def _refusal_of(node: ast.AST) -> tuple[str, int] | None:
+    """The `(code, status)` a `return <status>, {"error": {"code": <code>}}` names."""
+    if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Tuple):
+        return None
+    if len(node.value.elts) != 2:
+        return None
+    status, envelope = node.value.elts
+    if not isinstance(status, ast.Constant) or not isinstance(status.value, int):
+        return None
+    if not isinstance(envelope, ast.Dict) or len(envelope.keys) != 1:
+        return None
+    if not isinstance(envelope.keys[0], ast.Constant) or envelope.keys[0].value != "error":
+        return None
+    inner = envelope.values[0]
+    if not isinstance(inner, ast.Dict):
+        return None
+    for key, value in zip(inner.keys, inner.values):
+        if not (isinstance(key, ast.Constant) and key.value == "code"):
+            continue
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value, status.value
+    return None
+
+
+def _served_refusals() -> dict[str, int]:
+    """Every refusal this API can answer with, keyed by code.
+
+    Read out of the AST rather than by calling the routes: reaching some of these
+    takes a server assembled without a database, and a check that had to build
+    every such server would test the setup more than the vocabulary.
+    """
+    tree = ast.parse((ROOT / "src" / "wt_media_agent" / "local_api" / "server.py").read_text())
+
+    refusals: dict[str, int] = {}
+    for node in ast.walk(tree):
+        found = _refusal_of(node)
+        if found is not None:
+            refusals[found[0]] = found[1]
+    return refusals
+
+
+def _declared_errors() -> dict[str, int]:
+    """Every refusal `transfer.yaml` declares, with the status it declares."""
+    text = TRANSFER_ERROR_CODES.read_text()
+    block = text.split(EXECUTOR_ERRORS_KEY)[0]
+    return {name: int(status) for name, status in DECLARED_ERROR.findall(block)}
+
+
+class ContractCodeTests(unittest.TestCase):
+    """Every refusal this API answers with is one the vocabulary declares.
+
+    The region's own README says `errors` is what the local API returns, and the
+    two are edited in different files by different changes: a refusal added to a
+    route with no line in the vocabulary is a status the Desktop and the log
+    reader have no name for, and nothing else in the suite distinguishes it from
+    a code somebody forgot to look up.
+
+    Both directions are asserted, because both are failures: a code the module
+    returns and the file does not name leaves a caller without a meaning, and a
+    name the module never returns is a promise about behaviour that does not
+    exist. What is compared is `(code, status)` and not the code alone -- the
+    status is what the caller acts on, and moving a refusal from `400` to `503`
+    without saying so is the same defect as renaming it.
+    """
+
+    def test_every_refusal_is_declared_with_the_status_it_is_returned_with(self) -> None:
+        declared = _declared_errors()
+        self.assertTrue(declared, "the vocabulary was read as empty")
+
+        served = {
+            code: status
+            for code, status in _served_refusals().items()
+            if code.startswith(TRANSFER_CODE_PREFIX)
+        }
+
+        self.assertEqual(served, declared)
+
+    def test_the_reader_can_see_a_refusal_that_is_there(self) -> None:
+        """A positive control: a mis-read module and a mis-read file both give `{}`.
+
+        Two empty mappings compare equal, so without this the guard above would
+        pass while checking nothing -- which is exactly the state the vocabulary
+        file was in before it had a consumer.
+        """
+        served = _served_refusals()
+        self.assertEqual(served["save_directory_invalid"], 400)
+        self.assertEqual(served["save_directory_unavailable"], 503)
+        self.assertEqual(_declared_errors()["save_directory_invalid"], 400)
+
+
 if __name__ == "__main__":
     unittest.main()
