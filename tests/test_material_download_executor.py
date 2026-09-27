@@ -251,9 +251,14 @@ class DownloadTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.directory = Path(self._tmp.name)
         self.cloud = FakeCloud()
-        self.recorded: list[TransferResume] = []
+        # `(task_id, record)`, because the record carries no task id of its own
+        # and the runner is what binds the two.
+        self.recorded: list[tuple[str, TransferResume]] = []
         self.directory_choice: str | None = str(self.directory)
         self.sleeps: list[float] = []
+
+    def _record(self, task_id: str, resume: TransferResume) -> None:
+        self.recorded.append((task_id, resume))
 
     def executor(self, opener: ServingOpener, **overrides: object) -> MaterialDownloadExecutor:
         settings: dict[str, object] = {
@@ -267,7 +272,7 @@ class DownloadTest(unittest.TestCase):
             "agent-1",
             credential=CREDENTIAL,
             save_directory=lambda: self.directory_choice,
-            record=self.recorded.append,
+            record=self._record,
             opener=opener,
             **settings,  # type: ignore[arg-type]
         )
@@ -652,6 +657,36 @@ class ResumeTest(DownloadTest):
         self.assertEqual(opener.calls[0][1], CHUNK)
         self.assertEqual(self.saved(), BODY)
 
+    def test_a_part_that_is_already_the_whole_file_needs_no_source_at_all(self) -> None:
+        """The bytes were all here already; the task came back for them.
+
+        A part exactly as long as the task declared means an earlier attempt
+        streamed every byte and ended before the rename, or Cloud could not be
+        told and the task was re-issued. Asking the source for `bytes=<total>-`
+        would earn a `416` -- a fact about the address, not about these bytes --
+        and would fail a transfer whose file is on this machine. So the source is
+        not asked, and the digest is still what decides.
+        """
+        self.plant_part(BODY)
+        opener = ServingOpener()
+
+        outcome = self.run_download(opener, resume=TransferResume(FILE_NAME, len(BODY)))
+
+        self.assertEqual(opener.calls, [])
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), BODY)
+
+    def test_a_part_that_is_already_the_whole_file_is_still_digest_checked(self) -> None:
+        """Length without the digest would be a file nobody verified."""
+        self.plant_part(bytes(reversed(BODY)))
+        opener = ServingOpener()
+
+        outcome = self.run_download(opener, resume=TransferResume(FILE_NAME, len(BODY)))
+
+        self.assertEqual(opener.calls, [])
+        self.assertEqual(outcome["error_code"], ERROR_INTEGRITY_FAILED)
+        self.assertFalse((self.directory / FILE_NAME).exists())
+
     def test_a_report_never_goes_backwards_past_what_was_already_reported(self) -> None:
         """The record exists so a restart does not show the operator a rewind.
 
@@ -681,18 +716,21 @@ class ResumeTest(DownloadTest):
         self.run_download(ServingOpener())
 
         self.assertTrue(self.recorded)
-        for record in self.recorded:
+        for task_id, record in self.recorded:
             with self.subTest(record=record):
+                # The task id is the runner's to spend: the row a record goes on
+                # is found by it, and the record itself carries none.
+                self.assertEqual(task_id, TASK_ID)
                 self.assertEqual(record.file_name, FILE_NAME)
                 self.assertGreater(record.bytes_done, 0)
         figures = [completed for _, _, completed, _ in self.cloud.progress]
-        self.assertEqual([record.bytes_done for record in self.recorded], figures)
+        self.assertEqual([record.bytes_done for _, record in self.recorded], figures)
 
     def test_the_record_carries_a_name_and_not_a_path(self) -> None:
         """It is stored in a database, and CHG-061 §8 keeps paths out of those."""
         self.run_download(ServingOpener())
 
-        for record in self.recorded:
+        for _, record in self.recorded:
             self.assertNotIn("/", record.file_name)
 
 

@@ -17,6 +17,13 @@ TASK_TYPE_COOKIE_WRITE = "cookie_write_task"
 TASK_TYPE_ACCOUNT_CHECK = "account_check_task"
 TASK_TYPE_PROXY_CHECK = "proxy_check_task"
 TASK_TYPE_PROXY_MUTATION = "proxy_mutation_task"
+
+# The one task type that is not claimed from `/tasks/claim`: a download arrives
+# on the transfer surface as a `LocalLease`, so this string is the only thing
+# Cloud and this Agent spell the same way about it. Declared here so the
+# registry's coverage test sees it and `default_executor_factories` has to
+# answer for it.
+TASK_TYPE_MATERIAL_DOWNLOAD = "material_download_task"
 TASK_TYPE_PROFILE_CREATE = "profile_create_task"
 TASK_TYPE_PROFILE_OPEN = "profile_open_task"
 TASK_TYPE_PROFILE_CLOSE = "profile_close_task"

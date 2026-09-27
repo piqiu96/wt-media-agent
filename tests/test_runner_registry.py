@@ -15,6 +15,7 @@ Two properties this file exists to hold:
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 import sys
 import unittest
@@ -26,7 +27,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from wt_media_agent import runtime
 from wt_media_agent.runner import registry as registry_module
 from wt_media_agent.runner.config import TaskRunnerConfig
-from wt_media_agent.runner.registry import default_executor_factories
+from wt_media_agent.runner.registry import TransferNotWired, default_executor_factories
 from wt_media_agent.runner.runner import TaskRunner
 
 # Task types whose executor drives a BitBrowser Profile. The other two are
@@ -104,6 +105,54 @@ class RegistryCoverageTests(unittest.TestCase):
         )
 
 
+class TransferRegistryEntryTests(unittest.TestCase):
+    """The download entry: declared either way, and wired only when it is handed one.
+
+    `material_download_task` is the one type whose executor needs a node
+    credential, a save directory that exists on a machine somebody configured,
+    and a row to record its resume state on. The registry has none of those and
+    should not, so the entry is a refusal until the process that owns them hands
+    over a factory built from them -- and it is a refusal rather than an absent
+    entry, because `RegistryCoverageTests` requires every declared type to be
+    dispatched to something.
+    """
+
+    def setUp(self):
+        self.bitbrowser = MagicMock()
+        self.client = MagicMock()
+
+    def transfer_entry(self, **kwargs):
+        return default_executor_factories(self.bitbrowser, **kwargs)[
+            task_type_of("TASK_TYPE_MATERIAL_DOWNLOAD")
+        ]
+
+    def test_an_unwired_download_refuses_in_execute_rather_than_succeeding(self):
+        """A placeholder that answered would be a download nobody performed."""
+        instance = self.transfer_entry()(self.client, "agent-1")
+
+        with self.assertRaises(TransferNotWired):
+            instance.execute({"task_id": "task-1"})
+
+    def test_a_handed_in_transfer_factory_is_the_one_used(self):
+        sentinel = MagicMock(return_value=MagicMock())
+
+        product = self.transfer_entry(transfer=sentinel)(self.client, "agent-1")
+
+        sentinel.assert_called_once_with(self.client, "agent-1")
+        self.assertIs(product, sentinel.return_value)
+
+    def test_the_transfer_argument_is_keyword_only(self):
+        """Every existing call site passes the browser positionally, and only it.
+
+        A second positional parameter would not fail at those sites -- it would
+        take the browser's place, so the registry would bind a BitBrowser client
+        where a download factory belongs.
+        """
+        parameter = inspect.signature(default_executor_factories).parameters["transfer"]
+
+        self.assertIs(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+
+
 class RunnerRegistryInjectionTests(unittest.TestCase):
     """The dispatch path, driven through `_poll_once` rather than private state."""
 
@@ -136,7 +185,7 @@ class RunnerRegistryInjectionTests(unittest.TestCase):
         self.store.remove_checkpoint.assert_not_called()
 
     def test_the_default_argument_is_not_the_built_in_registry(self):
-        """A caller who forgets to wire it gets nothing, not the 10 defaults.
+        """A caller who forgets to wire it gets nothing, not the built-in registry.
 
         If the built-in registry were still the default, this task type would
         reach a real cookie executor instead of the no_executor path.

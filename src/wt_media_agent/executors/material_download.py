@@ -134,7 +134,13 @@ NOT_WRITABLE_MESSAGE = "the chosen save directory is no longer writable"
 #:
 #: `Recorder` is how the durable state leaves this module: the executor knows
 #: what to write down (a name and a byte count) and the runner owns where it goes.
-Recorder = Callable[[TransferResume], None]
+#:
+#: The task id travels with the record because `TransferResume` deliberately
+#: carries none -- the record is a fact about a file, and which task asked for it
+#: is the caller's business. It has to be an argument rather than a closure the
+#: runner binds per task: one factory per task type is built for the whole
+#: process, so the only thing that knows the task is the call that has one.
+Recorder = Callable[[str, TransferResume], None]
 
 
 class DownloadFault(RuntimeError):
@@ -397,6 +403,9 @@ class MaterialDownloadExecutor:
         from the resume record: a stored count can be ahead of the bytes actually
         on disk, and asking the server to continue from it would skip exactly the
         lost bytes and produce a file of the right length and the wrong content.
+        A part that already holds every byte is not fetched again; it goes
+        straight to the checks, which is what makes a re-issued task continue the
+        file it already has instead of downloading a second copy beside it.
         """
         offset = sink.resume_offset(lease.task_id)
         digest = hashlib.sha256()
@@ -418,40 +427,50 @@ class MaterialDownloadExecutor:
             min_seconds=self._progress_min_seconds,
         )
 
-        with open_source(
-            lease.download_url, offset, opener=self._opener, timeout=self._stall_seconds
-        ) as stream:
-            if not stream.range_honoured:
-                # The server was asked for a range and sent the whole file. A
-                # caller that appended it to the part would build a file of the
-                # declared length out of two overlapping copies of itself, and the
-                # digest at the end is the only thing that would notice.
-                sink.discard(lease.task_id)
-                offset = 0
-                digest = hashlib.sha256()
-                logger.info(
-                    "the source ignored the range request for %s; restarting it",
-                    lease.task_id,
-                    extra={"task_id": lease.task_id},
-                )
-            if stream.total_bytes >= 0 and stream.total_bytes != lease.total_bytes:
-                raise Integrity(
-                    "the source is not the object the task declared: it is "
-                    f"{stream.total_bytes} bytes where the task says {lease.total_bytes}"
-                )
-
-            written = offset
-            while True:
-                chunk = stream.read(self._chunk_bytes)
-                if not chunk:
-                    break
-                written += sink.append(lease.task_id, chunk)
-                digest.update(chunk)
-                progress.note(written)
-                if written > lease.total_bytes:
-                    raise Integrity(
-                        "the source delivered more bytes than the task declared"
+        written = offset
+        if offset < lease.total_bytes:
+            # A part that is already as long as the task declared needs no source
+            # at all: an earlier attempt streamed every byte and ended before the
+            # rename, or Cloud could not be told and the task came back. Asking
+            # for `bytes=<total>-` would earn a `416`, which is a fact about the
+            # address and not about these bytes, and it would fail a transfer
+            # whose file is already here. The digest below decides either way. A
+            # part *longer* than declared is not this case: the size check after
+            # the block catches it.
+            with open_source(
+                lease.download_url, offset, opener=self._opener, timeout=self._stall_seconds
+            ) as stream:
+                if not stream.range_honoured:
+                    # The server was asked for a range and sent the whole file. A
+                    # caller that appended it to the part would build a file of the
+                    # declared length out of two overlapping copies of itself, and the
+                    # digest at the end is the only thing that would notice.
+                    sink.discard(lease.task_id)
+                    offset = 0
+                    digest = hashlib.sha256()
+                    logger.info(
+                        "the source ignored the range request for %s; restarting it",
+                        lease.task_id,
+                        extra={"task_id": lease.task_id},
                     )
+                if stream.total_bytes >= 0 and stream.total_bytes != lease.total_bytes:
+                    raise Integrity(
+                        "the source is not the object the task declared: it is "
+                        f"{stream.total_bytes} bytes where the task says {lease.total_bytes}"
+                    )
+
+                written = offset
+                while True:
+                    chunk = stream.read(self._chunk_bytes)
+                    if not chunk:
+                        break
+                    written += sink.append(lease.task_id, chunk)
+                    digest.update(chunk)
+                    progress.note(written)
+                    if written > lease.total_bytes:
+                        raise Integrity(
+                            "the source delivered more bytes than the task declared"
+                        )
 
         if written != lease.total_bytes:
             raise Integrity(
@@ -659,7 +678,7 @@ class _Progress:
         # The record is written where Cloud is told, and not more often: it exists
         # so a restart does not report a figure that goes backwards, which is
         # exactly the fact the last report established.
-        self._record(TransferResume(self._name, written))
+        self._record(self._task_id, TransferResume(self._name, written))
 
     def _heartbeat(self, now: float, written: int) -> None:
         """Renew the lease, carrying the count Cloud should still be showing.
