@@ -47,7 +47,6 @@
 | 改 Cookie / 登录环境操作 | `src/wt_media_agent/executors/cookie.py`、`account_check.py` |
 | 改与 Cloud 的回传协议 | `src/wt_media_agent/clients/cloud/`，契约变更先经 `../wt-media-workspace` 协调 |
 | 改本地控制 API | `src/wt_media_agent/local_api/`（`server.py:main` 是冻结符号） |
-| 改本地 FFmpeg 合成执行 | **尚无实现**：`runtime/environment.py` 只探测 ffmpeg 是否存在 |
 
 ## 本仓规则
 
