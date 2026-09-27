@@ -15,7 +15,7 @@ Two shapes reach out of the process, and both are checked here:
 - a `urlopen` call that no `patch` in its own function replaces.
 
 The escape is deliberate and visible: a line marked `# network-ok: <reason>`
-is not a violation, and the reason must be non-empty. Five sites use it today,
+is not a violation, and the reason must be non-empty. Seven sites use it today,
 each because the real transport is the subject of the test or because the URL
 points at an HTTP server that same function just started. `NETWORK_OK_SITES`
 freezes them, so adding one and removing one are both edits to this file -- an
@@ -70,6 +70,13 @@ NETWORK_OK_COUNTS = {
     # the point of those cases is what a real socket answers, and a patched
     # `urlopen` would be a test of the patch.
     "test_save_directory.py": 1,
+    # CHG-061 T-04: the same, for `POST /api/v1/bind`. It is one marker for three
+    # cases because the file posts through one helper -- the status the route
+    # answers with is half of what is being asserted there (the credential that
+    # must not be echoed back, the 503 the Desktop branches on), and asserting it
+    # against a patched `urlopen` would be asserting against the test's own
+    # replacement.
+    "test_node_credential.py": 1,
 }
 
 #: This file carries the marker as a *string* -- the constant above, the

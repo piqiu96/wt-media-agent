@@ -177,6 +177,14 @@ FROZEN_LAYER_EDGES = frozenset(
     {
         ("<package>", "runtime"),
         ("bootstrap", "clients"),
+        # CHG-061 T-04's assembly. ADR-0016 §1 already places `bootstrap` above
+        # `executors`; the edge did not exist because nothing here had ever named
+        # a concrete executor. The download executor is the one the registry
+        # cannot build for itself -- it is assembled from the credential this
+        # process is bound with, the operator's save directory and the transfer
+        # loop's record writer, none of which the registry has or should have --
+        # so the factory closure is built here and handed in.
+        ("bootstrap", "executors"),
         ("bootstrap", "local_api"),
         ("bootstrap", "runner"),
         ("bootstrap", "runtime"),

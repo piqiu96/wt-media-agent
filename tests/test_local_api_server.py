@@ -306,9 +306,17 @@ DECLARED_ERROR = re.compile(r"^  ([a-z_]+):\s*\{http_status:\s*(\d+)\}", re.M)
 EXECUTOR_ERRORS_KEY = "executor_errors:"
 #: What marks a refusal as belonging to this file's scope. The region holds one
 #: file per area and the areas are told apart by their names, so a transfer-area
-#: refusal named outside this prefix escapes the comparison below -- the naming is
-#: what carries the scope, and renaming one out of it is the way to break this.
-TRANSFER_CODE_PREFIX = "save_directory_"
+#: refusal named outside these prefixes escapes the comparison below -- the naming
+#: is what carries the scope, and renaming one out of it is the way to break this.
+#:
+#: A tuple because the transfer area has grown past one route: the save-directory
+#: pair and the bind route's credential answer are different subjects, and they
+#: are in this file together because they are what CHG-061's download path added.
+#: Widening this is the one edit that can hide an undeclared refusal again, so it
+#: is widened only when a route the same change adds needs it -- never to silence
+#: a name that appeared elsewhere (the nine M2-era ones are registered in
+#: `delivery/active/CHG-20260924-061/checkpoint.md` instead).
+TRANSFER_CODE_PREFIXES = ("save_directory_", "node_credential_")
 
 
 def _refusal_of(node: ast.AST) -> tuple[str, int] | None:
@@ -383,7 +391,7 @@ class ContractCodeTests(unittest.TestCase):
         served = {
             code: status
             for code, status in _served_refusals().items()
-            if code.startswith(TRANSFER_CODE_PREFIX)
+            if code.startswith(TRANSFER_CODE_PREFIXES)
         }
 
         self.assertEqual(served, declared)
@@ -398,7 +406,9 @@ class ContractCodeTests(unittest.TestCase):
         served = _served_refusals()
         self.assertEqual(served["save_directory_invalid"], 400)
         self.assertEqual(served["save_directory_unavailable"], 503)
+        self.assertEqual(served["node_credential_unavailable"], 503)
         self.assertEqual(_declared_errors()["save_directory_invalid"], 400)
+        self.assertEqual(_declared_errors()["node_credential_unavailable"], 503)
 
 
 if __name__ == "__main__":

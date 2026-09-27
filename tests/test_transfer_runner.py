@@ -102,6 +102,9 @@ class TransferRunnerTest(unittest.TestCase):
         apply_migrations(Path(self._tmp.name) / "agent.db")
         self.store = CheckpointStore(Path(self._tmp.name) / "agent.db")
         self.cloud = FakeTransferCloud()
+        # What the runner's `credential` callable answers; `None` is an Agent that
+        # Desktop has not bound yet, which is the state this process starts in.
+        self.credential: str | None = CREDENTIAL
         self.seen: list[tuple[object, str, dict]] = []
 
     def executor(self, outcome: dict) -> ExecutorFactory:
@@ -136,7 +139,7 @@ class TransferRunnerTest(unittest.TestCase):
                 db_path=":memory:",
                 poll_interval=0.0,
             ),
-            credential=CREDENTIAL,
+            credential=lambda: self.credential,
             executors={TASK_TYPE_MATERIAL_DOWNLOAD: self.executor({"status": OUTCOME_SUCCESS})}
             if executors is None
             else executors,
@@ -280,24 +283,58 @@ class TransferRunnerTest(unittest.TestCase):
 
     # ---- refusals the loop has to survive ----
 
-    def test_a_refused_credential_drains_the_loop(self) -> None:
-        """Nothing this loop does next can work, so it stops instead of retrying.
+    def test_an_unbound_agent_claims_nothing(self) -> None:
+        """No credential, no call: the whole identity of the request is missing.
 
-        `_running` is the fact `start()`'s `while` reads, so this is asserted on
-        the loop's own condition rather than by calling `start()` and waiting for
-        it to return: a loop that did not drain would not fail here, it would
-        hang. The condition is set first, the way `start()` sets it -- an
-        assertion that it is false would otherwise hold for a runner that had
-        never started.
+        Not a refusal and not a redial -- Cloud would answer 401 to an Agent that
+        had not been bound yet, and asking would state something false about this
+        process. The loop keeps its schedule, because Desktop binds it *after*
+        starting it.
+        """
+        self.credential = None
+        self.cloud.leases = [make_lease()]
+
+        self.runner()._poll_once()
+
+        self.assertEqual(self.cloud.claims, [])
+        self.assertEqual(self.seen, [])
+
+    def test_a_refused_credential_stops_claiming_until_it_is_replaced(self) -> None:
+        """A 401 under one credential, and the loop works again under the next.
+
+        An earlier version of this loop drained itself here, on the grounds that
+        nothing it did next could work. That was true of a credential fixed at
+        assembly and is false of one Desktop replaces: a drained loop is dead
+        until somebody restarts the Agent, which is a download that never works
+        again for a reason no operator would guess at. `_running` is the fact
+        `start()`'s `while` reads, and the condition is set first the way
+        `start()` sets it -- an assertion that it is true would otherwise hold
+        for a runner that had never started.
         """
         self.cloud.raises = SessionInvalidError("Cloud refused this node's credential (HTTP 401)")
         runner = self.runner()
         runner._running = True
 
         runner._poll_once()
+        runner._poll_once()
 
-        self.assertFalse(runner._running)
+        # Once, not once per poll interval: the same refused credential is not
+        # worth asking about again, and a poll is a second by default.
         self.assertEqual(len(self.cloud.claims), 1)
+        self.assertTrue(runner._running)
+
+        # And a replaced credential is tried at the next poll, not at the next
+        # process start.
+        self.cloud.raises = None
+        self.cloud.leases = [make_lease()]
+        self.credential = "a-credential-Cloud-issued-later"
+
+        runner._poll_once()
+
+        self.assertEqual(
+            self.cloud.claims, [CREDENTIAL, "a-credential-Cloud-issued-later"]
+        )
+        self.assertEqual(len(self.seen), 1)
 
     def test_a_claim_that_fails_for_another_reason_is_not_fatal(self) -> None:
         """A dead network is the ordinary case here; the loop keeps its schedule.

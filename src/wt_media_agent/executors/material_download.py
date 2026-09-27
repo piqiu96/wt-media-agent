@@ -21,7 +21,9 @@ and the clock is a constructor argument.
 (`heartbeat`), a progress figure that must be reported (`progress`), and one
 terminal report when it ends (`complete`). The credential is those calls' whole
 identity and this module never puts it anywhere else -- not in a message, not in
-a log line, not in the record it hands the runner.
+a log line, not in the record it hands the runner. It arrives as a callable
+(`Credential`) and is read at each report rather than once at construction,
+because Cloud can replace it while a download is running.
 
 **Two facts are deliberately never written down or logged**: the save directory
 (a local absolute path, and CHG-061 §8 keeps those out of everything this Agent
@@ -142,6 +144,21 @@ NOT_WRITABLE_MESSAGE = "the chosen save directory is no longer writable"
 #: process, so the only thing that knows the task is the call that has one.
 Recorder = Callable[[str, TransferResume], None]
 
+#: How this module, and the loop that drives it, ask for the node credential.
+#:
+#: A callable and not a string for the same reason `save_directory` is one:
+#: Cloud can replace the credential while a download is running, and a value
+#: read once at assembly would keep a loop reporting under a credential that has
+#: since been rotated. Declared here rather than in `runner/` because both sides
+#: type against it and neither may import the other (`runner -> executors` is the
+#: direction ADR-0016 §1 gives).
+#:
+#: `None` means this process is not bound to Cloud yet. The loop is what decides
+#: not to claim in that state; by the time this module is asked to run a lease it
+#: has a credential, so an empty answer here is a fault in this process rather
+#: than a download outcome.
+Credential = Callable[[], Optional[str]]
+
 
 class DownloadFault(RuntimeError):
     """A way a download ended, carrying the code Cloud will be told.
@@ -208,7 +225,7 @@ class MaterialDownloadExecutor:
         client: CloudAgentClient,
         agent_id: str,
         *,
-        credential: str,
+        credential: Credential,
         save_directory: Callable[[], Optional[str]],
         record: Recorder,
         opener: Optional[Opener] = None,
@@ -221,6 +238,9 @@ class MaterialDownloadExecutor:
     ) -> None:
         self.client = client
         self.agent_id = agent_id
+        # Called, not read: the credential Cloud issued for this node is
+        # replaced when Desktop re-binds, and every report below must go out
+        # under the one that is current at that moment.
         self._credential = credential
         # Called once per attempt, not once per executor: the operator may change
         # the directory while a download is running, and the resume record
@@ -234,6 +254,24 @@ class MaterialDownloadExecutor:
         self._stall_seconds = stall_seconds
         self._progress_min_bytes = progress_min_bytes
         self._progress_min_seconds = progress_min_seconds
+
+    def _node_credential(self) -> str:
+        """The credential to report under, or a fault if this process has none.
+
+        An empty answer is not a download outcome: with no credential there is no
+        way to renew the lease or to report anything at all, and the loop that
+        dispatches this executor does not claim without one. So a lease reaching
+        this point with no credential is a fault in the process, and it is said
+        loudly (the runner logs it as `executor_error` and keeps the row) rather
+        than dressed up as one of the eight download reasons.
+        """
+        credential = self._credential()
+        if not credential:
+            raise ValueError(
+                "no node credential: this Agent is not bound to Cloud, so a "
+                "lease cannot be reported on"
+            )
+        return credential
 
     # ---- the one entry point ----
 
@@ -251,6 +289,11 @@ class MaterialDownloadExecutor:
         """
         lease = _lease_of(task)
         resume = _resume_of(task)
+        # Before a byte moves, because the alternative is discovering it at the
+        # first heartbeat: a full download that streams correctly and then has
+        # nowhere to be reported would be thrown away for a reason this process
+        # knew at the start.
+        self._node_credential()
         try:
             sink, name = self._prepare(lease, resume)
         except DownloadFault as fault:
@@ -415,7 +458,12 @@ class MaterialDownloadExecutor:
 
         progress = _Progress(
             client=self.client,
-            credential=self._credential,
+            # The method, not its answer: this reporter outlives one report, and
+            # the credential it reports under is whichever is current when the
+            # report is sent. Reading it here would still pass the check below --
+            # it is the *later* reports that would go out under a credential
+            # Cloud has already replaced.
+            credential=self._node_credential,
             record=self._record,
             task_id=lease.task_id,
             name=name,
@@ -516,7 +564,7 @@ class MaterialDownloadExecutor:
         )
         try:
             self.client.complete_transfer_task(
-                self._credential,
+                self._node_credential(),
                 lease.task_id,
                 status="success",
                 completed_bytes=written,
@@ -565,7 +613,7 @@ class MaterialDownloadExecutor:
         )
         try:
             self.client.complete_transfer_task(
-                self._credential,
+                self._node_credential(),
                 lease.task_id,
                 status="failed",
                 completed_bytes=completed,
@@ -617,7 +665,7 @@ class _Progress:
         self,
         *,
         client: CloudAgentClient,
-        credential: str,
+        credential: Credential,
         record: Recorder,
         task_id: str,
         name: str,
@@ -629,6 +677,10 @@ class _Progress:
         min_seconds: float,
     ) -> None:
         self._client = client
+        # The callable, not a value: this reporter lives for as long as one
+        # attempt, and Desktop can re-bind the node in the middle of one -- so a
+        # credential read here would be the one every later report went out
+        # under, including the reports that arrive after Cloud has replaced it.
         self._credential = credential
         self._record = record
         self._task_id = task_id
@@ -672,7 +724,7 @@ class _Progress:
 
     def _send_progress(self, written: int, bytes_per_second: int) -> None:
         self._client.report_transfer_progress(
-            self._credential, self._task_id, written, bytes_per_second
+            self._credential(), self._task_id, written, bytes_per_second
         )
         self._reported = written
         # The record is written where Cloud is told, and not more often: it exists
@@ -694,7 +746,7 @@ class _Progress:
         if (now - self._heartbeat_at) < self._heartbeat_every:
             return
         self._client.heartbeat_transfer_task(
-            self._credential, self._task_id, max(written, self._floor)
+            self._credential(), self._task_id, max(written, self._floor)
         )
         self._heartbeat_at = now
 

@@ -59,6 +59,10 @@ from wt_media_agent.storage import DownloadSink, TransferResume
 
 TASK_ID = "task-1"
 CREDENTIAL = "node-credential-SENTINEL"
+#: What the credential callable answers after a second bind. A different value
+#: from `CREDENTIAL`, because "which credential did this report go out under" is
+#: a question only when the two can be told apart.
+ROTATED = "node-credential-issued-by-the-next-bind"
 #: Two chunks at the default test chunk size, so a report, a resume and a stall
 #: all have somewhere to happen inside one body.
 BODY = bytes(range(256)) * 16
@@ -136,6 +140,30 @@ class ServingBody:
 
     def close(self) -> None:
         self.closed = True
+
+
+class RotatingBody(ServingBody):
+    """A response that replaces the credential part-way through its own body.
+
+    The Desktop re-binds a running Agent, so the credential changes while reports
+    are still in flight. Between two of them is the only place a value read once
+    at construction and one read at each report can be told apart; after the last
+    chunk is too late, because then only the completion differs.
+    """
+
+    def __init__(self, data: bytes, *, rotate_after: int, on_rotate, **kwargs) -> None:
+        super().__init__(data, **kwargs)
+        self._rotate_after = rotate_after
+        self._on_rotate = on_rotate
+        self._reads = 0
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = super().read(size)
+        if chunk:
+            self._reads += 1
+            if self._reads == self._rotate_after:
+                self._on_rotate()
+        return chunk
 
 
 class ServingOpener:
@@ -255,6 +283,10 @@ class DownloadTest(unittest.TestCase):
         # and the runner is what binds the two.
         self.recorded: list[tuple[str, TransferResume]] = []
         self.directory_choice: str | None = str(self.directory)
+        # What the executor's `credential` callable answers. An attribute and not
+        # a constant because the whole point of it being a callable is that the
+        # answer can change under a running download.
+        self.credential: str | None = CREDENTIAL
         self.sleeps: list[float] = []
 
     def _record(self, task_id: str, resume: TransferResume) -> None:
@@ -270,7 +302,10 @@ class DownloadTest(unittest.TestCase):
         return MaterialDownloadExecutor(
             self.cloud,  # type: ignore[arg-type]
             "agent-1",
-            credential=CREDENTIAL,
+            # A callable, and `self.credential` rather than the constant so an
+            # arm can replace it: what the executor does when this process has no
+            # credential is a behaviour of its own (see `CredentialTests`).
+            credential=lambda: self.credential,
             save_directory=lambda: self.directory_choice,
             record=self._record,
             opener=opener,
@@ -425,6 +460,80 @@ class SaveDirectoryTest(DownloadTest):
         with self.assertRaises(ValueError):
             self.executor(ServingOpener()).execute({"task_id": TASK_ID})
         self.assertEqual(self.cloud.completions, [])
+
+
+class CredentialTests(DownloadTest):
+    """The credential the reports go out under, and the state where there is none.
+
+    It is a callable because the Desktop re-binds a node and hands over a new
+    credential while a download is running; a value read once at assembly would
+    keep every report after that going out under one Cloud has replaced. The
+    other half is the state every Agent starts in: started by the Desktop and not
+    yet bound.
+    """
+
+    def test_a_process_with_no_credential_refuses_to_start_a_download(self) -> None:
+        """A fault in this process, and not one of the eight download outcomes.
+
+        The four transfer calls are identified by this string alone, so with none
+        there is nothing this download could say -- not even that it failed.
+        Filing that under a download reason would name the source or the disk for
+        a fault that is neither, and the runner's `except` is what turns this
+        into an `executor_error` with the row kept.
+        """
+        opener = ServingOpener()
+        self.credential = None
+
+        with self.assertRaises(ValueError):
+            self.run_download(opener)
+
+        self.assertEqual(opener.calls, [], "nothing may be fetched with nothing to report under")
+        self.assertEqual(self.cloud.completions, [])
+        self.assertEqual(self.cloud.progress, [])
+        self.assertEqual(list(self.directory.iterdir()), [], "not even a part file")
+
+        # The control, and the reason the arm above is about the credential: the
+        # same opener and the same lease, run once this process holds one.
+        self.credential = CREDENTIAL
+        self.assertEqual(self.run_download(ServingOpener())["status"], OUTCOME_SUCCESS)
+
+    def test_a_credential_replaced_under_a_running_download_is_used_by_the_next_report(
+        self,
+    ) -> None:
+        """The property that makes the parameter a callable, measured mid-flight.
+
+        The Desktop re-binds a node while a download is running, so the reports
+        already in flight are the ones that have to notice. The two readings that
+        separate "read at each report" from "read once for the attempt" are the
+        first report and every one after it: with a value captured when the
+        attempt started, all four would arrive under the first credential -- which
+        is what this arm read before the reporter was handed the callable.
+        """
+        swapped_while_reading = 2
+
+        def opener(url: str, headers: dict, timeout: float) -> RotatingBody:
+            return RotatingBody(
+                BODY,
+                status=200,
+                headers={"Content-Length": str(len(BODY))},
+                # During the *second* chunk's read, so the report that chunk ends
+                # with is already under the new credential and the one before it
+                # is not: both sides of the swap are observed.
+                rotate_after=swapped_while_reading,
+                on_rotate=lambda: setattr(self, "credential", ROTATED),
+            )
+
+        # No second on the throttle, so every chunk reports and the split below
+        # is a reading rather than a race with the clock.
+        outcome = self.run_download(opener, progress_min_seconds=0.0)
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        credentials = [credential for credential, _, _, _ in self.cloud.progress]
+        self.assertGreater(len(credentials), 1, "this arm needs a report after the swap")
+        self.assertEqual(credentials[0], CREDENTIAL)
+        self.assertEqual(set(credentials[1:]), {ROTATED})
+        # And the report that matters most is read last of all: the completion.
+        self.assertEqual(self.completion()["credential"], ROTATED)
 
 
 class TransferTest(DownloadTest):

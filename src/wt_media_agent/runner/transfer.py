@@ -7,6 +7,13 @@ has none of those things and is tested without them, so a download runs in its
 own loop with its own poll. The two share the registry's task-type to executor
 inventory and nothing else (the user's ruling of 2026-09-27).
 
+**When it is allowed to claim at all.** Every one of the four transfer calls is
+identified by the node credential and by nothing else, and this loop is started
+before anything has bound this process to Cloud: Desktop starts the Agent, then
+binds it. So the credential arrives as a callable (`Credential`) rather than a
+value, an unbound process claims nothing, and a credential Cloud refuses is not
+retried until it is replaced -- see `_claim`.
+
 **Where the durable state lives.** A transfer's record is a `TransferResume` --
 a name and a byte count -- and it goes on the task's row in the checkpoint table,
 in the `transfer_state_json` column the checkpoint store already owns. The row
@@ -30,7 +37,7 @@ from wt_media_agent.clients.cloud import (
     SessionInvalidError,
     TransferLease,
 )
-from wt_media_agent.executors.material_download import OUTCOME_SUCCESS
+from wt_media_agent.executors.material_download import OUTCOME_SUCCESS, Credential
 from wt_media_agent.executors.protocol import ExecutorFactory
 from wt_media_agent.runner.config import TaskRunnerConfig
 from wt_media_agent.runner.registry import TransferNotWired
@@ -62,7 +69,7 @@ class TransferRunner:
         store: CheckpointStore,
         config: TaskRunnerConfig,
         *,
-        credential: str,
+        credential: Credential,
         executors: Mapping[str, ExecutorFactory] | None = None,
     ) -> None:
         self.client = client
@@ -72,14 +79,21 @@ class TransferRunner:
         # the same facts about the same process. `lease_seconds` is unused here
         # -- the lease's own length comes down with it.
         self.config = config
-        # The whole identity of the four transfer calls and of the executor's
-        # reports: supplied by whoever obtained it, and never composed into a
-        # message here.
+        # The whole identity of the four transfer calls: how to ask for it, not
+        # the credential itself, because Cloud issues it once and Desktop hands
+        # it over after this loop is already running -- and replaces it whenever
+        # the Desktop re-binds. Never composed into a message here.
         self._credential = credential
         # Empty by default, on purpose and for `TaskRunner`'s reason: a loop
         # nobody wired up must fail closed rather than reach Cloud through a
         # registry it built behind the caller's back.
         self._executors: dict[str, ExecutorFactory] = dict(executors or {})
+        # The credential value Cloud last refused, if any. Kept so that a
+        # refusal does not turn into a poll-per-second stream of the same 401,
+        # while a *replaced* credential is tried at the next poll rather than at
+        # the next process start: Desktop re-binds and pushes a new one, and the
+        # whole point of handing this loop a callable is that it notices.
+        self._refused: Optional[str] = None
         self._running = False
 
     def register_executor(self, task_type: str, factory: ExecutorFactory) -> None:
@@ -130,7 +144,14 @@ class TransferRunner:
         try:
             result = executor(self.client, self.config.agent_id).execute(task)
         except SessionInvalidError as exc:
-            self._running = False
+            # A download reports under the same credential the claim used, so
+            # this says the credential stopped being accepted mid-transfer: the
+            # lease cannot be renewed and the ending cannot be reported. The row
+            # stays, and so does the loop -- the next claim is what discovers the
+            # refusal for itself and stops claiming until the credential is
+            # replaced (this branch cannot reliably say *which* value was
+            # refused, and guessing would suppress a credential that had just
+            # been replaced under it).
             logger.error(
                 "transfer %s is uncertain after session invalidation: %s", lease.task_id, exc,
                 extra={"task_id": lease.task_id, "error_code": "session_invalidated_result_uncertain"},
@@ -156,11 +177,38 @@ class TransferRunner:
             self.store.remove_checkpoint(lease.task_id)
 
     def _claim(self) -> Optional[TransferLease]:
+        credential = self._credential()
+        if not credential:
+            # An unbound Agent has nothing to claim with. The four transfer calls
+            # are identified by the credential alone -- `claim` carries neither a
+            # path parameter nor a body -- so there is no anonymous claim to fall
+            # back on, and asking would only produce the 401 this process already
+            # knows it would get. Not an error and not a reason to stop: Desktop
+            # starts this Agent and binds it afterwards, and until it does the
+            # loop just keeps its schedule.
+            logger.debug("no node credential yet; nothing to claim")
+            return None
+        if credential == self._refused:
+            # Already refused, and nothing has changed since. Asking again would
+            # be the same 401 once per poll interval.
+            logger.debug("node credential still refused; not claiming")
+            return None
         try:
-            return self.client.claim_transfer_task(self._credential)
+            return self.client.claim_transfer_task(credential)
         except SessionInvalidError as exc:
-            self._running = False
-            logger.error("node credential refused; draining transfer runner: %s", exc)
+            # Stop claiming under *this* credential; do not stop the loop. An
+            # earlier draft drained it here, on the grounds that nothing the loop
+            # does next can work -- which was true of a credential fixed at
+            # assembly and is false of one Desktop replaces: the next bind hands
+            # over a working credential, and a drained loop would sit dead until
+            # somebody restarted the Agent. It is still an error, because the
+            # ordinary cause is that the node is not bound as it thinks.
+            self._refused = credential
+            logger.error(
+                "Cloud refused this node's credential (HTTP 401); "
+                "not claiming until it is replaced: %s",
+                exc,
+            )
             return None
         except Exception as exc:
             logger.debug("transfer claim failed (may be normal): %s", exc)

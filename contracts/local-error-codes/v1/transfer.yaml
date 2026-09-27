@@ -1,15 +1,16 @@
 schema_version: 1
-revision: "2026.09.27.2"
+revision: "2026.09.27.3"
 
 # Two vocabularies, kept apart because they answer different questions and only one
 # of them is an HTTP answer.
 #
 # `errors` is what the local API returns, and each code carries the status it is
-# returned with -- the same shape `v1/bitbrowser.yaml` uses. Every code the
-# save-directory routes can answer with is listed here, which is checked by
+# returned with -- the same shape `v1/bitbrowser.yaml` uses. Every code this
+# change's routes can answer with is listed here, which is checked by
 # `tests/test_local_api_server.py::ContractCodeTests` in both directions: a code
 # the module returns and this file does not name, and a name here that the module
-# never returns, are both failures.
+# never returns, are both failures. The comparison's scope is the set of name
+# prefixes that guard carries, so a refusal named outside them escapes it.
 errors:
   save_directory_invalid: {http_status: 400}
   # Deliberately absent from `local-agent-api/v1/local-agent.openapi.yaml`, which
@@ -18,6 +19,15 @@ errors:
   # directory at all. The status is still a real answer from this build, so the
   # vocabulary says so even though the route contract does not.
   save_directory_unavailable: {http_status: 503}
+  # `POST /api/v1/bind` cannot keep a credential it is handed when this process
+  # was assembled without somewhere to put one. Answered rather than ignored: a
+  # caller that has just registered a node with Cloud must not be told it is
+  # bound here when the credential was dropped on the floor, and the download
+  # loop would then never claim -- with nothing in any log to say why. This route
+  # is one of the seven the region README records as implemented and undefined,
+  # so unlike the save-directory pair there is no route contract to be absent
+  # from.
+  node_credential_unavailable: {http_status: 503}
 
 # `executor_errors` is what the download executor writes down as a task's terminal
 # reason. Nothing calls the Agent to ask why a download failed: the reason travels
