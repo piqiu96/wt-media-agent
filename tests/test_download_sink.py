@@ -261,6 +261,26 @@ class SpaceTest(SinkTestCase):
         self.assertTrue(os.access(path, os.W_OK))
         self.assertFalse(DownloadSink(path).is_writable())
 
+    def test_reading_a_part_back_gives_the_bytes_that_were_appended(self):
+        """A resumed attempt hashes what is already there before the new bytes.
+
+        Without this read the digest covers the tail alone, and the check it
+        feeds would pass on a file assembled from two different objects.
+        """
+        self.sink.append("task-1", b"abc")
+        self.sink.append("task-1", b"def")
+
+        self.assertEqual(b"".join(self.sink.part_chunks("task-1")), b"abcdef")
+
+    def test_reading_a_part_that_is_not_there_iterates_nothing(self):
+        """A missing part is `resume_offset`'s zero, seen from the other side."""
+        self.assertEqual(list(self.sink.part_chunks("task-1")), [])
+
+    def test_the_read_chunk_size_does_not_change_what_comes_back(self):
+        self.sink.append("task-1", b"abcdef")
+
+        self.assertEqual(list(self.sink.part_chunks("task-1", chunk_bytes=2)), [b"ab", b"cd", b"ef"])
+
 
 if __name__ == "__main__":
     unittest.main()

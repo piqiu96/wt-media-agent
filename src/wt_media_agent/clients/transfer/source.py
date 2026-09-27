@@ -35,6 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Protocol
 from urllib import error as urlerror
+from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 
@@ -260,3 +261,53 @@ def _total_from_length(response: ResponseLike, offset: int, range_honoured: bool
 def _urlopen(url: str, headers: Mapping[str, str], timeout: float) -> ResponseLike:
     request = urlrequest.Request(url, headers=dict(headers), method="GET")
     return urlrequest.urlopen(request, timeout=timeout)
+
+
+#: What a suffix the object key does not spell is called. `bin` says "this side
+#: cannot tell", which is a fact; guessing `mp4` from the material's declared
+#: media type would be a claim about bytes this module has not read.
+FALLBACK_EXTENSION = "bin"
+
+#: A suffix longer than this is not an extension. Real container and codec
+#: suffixes run to four characters (`webm`, `m4a`, `jpeg`); anything longer is a
+#: key that happens to contain a dot, and taking it whole would put a fragment of
+#: somebody's object key on the end of a file name.
+MAX_EXTENSION_CHARACTERS = 8
+
+
+def extension_from_url(url: str) -> str:
+    """The suffix the signed object's key ends in, or `"bin"`.
+
+    **Why the address is asked at all.** `LocalLease` carries a title, a size and
+    a digest, and no file name and no extension -- deliberately, because both are
+    this side's to choose and `Completion.file_name` is where the choice goes
+    back to Cloud. The extension is the one part of the name this side cannot
+    choose for itself: an operator opening `春日-42.bin` in a player gets a
+    refusal, and a video file whose name does not say `mp4` is a file the desktop
+    will not offer to play. The address is asked because a presigned `GET` *is*
+    the object key -- the storage service signed that key, and the extension in it
+    is the one the uploader chose, not one this module invents.
+
+    Two things are deliberately not done. A query-string address (`/download?…`,
+    which some CDNs issue) yields `bin` rather than a guess from the media type.
+    And a suffix that is not plausibly an extension -- empty, carrying anything
+    but letters and digits, or absurdly long -- also yields `bin`, so that a key
+    like `clip.mp4-backup` names the file `…-42.bin` rather than `…-42.mp4backup`.
+    `DownloadSink._normalize_extension` is the single place that decides what an
+    extension looks like; this function only hands it something that passes.
+    """
+    try:
+        path = urlparse.urlsplit(url).path
+    except ValueError:
+        # `urlsplit` refuses some malformed inputs by raising, and a malformed
+        # address is Cloud's to re-issue -- so it is named `bin` here and refused
+        # where the address is actually used.
+        return FALLBACK_EXTENSION
+    stem, dot, suffix = path.rpartition("/")[2].rpartition(".")
+    # A dot with nothing before it is not a suffix: `.hidden` is a name, not a
+    # file of type `hidden`, and `abc.` is a key ending in a dot.
+    if not dot or not stem:
+        return FALLBACK_EXTENSION
+    if not suffix.isalnum() or len(suffix) > MAX_EXTENSION_CHARACTERS:
+        return FALLBACK_EXTENSION
+    return suffix.lower()

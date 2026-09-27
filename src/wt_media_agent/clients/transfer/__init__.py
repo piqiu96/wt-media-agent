@@ -10,19 +10,23 @@ external protocol.
 """
 
 from wt_media_agent.clients.transfer.source import (
+    FALLBACK_EXTENSION,
     Opener,
     ResponseLike,
     SourceStalledError,
     SourceStream,
     SourceUnavailableError,
+    extension_from_url,
     open_source,
 )
 
 __all__ = [
+    "FALLBACK_EXTENSION",
     "Opener",
     "ResponseLike",
     "SourceStalledError",
     "SourceStream",
     "SourceUnavailableError",
+    "extension_from_url",
     "open_source",
 ]

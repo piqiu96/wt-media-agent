@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Iterator
 
 #: Windows refuses these as file names, with or without an extension. The Agent
 #: runs on macOS and Windows from one codebase, so the name is sanitized for the
@@ -52,6 +53,11 @@ COLLISION_SUFFIX_BYTES = 6
 
 #: The room `free_bytes()` insists on beyond the file itself.
 FREE_SPACE_MARGIN_BYTES = 16 * 1024 * 1024
+
+#: Bytes read at a time when a part file is read back for hashing. It is an I/O
+#: buffer size and carries no meaning: nothing in this module decides anything
+#: from how much was read.
+PART_READ_CHUNK_BYTES = 1024 * 1024
 
 
 class NameUnusableError(RuntimeError):
@@ -176,6 +182,33 @@ class DownloadSink:
             return self.part_path(task_id).stat().st_size
         except OSError:
             return 0
+
+    def part_chunks(
+        self, task_id: str, chunk_bytes: int = PART_READ_CHUNK_BYTES
+    ) -> Iterator[bytes]:
+        """Iterate the bytes already in this task's part file, if there is one.
+
+        A resumed attempt has to hash the bytes an earlier attempt wrote before it
+        can hash any new ones -- a digest over the tail alone is a digest of
+        nothing, and the check it feeds would pass on a file whose first half came
+        from somewhere else. Nothing else reads the part back, which is why this
+        is the one method here that does.
+
+        A missing part iterates nothing rather than raising: the caller has just
+        asked `resume_offset` and been told zero, and a download whose part was
+        removed between the two calls has no bytes to continue from, which is the
+        same thing.
+        """
+        try:
+            handle = open(self.part_path(task_id), "rb")
+        except OSError:
+            return
+        with handle:
+            while True:
+                chunk = handle.read(chunk_bytes)
+                if not chunk:
+                    return
+                yield chunk
 
     def append(self, task_id: str, chunk: bytes) -> int:
         """Append `chunk` to the part file, creating it and its directory."""

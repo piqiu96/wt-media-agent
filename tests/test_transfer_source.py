@@ -17,6 +17,7 @@ from urllib import error as urlerror
 from wt_media_agent.clients.transfer import (
     SourceStalledError,
     SourceUnavailableError,
+    extension_from_url,
     open_source,
 )
 from wt_media_agent.clients.transfer.source import parse_content_range
@@ -244,6 +245,54 @@ class SourceStreamTest(unittest.TestCase):
         opener = RecordingOpener(FakeResponse(headers={"content-range": "bytes 0-2/3"}))
         stream = open_source("http://cdn.test/f", opener=opener)
         self.assertEqual(stream.total_bytes, 3)
+
+
+class ExtensionFromUrlTest(unittest.TestCase):
+    """The one part of a file name the agent cannot choose for itself.
+
+    `LocalLease` carries a title, a size and a digest, and no extension -- by
+    design, since the name is this side's to pick and `Completion.file_name` is
+    where the choice goes back. The address is asked because a presigned `GET`
+    *is* the object key: the suffix in it is the one the uploader chose.
+    """
+
+    def test_the_suffix_of_the_signed_key_is_the_extension(self):
+        self.assertEqual(
+            extension_from_url("https://cdn.test/bucket/materials/42/abc.mp4?X-Amz-Signature=x"),
+            "mp4",
+        )
+
+    def test_the_query_string_is_not_part_of_the_name(self):
+        """A signature can contain dots; a key's suffix lives in the path."""
+        self.assertEqual(extension_from_url("https://cdn.test/f?a=b.mp4"), "bin")
+
+    def test_an_address_with_no_key_suffix_says_bin_rather_than_guessing(self):
+        """`bin` is a fact -- "this side cannot tell" -- and `mp4` would not be.
+
+        The material is known to be a video, so an implementation could assume a
+        container and be right most of the time. Most of the time is what puts a
+        file in a player that refuses it, with a name that said it would play.
+        """
+        for url in (
+            "https://cdn.test/download?sig=x",
+            "https://cdn.test/materials/42/abc",
+            "https://cdn.test/a/.hidden",
+            "https://cdn.test/a/abc.",
+            "https://cdn.test/a/trailing/",
+            "",
+            "not a url at all",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(extension_from_url(url), "bin")
+
+    def test_a_dot_in_the_key_that_is_not_an_extension_is_not_taken_as_one(self):
+        for url in ("https://cdn.test/a/clip.mp4-backup", "https://cdn.test/a/x.verylongsuffix"):
+            with self.subTest(url=url):
+                self.assertEqual(extension_from_url(url), "bin")
+
+    def test_the_reader_can_see_an_extension_that_is_there(self):
+        """The positive control for the arms above."""
+        self.assertEqual(extension_from_url("https://cdn.test/a/b.WEBM"), "webm")
 
 
 if __name__ == "__main__":

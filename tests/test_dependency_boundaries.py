@@ -188,6 +188,14 @@ FROZEN_LAYER_EDGES = frozenset(
         ("cloud_main", "bootstrap"),
         ("executors", "clients"),
         ("executors", "services"),
+        # CHG-061 T-04. The download executor writes its bytes through
+        # `storage/download_sink.py`, which is one of the three ways ADR-0016 §3
+        # says an executor may reach the world ("executor 访问外部与存储必须经
+        # clients / services / storage"). Added in the same commit as the import
+        # that needs it: this table is a ratchet in both directions, so an edge
+        # arriving without being declared here is a failure, and so is one
+        # declared here that nothing uses.
+        ("executors", "storage"),
         ("local_api", "bootstrap"),
         ("local_api", "clients"),
         ("local_api", "runtime"),
