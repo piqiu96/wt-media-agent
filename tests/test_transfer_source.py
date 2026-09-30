@@ -166,12 +166,12 @@ class OpenSourceTest(unittest.TestCase):
         what a naive `raise ... from exc` or an f-string would leak.
         """
         address = "http://cdn.test/f?signature=SUPERSECRET"
-        for raises in (
-            urlerror.HTTPError(address, 403, "Forbidden", {}, None),
-            urlerror.URLError(OSError("connection refused")),
-            OSError("connection refused"),
+        for raises, kind in (
+            (urlerror.HTTPError(address, 403, "Forbidden", {}, None), SourceUnavailableError),
+            (urlerror.URLError(OSError("connection refused")), SourceStalledError),
+            (OSError("connection refused"), SourceStalledError),
         ):
-            with self.assertRaises(SourceUnavailableError) as caught:
+            with self.assertRaises(kind) as caught:
                 open_source(address, opener=RecordingOpener(raises=raises))
             message = str(caught.exception)
             self.assertNotIn("SUPERSECRET", message)

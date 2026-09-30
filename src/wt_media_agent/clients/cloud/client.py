@@ -344,6 +344,10 @@ class CloudAgentClient:
         except urlerror.HTTPError as exc:
             status = int(exc.code)
             raw = exc.read().decode("utf-8")
+        except (urlerror.URLError, TimeoutError) as exc:
+            # Otherwise a dead link escapes as `OSError` and is filed as a
+            # terminal executor error; here it is a lease not yet confirmed.
+            raise TransferUnavailableError("cloud could not be reached") from exc
         # A `200` from heartbeat or progress has no content at all, so an empty
         # body is a success and not something to parse.
         decoded = json.loads(raw) if raw.strip() else {}

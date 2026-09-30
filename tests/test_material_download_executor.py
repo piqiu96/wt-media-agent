@@ -590,30 +590,15 @@ class TransferTest(DownloadTest):
         self.assertEqual([offset for _, offset, _ in opener.calls], [0, 0])
         self.assertEqual(self.saved(), BODY)
 
-    def test_a_source_shorter_than_the_task_declared_fails_the_size_check(self) -> None:
-        """The one input the size check is the only check that refuses.
-
-        A short body that is also the wrong bytes is refused by the digest, and a
-        body with a `Content-Length` is refused before it is read -- so neither of
-        those pins the size check, and an implementation that dropped it would go
-        green on both. Here nothing is declared up front and the digest the task
-        carries is the digest of exactly what arrives, so the delivered count is
-        the only thing that disagrees with the task.
-
-        Which check spoke is asserted on the message, not on the code: both
-        endings are `download_integrity_failed`, and the sentence is what tells
-        the operator whether the file was the wrong size or the wrong content.
-        """
+    def test_a_source_shorter_than_the_task_declared_is_a_resumable_stall(self) -> None:
+        """A clean early EOF is a broken link, not a corrupt object: the part survives."""
         partial = BODY[: len(BODY) - CHUNK]
         lease = make_lease(body=partial, total_bytes=len(BODY))
 
         outcome = self.run_download(ServingOpener(partial, with_length=False), lease=lease)
 
-        self.assertEqual(outcome["error_code"], ERROR_INTEGRITY_FAILED)
-        self.assertEqual(
-            self.completion()["error_message"],
-            f"the source delivered {len(partial)} bytes where the task declared {len(BODY)}",
-        )
+        self.assertEqual(outcome["error_code"], ERROR_STALLED)
+        self.assertEqual(self.part_bytes(), partial, "the part survives for the next attempt")
         self.assertFalse((self.directory / FILE_NAME).exists())
 
     def test_a_source_whose_total_disagrees_is_refused_before_the_body_is_read(self) -> None:
@@ -978,12 +963,14 @@ class StallTest(DownloadTest):
         self.assertEqual(len(opener.calls), 1)
         self.assertEqual(self.sleeps, [])
 
-    def test_an_unreachable_host_is_an_unavailable_source_too(self) -> None:
+    def test_an_unreachable_host_is_retried_then_filed_as_a_stall(self) -> None:
+        """The same host gets its whole budget; only Cloud can re-issue a dead address."""
         opener = ServingOpener(raises=urlerror.URLError(OSError("network is down")))
 
         outcome = self.run_download(opener, lease=make_lease(max_attempts=3))
 
-        self.assertEqual(outcome["error_code"], ERROR_SOURCE_UNAVAILABLE)
+        self.assertEqual(outcome["error_code"], ERROR_STALLED)
+        self.assertEqual(len(opener.calls), 3, "all three attempts asked the same host")
 
 
 class RangeIgnoredTest(DownloadTest):

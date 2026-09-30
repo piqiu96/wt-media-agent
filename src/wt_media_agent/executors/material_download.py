@@ -521,8 +521,10 @@ class MaterialDownloadExecutor:
                         )
 
         if written != lease.total_bytes:
-            raise Integrity(
-                f"the source delivered {written} bytes where the task declared "
+            # Over-delivery is refused above, so this clean early EOF is the
+            # link dying, not the object: a stall keeps the part as a head start.
+            raise Stalled(
+                f"the source stopped at {written} bytes where the task declared "
                 f"{lease.total_bytes}"
             )
         hexdigest = digest.hexdigest()

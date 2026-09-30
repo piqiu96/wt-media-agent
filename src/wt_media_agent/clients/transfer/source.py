@@ -86,9 +86,10 @@ def open_source(
 ) -> "SourceStream":
     """Open `url` for reading, asking to start at `offset` bytes.
 
-    Raises `SourceUnavailableError` if the address is refused or answers with an
-    error, and `SourceStalledError` if the connection times out before it
-    answers.
+    Raises `SourceUnavailableError` if the address is refused (an expired
+    signature is Cloud's to re-issue), and `SourceStalledError` if the link
+    itself fails or stalls -- the same address is worth retrying within the
+    attempt budget.
     """
     headers = {"Range": f"bytes={offset}-"} if offset > 0 else {}
     open_url = opener or _urlopen
@@ -109,7 +110,7 @@ def open_source(
         reason = getattr(exc, "reason", None)
         if isinstance(reason, TimeoutError):
             raise SourceStalledError("the source did not answer before the timeout") from exc
-        raise SourceUnavailableError("the source could not be reached") from exc
+        raise SourceStalledError("the source could not be reached") from exc
     except ValueError:
         # `urlopen` rejects a malformed address itself, before any connection is
         # tried, and its `ValueError` quotes the address it rejected -- the one
@@ -119,7 +120,7 @@ def open_source(
         # unavailable source and not a crash.
         raise SourceUnavailableError("the source address is not usable") from None
     except OSError as exc:
-        raise SourceUnavailableError("the source could not be reached") from exc
+        raise SourceStalledError("the source could not be reached") from exc
 
     status = int(getattr(response, "status", 0) or 0)
     content_range = _header(response, "content-range")
