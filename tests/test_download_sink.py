@@ -13,11 +13,17 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
 from wt_media_agent.storage import DownloadSink, InsufficientSpaceError, NameUnusableError
 from wt_media_agent.storage.download_sink import MAX_NAME_BYTES, FREE_SPACE_MARGIN_BYTES
+
+#: The day every naming test files under. The date subdirectory is derived from
+#: this argument, so pinning it keeps the assertions about the shape and not
+#: about whatever day the test happens to run.
+TODAY = date(2026, 9, 30)
 
 
 class SinkTestCase(unittest.TestCase):
@@ -29,14 +35,23 @@ class SinkTestCase(unittest.TestCase):
 
 
 class FileNameTest(SinkTestCase):
-    def test_the_title_leads_and_the_material_id_says_which_one(self):
-        self.assertEqual(self.sink.file_name("春日", 42, "mp4"), "春日-42.mp4")
+    def test_the_game_name_leads_and_the_material_id_says_which_one(self):
+        self.assertEqual(
+            self.sink.file_name("春日", 42, "mp4", TODAY), "20260930/春日-42.mp4"
+        )
+
+    def test_the_date_subdirectory_is_today(self):
+        self.assertEqual(
+            self.sink.file_name("三角洲行动", 30, "mp4", date(2026, 9, 30)),
+            "20260930/三角洲行动-30.mp4",
+        )
 
     def test_separators_and_wildcards_become_underscores(self):
-        """A title is a material's name, not a path, and it can contain anything."""
-        name = self.sink.file_name('a/b\\c:d*e?f"g<h>i|j', 1, "mp4")
-        self.assertEqual(name, "a_b_c_d_e_f_g_h_i_j-1.mp4")
-        self.assertNotIn("/", name)
+        """A game name is a material's label, not a path, and can contain anything."""
+        name = self.sink.file_name('a/b\\c:d*e?f"g<h>i|j', 1, "mp4", TODAY)
+        self.assertEqual(name, "20260930/a_b_c_d_e_f_g_h_i_j-1.mp4")
+        # The one separator left is the date's own; none of the title's rode along.
+        self.assertEqual(name.count("/"), 1)
         self.assertNotIn("\\", name)
 
     def test_a_reserved_device_name_is_defused(self):
@@ -47,54 +62,56 @@ class FileNameTest(SinkTestCase):
         this the download fails on the operator's machine and not on ours.
         """
         for reserved in ("CON", "nul", "COM1", "LPT9"):
-            name = self.sink.file_name(reserved, 1, "mp4")
-            self.assertTrue(name.startswith("_"), name)
+            name = self.sink.file_name(reserved, 1, "mp4", TODAY)
+            self.assertTrue(name.startswith("20260930/_"), name)
 
     def test_trailing_dots_and_spaces_are_stripped(self):
         """Windows drops them, so `a.` and `a` would name one file."""
-        self.assertEqual(self.sink.file_name("name... ", 1, "mp4"), "name-1.mp4")
+        self.assertEqual(self.sink.file_name("name... ", 1, "mp4", TODAY), "20260930/name-1.mp4")
 
-    def test_a_title_that_leaves_nothing_is_refused_rather_than_invented(self):
+    def test_a_game_name_that_leaves_nothing_is_refused_rather_than_invented(self):
         """The executor reports `download_name_unusable`; it does not guess.
 
         Inventing a name would put a file on somebody's disk that they cannot
-        connect to the material it came from. What is refused is a title that
-        leaves *nothing* -- empty, or only dots and spaces, which strip away to
-        empty or name a directory.
+        connect to the material it came from. What is refused is a game name
+        that leaves *nothing* -- empty, or only dots and spaces, which strip
+        away to empty or name a directory.
         """
-        for title in ("", "   ", "...", ".", "..", ". . ."):
-            with self.assertRaises(NameUnusableError, msg=title):
-                self.sink.file_name(title, 1, "mp4")
+        for game_name in ("", "   ", "...", ".", "..", ". . ."):
+            with self.assertRaises(NameUnusableError, msg=game_name):
+                self.sink.file_name(game_name, 1, "mp4", TODAY)
 
-    def test_a_title_of_only_illegal_characters_still_names_its_material(self):
+    def test_a_game_name_of_only_illegal_characters_still_names_its_material(self):
         """The other side of the same decision, pinned so it is a choice.
 
         `???` sanitizes to `___`, which is a legal name and carries no
         information -- but the material id in the name does, so the file is
         still connectable to the material it came from. Refusing here would fail
-        a download over a cosmetic property of somebody's title.
+        a download over a cosmetic property of somebody's name.
         """
-        self.assertEqual(self.sink.file_name("???", 42, "mp4"), "___-42.mp4")
+        self.assertEqual(self.sink.file_name("???", 42, "mp4", TODAY), "20260930/___-42.mp4")
 
-    def test_a_very_long_title_stays_inside_the_byte_cap(self):
+    def test_a_very_long_game_name_stays_inside_the_byte_cap(self):
         """255 bytes, and bytes rather than characters.
 
-        A 300-character Chinese title is 900 bytes; a cap counted in characters
+        A 300-character Chinese name is 900 bytes; a cap counted in characters
         would write a name the filesystem refuses, which surfaces as an
         `OSError` from the middle of a download rather than as a finding here.
         """
-        name = self.sink.file_name("春" * 300, 7, "mp4")
+        name = self.sink.file_name("春" * 300, 7, "mp4", TODAY)
         self.assertLessEqual(len(name.encode("utf-8")), MAX_NAME_BYTES)
         self.assertTrue(name.endswith("-7.mp4"))
+        # The date prefix has to come out of the same cap, not beside it.
+        self.assertTrue(name.startswith("20260930/"))
 
     def test_the_extension_is_normalized(self):
-        self.assertEqual(self.sink.file_name("t", 1, ".MP4"), "t-1.mp4")
-        self.assertEqual(self.sink.file_name("t", 1, "mp4"), "t-1.mp4")
-        self.assertEqual(self.sink.file_name("t", 1, ""), "t-1.bin")
-        self.assertEqual(self.sink.file_name("t", 1, "m/p4"), "t-1.mp4")
+        self.assertEqual(self.sink.file_name("t", 1, ".MP4", TODAY), "20260930/t-1.mp4")
+        self.assertEqual(self.sink.file_name("t", 1, "mp4", TODAY), "20260930/t-1.mp4")
+        self.assertEqual(self.sink.file_name("t", 1, "", TODAY), "20260930/t-1.bin")
+        self.assertEqual(self.sink.file_name("t", 1, "m/p4", TODAY), "20260930/t-1.mp4")
 
     def test_a_control_character_cannot_ride_along(self):
-        self.assertEqual(self.sink.file_name("a\x00b\x1fc", 1, "mp4"), "a_b_c-1.mp4")
+        self.assertEqual(self.sink.file_name("a\x00b\x1fc", 1, "mp4", TODAY), "20260930/a_b_c-1.mp4")
 
 
 class AllocateTest(SinkTestCase):
@@ -120,11 +137,20 @@ class AllocateTest(SinkTestCase):
         self.assertEqual(self.sink.allocate("a.mp4"), "a (3).mp4")
 
     def test_a_collision_suffix_cannot_push_the_name_over_the_cap(self):
-        name = self.sink.file_name("春" * 300, 7, "mp4")
+        name = self.sink.file_name("春" * 300, 7, "mp4", TODAY)
+        (self.directory / name).parent.mkdir(parents=True)
         (self.directory / name).write_bytes(b"x")
         allocated = self.sink.allocate(name)
         self.assertLessEqual(len(allocated.encode("utf-8")), MAX_NAME_BYTES)
         self.assertTrue(allocated.endswith(" (2).mp4"))
+
+    def test_a_name_with_a_date_subdirectory_collides_within_it(self):
+        """The collision marker goes before the extension, inside the subdirectory."""
+        (self.directory / "20260930").mkdir()
+        (self.directory / "20260930" / "a-1.mp4").write_bytes(b"first")
+        self.assertEqual(
+            self.sink.allocate("20260930/a-1.mp4"), "20260930/a-1 (2).mp4"
+        )
 
     def test_a_name_with_no_extension_still_collides_correctly(self):
         (self.directory / "plain").write_bytes(b"x")
@@ -212,6 +238,14 @@ class CommitTest(SinkTestCase):
         self.sink.append("task-1", b"new")
         self.sink.commit("task-1", "a-1.mp4")
         self.assertEqual((self.directory / "a-1.mp4").read_bytes(), b"new")
+
+    def test_committing_into_a_date_subdirectory_creates_it(self):
+        """The date directory does not exist until a download lands in it."""
+        self.sink.append("task-1", b"abcdef")
+        final = self.sink.commit("task-1", "20260930/a-1.mp4")
+
+        self.assertEqual(final.read_bytes(), b"abcdef")
+        self.assertEqual(final.parent, self.directory / "20260930")
 
 
 class SpaceTest(SinkTestCase):

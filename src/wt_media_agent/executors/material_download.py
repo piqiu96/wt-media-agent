@@ -40,6 +40,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Mapping
+from datetime import date
 from typing import Callable, Optional
 
 from wt_media_agent.clients.cloud import (
@@ -131,6 +132,11 @@ DEFAULT_RETRY_PAUSE_SECONDS = 1.0
 #: must not travel.
 NO_ROOM_MESSAGE = "the chosen save directory's volume has no room for the file"
 NOT_WRITABLE_MESSAGE = "the chosen save directory is no longer writable"
+
+#: The game label a material with no game is filed under. Nothing on the
+#: operator's side can supply the missing name, so the fallback is this fixed
+#: label rather than a guess at what the game might have been.
+UNCLASSIFIED_GAME = "未分类"
 
 #: What the runner hands the executor to record, and the executor's own report.
 #:
@@ -230,6 +236,7 @@ class MaterialDownloadExecutor:
         record: Recorder,
         opener: Optional[Opener] = None,
         clock: Callable[[], float] = time.monotonic,
+        today: Callable[[], date] = date.today,
         sleeper: Callable[[float], None] = time.sleep,
         chunk_bytes: int = DEFAULT_CHUNK_BYTES,
         stall_seconds: float = DEFAULT_STALL_SECONDS,
@@ -249,6 +256,7 @@ class MaterialDownloadExecutor:
         self._record = record
         self._opener = opener
         self._clock = clock
+        self._today = today
         self._sleep = sleeper
         self._chunk_bytes = chunk_bytes
         self._stall_seconds = stall_seconds
@@ -343,12 +351,15 @@ class MaterialDownloadExecutor:
                 resume.file_name
                 if resume is not None
                 else sink.file_name(
-                    lease.title, lease.asset_id, extension_from_url(lease.download_url)
+                    lease.game_name or UNCLASSIFIED_GAME,
+                    lease.asset_id,
+                    extension_from_url(lease.download_url),
+                    self._today(),
                 )
             )
             name = sink.allocate(name)
         except NameUnusableError:
-            raise UnusableName("the material's title leaves no usable file name") from None
+            raise UnusableName("the material leaves no usable file name") from None
         try:
             sink.require_room(lease.total_bytes)
         except InsufficientSpaceError:

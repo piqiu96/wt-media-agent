@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from datetime import date
 from pathlib import Path
 from typing import Iterator
 
@@ -110,30 +111,39 @@ class DownloadSink:
     # ---- naming ----
 
     @staticmethod
-    def file_name(title: str, material_id: int, extension: str) -> str:
-        """A name for the file `title` describes, or raise `NameUnusableError`.
+    def file_name(game_name: str, material_id: int, extension: str, today: date) -> str:
+        """A name for the file `game_name` describes, or raise `NameUnusableError`.
 
-        The name is `<sanitized title>-<material id>.<extension>`. The id is in
-        it because two materials may share a title and the operator needs the
-        file to say which one it is; the title comes first because that is what
-        a person scans a directory for.
+        The name is `<YYYYMMDD>/<sanitized game name>-<material id>.<extension>`.
+        The date subdirectory groups downloads by the day they were fetched, and
+        the game name with the id tells an operator which material the file is;
+        the id is in it because two materials may share a name.
 
         This sanitizes for both platforms at once (see `RESERVED_NAMES`). It is
         the reason the lease carries a verbatim title and not a name: the
         reserved names and separators are the filesystem's rules, so only the
         side that has a filesystem can apply them.
         """
+        subdir = today.strftime("%Y%m%d")
         suffix = f"-{material_id}.{_normalize_extension(extension)}"
-        budget = MAX_NAME_BYTES - len(suffix.encode("utf-8")) - COLLISION_SUFFIX_BYTES
+        # The date prefix costs its own bytes -- eight for the day, one for the
+        # `/` -- and comes out of the name budget like any other part of it.
+        prefix_bytes = len(subdir.encode("utf-8")) + 1
+        budget = (
+            MAX_NAME_BYTES
+            - prefix_bytes
+            - len(suffix.encode("utf-8"))
+            - COLLISION_SUFFIX_BYTES
+        )
         # One check, after the trim, because the trim is what decides: an empty
-        # title stays empty through `_truncate_bytes`, and a title too long to
+        # game name stays empty through `_truncate_bytes`, and a name too long to
         # leave room for the suffix and the marker trims to nothing. A second
         # check before the budget was written first and then removed -- it could
         # not fail without the later one failing too, so nothing held it.
-        stem = _truncate_bytes(_sanitize(title), budget)
+        stem = _truncate_bytes(_sanitize(game_name), budget)
         if not stem:
-            raise NameUnusableError("the title leaves no usable file name")
-        return f"{stem}{suffix}"
+            raise NameUnusableError("the game name leaves no usable file name")
+        return f"{subdir}/{stem}{suffix}"
 
     def exists(self, name: str) -> bool:
         return (self._directory / name).exists()
@@ -238,24 +248,27 @@ class DownloadSink:
         """Make the part file the real file, atomically, or leave it alone.
 
         The caller has already checked size and digest; this is only the rename.
-        The part is fsynced first and the directory second, so a crash between
-        the two leaves a file that is either absent or complete -- never
+        The date subdirectory may not exist yet, so it is created here. The part
+        is fsynced first and the directories second, so a crash between the two
+        leaves a file that is either absent or complete -- never
         present-and-empty, which is what a rename without the first fsync can
         produce.
         """
         part = self.part_path(task_id)
         final = self._directory / name
+        final.parent.mkdir(parents=True, exist_ok=True)
         handle = os.open(part, os.O_RDONLY)
         try:
             os.fsync(handle)
         finally:
             os.close(handle)
         os.replace(part, final)
-        directory = os.open(self._directory, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        for directory in {final.parent, self._directory}:
+            handle = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(handle)
+            finally:
+                os.close(handle)
         try:
             part.parent.rmdir()
         except OSError:

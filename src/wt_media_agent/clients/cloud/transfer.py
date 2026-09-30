@@ -110,6 +110,9 @@ class TransferLease:
     lease_seconds: int
     download_url: str
     download_url_expires_at: str
+    #: Optional: Cloud sends the game a material is filed under, or "" when the
+    #: material has no game and the executor files it under a fixed placeholder.
+    game_name: str = ""
     max_attempts: int = 1
     attempt_count: int = 0
 
@@ -148,6 +151,7 @@ def parse_lease(payload: object) -> TransferLease:
         lease_seconds=int(payload["lease_seconds"]),
         download_url=str(payload["download_url"]),
         download_url_expires_at=str(payload["download_url_expires_at"]),
+        game_name=str(payload.get("game_name") or ""),
         max_attempts=int(payload.get("max_attempts") or 1),
         attempt_count=int(payload.get("attempt_count") or 0),
     )

@@ -31,6 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+from datetime import date
+
 from wt_media_agent.clients.cloud import (
     TransferIntegrityRejectedError,
     TransferLease,
@@ -68,7 +70,12 @@ ROTATED = "node-credential-issued-by-the-next-bind"
 BODY = bytes(range(256)) * 16
 CHUNK = 1024
 SIGNED_URL = "https://cdn.test/materials/42/abc.mp4?X-Amz-Signature=SHORTLIVED"
-FILE_NAME = "春日-42.mp4"
+#: The day every naming test files under, injected as the executor's `today` so
+#: the assertions are about the shape and not about the day the test runs.
+TODAY = date(2026, 9, 30)
+DATE_DIR = "20260930"
+GAME_NAME = "三角洲行动"
+FILE_NAME = f"{DATE_DIR}/{GAME_NAME}-42.mp4"
 
 CONTRACT = ROOT / "contracts" / "local-error-codes" / "v1" / "transfer.yaml"
 
@@ -82,6 +89,7 @@ def make_lease(body: bytes = BODY, **overrides: object) -> TransferLease:
         "task_id": TASK_ID,
         "asset_id": 42,
         "title": "春日",
+        "game_name": GAME_NAME,
         "total_bytes": len(body),
         "expected_sha256": sha256(body),
         "lease_seconds": 60,
@@ -296,6 +304,7 @@ class DownloadTest(unittest.TestCase):
         settings: dict[str, object] = {
             "chunk_bytes": CHUNK,
             "clock": StepClock(),
+            "today": lambda: TODAY,
             "sleeper": self.sleeps.append,
         }
         settings.update(overrides)
@@ -339,20 +348,30 @@ class DownloadTest(unittest.TestCase):
 
 
 class NamingTest(DownloadTest):
-    def test_the_name_is_the_title_the_id_and_the_address_s_suffix(self) -> None:
+    def test_the_name_is_the_date_the_game_and_the_id(self) -> None:
         self.assertEqual(self.run_download(ServingOpener())["status"], OUTCOME_SUCCESS)
 
         self.assertEqual(self.saved(), BODY)
         self.assertEqual(self.completion()["file_name"], FILE_NAME)
 
+    def test_a_material_with_no_game_falls_back_to_the_placeholder(self) -> None:
+        """2 of 149 materials have no game; the download still names them."""
+        outcome = self.run_download(ServingOpener(), lease=make_lease(game_name=""))
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/未分类-42.mp4")
+
     def test_a_second_download_does_not_overwrite_the_first(self) -> None:
+        (self.directory / DATE_DIR).mkdir()
         (self.directory / FILE_NAME).write_bytes(b"an earlier download")
 
         self.run_download(ServingOpener())
 
-        self.assertEqual((self.directory / "春日-42 (2).mp4").read_bytes(), BODY)
+        self.assertEqual(
+            (self.directory / f"{DATE_DIR}/{GAME_NAME}-42 (2).mp4").read_bytes(), BODY
+        )
         self.assertEqual(self.saved(), b"an earlier download")
-        self.assertEqual(self.completion()["file_name"], "春日-42 (2).mp4")
+        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/{GAME_NAME}-42 (2).mp4")
 
     def test_a_resumed_attempt_keeps_the_name_the_first_attempt_chose(self) -> None:
         """Otherwise one download becomes two files, which the operator sees.
@@ -361,16 +380,18 @@ class NamingTest(DownloadTest):
         answers with the first name free *now*, so a second attempt that asked
         again would take ` (2)` if anything had claimed the first name meanwhile.
         """
+        (self.directory / DATE_DIR).mkdir()
         (self.directory / FILE_NAME).write_bytes(b"another material")
         self.plant_part(BODY[:CHUNK])
-        resume = TransferResume("春日-42 (2).mp4", CHUNK)
+        resumed_name = f"{DATE_DIR}/{GAME_NAME}-42 (2).mp4"
+        resume = TransferResume(resumed_name, CHUNK)
 
         self.run_download(ServingOpener(), resume=resume)
 
-        self.assertEqual((self.directory / "春日-42 (2).mp4").read_bytes(), BODY)
+        self.assertEqual((self.directory / resumed_name).read_bytes(), BODY)
 
-    def test_a_title_with_no_usable_name_is_refused(self) -> None:
-        outcome = self.run_download(ServingOpener(), lease=make_lease(title="..."))
+    def test_a_game_name_with_no_usable_name_is_refused(self) -> None:
+        outcome = self.run_download(ServingOpener(), lease=make_lease(game_name="..."))
 
         self.assertEqual(outcome["status"], OUTCOME_FAILED)
         self.assertEqual(outcome["error_code"], ERROR_NAME_UNUSABLE)
@@ -428,7 +449,7 @@ class SaveDirectoryTest(DownloadTest):
         """
         cases: list[tuple[dict, str]] = [
             ({"save_directory": None}, ERROR_SAVE_DIR_UNSET),
-            ({"lease": make_lease(title="...")}, ERROR_NAME_UNUSABLE),
+            ({"lease": make_lease(game_name="...")}, ERROR_NAME_UNUSABLE),
             ({"lease": make_lease(total_bytes=1 << 62)}, ERROR_DISK_INSUFFICIENT),
             (
                 {"opener_raises": urlerror.HTTPError(SIGNED_URL, 403, "Forbidden", {}, None)},
@@ -821,11 +842,20 @@ class ResumeTest(DownloadTest):
         self.assertEqual([record.bytes_done for _, record in self.recorded], figures)
 
     def test_the_record_carries_a_name_and_not_a_path(self) -> None:
-        """It is stored in a database, and CHG-061 §8 keeps paths out of those."""
+        """It is stored in a database, and CHG-061 §8 keeps paths out of those.
+
+        The one separator is the date subdirectory's own: a relative `date/name`
+        names the file, and nothing about the machine it was saved on. An
+        absolute path, a `..`, or a second level would escape that contract.
+        """
         self.run_download(ServingOpener())
 
         for _, record in self.recorded:
-            self.assertNotIn("/", record.file_name)
+            self.assertEqual(record.file_name.count("/"), 1)
+            date_dir, name = record.file_name.split("/", 1)
+            self.assertEqual(date_dir, DATE_DIR)
+            self.assertNotIn("\\", name)
+            self.assertNotIn("..", name)
 
 
 class ProgressTest(DownloadTest):

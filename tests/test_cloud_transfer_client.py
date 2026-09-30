@@ -345,6 +345,11 @@ class LeaseParsingTest(unittest.TestCase):
         """
         self.assertEqual(parse_lease(lease(total_bytes=0)).total_bytes, 0)
 
+    def test_the_game_name_is_optional_and_defaults_to_empty(self) -> None:
+        """A material without a game sends no `game_name`; the executor falls back."""
+        self.assertEqual(parse_lease(lease()).game_name, "")
+        self.assertEqual(parse_lease(lease(game_name="三角洲行动")).game_name, "三角洲行动")
+
 
 class TerminalParsingTest(unittest.TestCase):
     def test_a_terminal_missing_a_recorded_fact_is_refused(self) -> None:
