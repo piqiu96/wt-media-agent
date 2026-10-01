@@ -31,6 +31,7 @@ the transport as a header and appears in no message this module composes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Callable, Mapping, Optional
 
 #: `(method, path, payload, headers) -> (http status, decoded body)`. The body is
@@ -113,6 +114,10 @@ class TransferLease:
     #: Optional: Cloud sends the game a material is filed under, or "" when the
     #: material has no game and the executor files it under a fixed placeholder.
     game_name: str = ""
+    #: Optional: when the material was published, as a calendar date. Cloud sends
+    #: it so the executor can append its `YYYYMMDD` segment to the file name; a
+    #: material without a publish time leaves it None and the segment is omitted.
+    published_at: date | None = None
     max_attempts: int = 1
     attempt_count: int = 0
 
@@ -152,9 +157,26 @@ def parse_lease(payload: object) -> TransferLease:
         download_url=str(payload["download_url"]),
         download_url_expires_at=str(payload["download_url_expires_at"]),
         game_name=str(payload.get("game_name") or ""),
+        published_at=_parse_publish_date(payload.get("published_at")),
         max_attempts=int(payload.get("max_attempts") or 1),
         attempt_count=int(payload.get("attempt_count") or 0),
     )
+
+
+def _parse_publish_date(value: object) -> date | None:
+    """A lease `published_at` as a date, or None when it is absent or unreadable.
+
+    Naming is cosmetic, so an unparseable value degrades to "no publish time"
+    and the segment is omitted rather than refusing the whole lease over a date:
+    the cost of being wrong (a download stuck on a lease it cannot read) is
+    worse than a file name missing its date segment.
+    """
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return None
 
 
 def parse_terminal(payload: object) -> TransferTerminal:

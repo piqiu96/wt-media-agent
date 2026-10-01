@@ -113,6 +113,56 @@ class FileNameTest(SinkTestCase):
     def test_a_control_character_cannot_ride_along(self):
         self.assertEqual(self.sink.file_name("a\x00b\x1fc", 1, "mp4", TODAY), "20260930/a_b_c-1.mp4")
 
+    def test_a_publish_time_adds_its_segment_before_the_extension(self):
+        name = self.sink.file_name("三角洲行动", 30, "mp4", TODAY, date(2026, 9, 22))
+        self.assertEqual(name, "20260930/三角洲行动-30-20260922.mp4")
+
+    def test_an_absent_publish_time_omits_the_segment_entirely(self):
+        """The material has no publish time; naming it must not invent one."""
+        self.assertEqual(
+            self.sink.file_name("三角洲行动", 30, "mp4", TODAY),
+            "20260930/三角洲行动-30.mp4",
+        )
+
+    def test_a_title_adds_its_segment_after_the_id(self):
+        name = self.sink.file_name("三角洲行动", 30, "mp4", TODAY, None, "一把三千万 最肥的一局")
+        self.assertEqual(name, "20260930/三角洲行动-30-一把三千万 最肥的一局.mp4")
+
+    def test_publish_time_and_title_join_in_the_contract_order(self):
+        """`日期/游戏名-ID-发布时间-标题名`, each segment where the shape says."""
+        name = self.sink.file_name(
+            "三角洲行动", 30, "mp4", TODAY, date(2026, 9, 22), "一把三千万 最肥的一局"
+        )
+        self.assertEqual(name, "20260930/三角洲行动-30-20260922-一把三千万 最肥的一局.mp4")
+
+    def test_a_title_keeps_its_hash_and_its_full_width_marks(self):
+        """`#`, `@` and full-width punctuation are legal on disk and survive."""
+        name = self.sink.file_name("三角洲行动", 30, "mp4", TODAY, None, "一把三千万！ #左梓轩小叮当")
+        self.assertEqual(name, "20260930/三角洲行动-30-一把三千万！ #左梓轩小叮当.mp4")
+
+    def test_a_title_too_long_for_the_cap_is_truncated_not_dropped(self):
+        """255 bytes counts the whole name; the title is what gives way.
+
+        The title is the segment the truncation is for -- the game and id say
+        which material, the title only says more -- so it is cut from the tail,
+        on a character boundary, and the extension is never lost.
+        """
+        name = self.sink.file_name("三角洲行动", 30, "mp4", TODAY, None, "春" * 100)
+        self.assertLessEqual(len(name.encode("utf-8")), MAX_NAME_BYTES)
+        self.assertTrue(name.endswith(".mp4"))
+        self.assertTrue(name.startswith("20260930/三角洲行动-30-"))
+
+    def test_a_title_does_not_let_a_long_game_use_the_whole_budget(self):
+        """With a title the game is capped at half, or the title never appears.
+
+        A 900-byte game name would otherwise consume the whole cap and the title
+        -- the one segment the truncation is for -- would always vanish behind it.
+        """
+        name = self.sink.file_name("春" * 300, 7, "mp4", TODAY, None, "标题")
+        self.assertLessEqual(len(name.encode("utf-8")), MAX_NAME_BYTES)
+        self.assertTrue(name.endswith("标题.mp4"))
+        self.assertIn("-7-", name)
+
 
 class AllocateTest(SinkTestCase):
     def test_a_free_name_is_used_as_it_is(self):

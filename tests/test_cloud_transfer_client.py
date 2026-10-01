@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import unittest
+from datetime import date
 from typing import Mapping
 from unittest import mock
 from urllib import error as urlerror
@@ -349,6 +350,18 @@ class LeaseParsingTest(unittest.TestCase):
         """A material without a game sends no `game_name`; the executor falls back."""
         self.assertEqual(parse_lease(lease()).game_name, "")
         self.assertEqual(parse_lease(lease(game_name="三角洲行动")).game_name, "三角洲行动")
+
+    def test_the_published_at_is_optional_and_becomes_a_calendar_date(self) -> None:
+        """Naming is cosmetic, so the parse degrades instead of refusing.
+
+        An absent `published_at` is `None` (the file name omits the segment), an
+        unparseable one is also `None` (the same), and a parseable one loses its
+        clock time -- the name only carries the day.
+        """
+        self.assertIsNone(parse_lease(lease()).published_at)
+        parsed = parse_lease(lease(published_at="2026-09-22T08:00:00Z"))
+        self.assertEqual(parsed.published_at, date(2026, 9, 22))
+        self.assertIsNone(parse_lease(lease(published_at="not-a-date")).published_at)
 
 
 class TerminalParsingTest(unittest.TestCase):

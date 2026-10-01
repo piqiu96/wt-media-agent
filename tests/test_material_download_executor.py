@@ -75,7 +75,8 @@ SIGNED_URL = "https://cdn.test/materials/42/abc.mp4?X-Amz-Signature=SHORTLIVED"
 TODAY = date(2026, 9, 30)
 DATE_DIR = "20260930"
 GAME_NAME = "三角洲行动"
-FILE_NAME = f"{DATE_DIR}/{GAME_NAME}-42.mp4"
+TITLE = "春日"
+FILE_NAME = f"{DATE_DIR}/{GAME_NAME}-42-{TITLE}.mp4"
 
 CONTRACT = ROOT / "contracts" / "local-error-codes" / "v1" / "transfer.yaml"
 
@@ -359,7 +360,7 @@ class NamingTest(DownloadTest):
         outcome = self.run_download(ServingOpener(), lease=make_lease(game_name=""))
 
         self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
-        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/未分类-42.mp4")
+        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/未分类-42-{TITLE}.mp4")
 
     def test_a_second_download_does_not_overwrite_the_first(self) -> None:
         (self.directory / DATE_DIR).mkdir()
@@ -368,10 +369,12 @@ class NamingTest(DownloadTest):
         self.run_download(ServingOpener())
 
         self.assertEqual(
-            (self.directory / f"{DATE_DIR}/{GAME_NAME}-42 (2).mp4").read_bytes(), BODY
+            (self.directory / f"{DATE_DIR}/{GAME_NAME}-42-{TITLE} (2).mp4").read_bytes(), BODY
         )
         self.assertEqual(self.saved(), b"an earlier download")
-        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/{GAME_NAME}-42 (2).mp4")
+        self.assertEqual(
+            self.completion()["file_name"], f"{DATE_DIR}/{GAME_NAME}-42-{TITLE} (2).mp4"
+        )
 
     def test_a_resumed_attempt_keeps_the_name_the_first_attempt_chose(self) -> None:
         """Otherwise one download becomes two files, which the operator sees.
@@ -383,7 +386,7 @@ class NamingTest(DownloadTest):
         (self.directory / DATE_DIR).mkdir()
         (self.directory / FILE_NAME).write_bytes(b"another material")
         self.plant_part(BODY[:CHUNK])
-        resumed_name = f"{DATE_DIR}/{GAME_NAME}-42 (2).mp4"
+        resumed_name = f"{DATE_DIR}/{GAME_NAME}-42-{TITLE} (2).mp4"
         resume = TransferResume(resumed_name, CHUNK)
 
         self.run_download(ServingOpener(), resume=resume)
@@ -397,6 +400,33 @@ class NamingTest(DownloadTest):
         self.assertEqual(outcome["error_code"], ERROR_NAME_UNUSABLE)
         self.assertEqual(self.completion()["status"], "failed")
         self.assertEqual(self.cloud.progress, [])
+
+    def test_a_publish_time_rides_into_the_name_between_id_and_title(self) -> None:
+        """`日期/游戏名-ID-发布时间-标题名`, one download end to end."""
+        outcome = self.run_download(
+            ServingOpener(), lease=make_lease(published_at=date(2026, 9, 22))
+        )
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/{GAME_NAME}-42-20260922-{TITLE}.mp4")
+
+    def test_a_material_without_a_title_names_only_what_it_has(self) -> None:
+        """An empty title is an absent segment, not a trailing dash."""
+        outcome = self.run_download(ServingOpener(), lease=make_lease(title=""))
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/{GAME_NAME}-42.mp4")
+
+    def test_a_title_keeps_its_hash_and_full_width_marks_on_disk(self) -> None:
+        outcome = self.run_download(
+            ServingOpener(), lease=make_lease(title="一把三千万！ #左梓轩小叮当")
+        )
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(
+            self.completion()["file_name"],
+            f"{DATE_DIR}/{GAME_NAME}-42-一把三千万！ #左梓轩小叮当.mp4",
+        )
 
 
 class SaveDirectoryTest(DownloadTest):

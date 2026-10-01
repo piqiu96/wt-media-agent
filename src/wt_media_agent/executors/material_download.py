@@ -355,6 +355,8 @@ class MaterialDownloadExecutor:
                     lease.asset_id,
                     extension_from_url(lease.download_url),
                     self._today(),
+                    lease.published_at,
+                    lease.title,
                 )
             )
             name = sink.allocate(name)

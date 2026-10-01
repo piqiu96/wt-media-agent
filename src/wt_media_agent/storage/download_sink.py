@@ -111,13 +111,23 @@ class DownloadSink:
     # ---- naming ----
 
     @staticmethod
-    def file_name(game_name: str, material_id: int, extension: str, today: date) -> str:
+    def file_name(
+        game_name: str,
+        material_id: int,
+        extension: str,
+        today: date,
+        publish_date: date | None = None,
+        title: str | None = None,
+    ) -> str:
         """A name for the file `game_name` describes, or raise `NameUnusableError`.
 
-        The name is `<YYYYMMDD>/<sanitized game name>-<material id>.<extension>`.
-        The date subdirectory groups downloads by the day they were fetched, and
-        the game name with the id tells an operator which material the file is;
-        the id is in it because two materials may share a name.
+        The name is
+        `<YYYYMMDD>/<sanitized game name>-<material id>[-<YYYYMMDD>][-<title>].<extension>`
+        -- the date subdirectory groups downloads by the day they were fetched,
+        the game and id say which material it is (the id is in it because two
+        materials may share a name), and the publish time and title come from
+        the lease when the material has them, each segment omitted when it does
+        not.
 
         This sanitizes for both platforms at once (see `RESERVED_NAMES`). It is
         the reason the lease carries a verbatim title and not a name: the
@@ -125,25 +135,50 @@ class DownloadSink:
         side that has a filesystem can apply them.
         """
         subdir = today.strftime("%Y%m%d")
-        suffix = f"-{material_id}.{_normalize_extension(extension)}"
-        # The date prefix costs its own bytes -- eight for the day, one for the
-        # `/` -- and comes out of the name budget like any other part of it.
-        prefix_bytes = len(subdir.encode("utf-8")) + 1
-        budget = (
-            MAX_NAME_BYTES
-            - prefix_bytes
-            - len(suffix.encode("utf-8"))
-            - COLLISION_SUFFIX_BYTES
+        ext = f".{_normalize_extension(extension)}"
+        id_part = f"-{material_id}"
+        publish_part = (
+            f"-{publish_date.strftime('%Y%m%d')}" if publish_date is not None else ""
         )
-        # One check, after the trim, because the trim is what decides: an empty
-        # game name stays empty through `_truncate_bytes`, and a name too long to
-        # leave room for the suffix and the marker trims to nothing. A second
-        # check before the budget was written first and then removed -- it could
-        # not fail without the later one failing too, so nothing held it.
-        stem = _truncate_bytes(_sanitize(game_name), budget)
-        if not stem:
+        title_stem = _sanitize(title) if title else ""
+        # The date prefix costs its own bytes -- eight for the day, one for the
+        # `/` -- and comes out of the name budget like any other part of it. The
+        # fixed cost also includes the title's leading `-`, because a title that
+        # is present but truncates to nothing later drops both together.
+        prefix_bytes = len(subdir.encode("utf-8")) + 1
+        fixed_bytes = (
+            len(id_part.encode("utf-8"))
+            + len(publish_part.encode("utf-8"))
+            + (1 if title_stem else 0)
+            + 1
+            + len(ext.encode("utf-8"))
+        )
+        budget = MAX_NAME_BYTES - prefix_bytes - fixed_bytes - COLLISION_SUFFIX_BYTES
+        if not title_stem:
+            # Without a title the game may use the whole budget, as it always
+            # could. One check, after the trim, because the trim is what decides:
+            # an empty game name stays empty through `_truncate_bytes`, and a
+            # name too long to leave room for the suffix and the marker trims to
+            # nothing.
+            game_stem = _truncate_bytes(_sanitize(game_name), budget)
+            if not game_stem:
+                raise NameUnusableError("the game name leaves no usable file name")
+            return f"{subdir}/{game_stem}{id_part}{publish_part}{ext}"
+        # With a title the budget is shared: the game is capped at half so a very
+        # long game cannot starve the title (which is the segment the truncation
+        # is for), and the title takes what remains, cut from the tail so the
+        # extension is never lost.
+        game_stem = _truncate_bytes(_sanitize(game_name), budget // 2)
+        if not game_stem:
             raise NameUnusableError("the game name leaves no usable file name")
-        return f"{subdir}/{stem}{suffix}"
+        title_stem = _truncate_bytes(title_stem, budget - len(game_stem.encode("utf-8")))
+        if not title_stem:
+            # The leftover budget could not hold even one title character (a
+            # truncated byte boundary can drop a whole character), so the title
+            # and its separator drop together; minting a bare "-" would name a
+            # file nobody asked for.
+            return f"{subdir}/{game_stem}{id_part}{publish_part}{ext}"
+        return f"{subdir}/{game_stem}{id_part}{publish_part}-{title_stem}{ext}"
 
     def exists(self, name: str) -> bool:
         return (self._directory / name).exists()
