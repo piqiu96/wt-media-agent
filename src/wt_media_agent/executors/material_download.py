@@ -38,10 +38,12 @@ from __future__ import annotations
 import errno
 import hashlib
 import logging
+import threading
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
-from typing import Callable, Optional
+from typing import Callable, NoReturn, Optional
 
 from wt_media_agent.clients.cloud import (
     CloudAgentClient,
@@ -123,6 +125,26 @@ DEFAULT_PROGRESS_FRACTION = 200
 #: bounded by the lease's own `max_attempts`, and the thing being waited out is a
 #: connection that just died, not a service under load.
 DEFAULT_RETRY_PAUSE_SECONDS = 1.0
+
+#: How many connections one download may run at a time. The object store meters
+#: each TCP flow on its own -- measured at ~112-160 KB/s with aggregate
+#: throughput scaling linearly to the line's own ceiling at 64 flows -- so how
+#: fast a file arrives is set by how many flows are open, not by the link. Eight
+#: is about 8% of a 100 Mbps line and already several times what one stream gets.
+#: It is a constant of this module and not a contract field: the lease Cloud
+#: issues is the same object either way, only this side's use of it changes.
+DEFAULT_SHARD_COUNT = 8
+
+#: A file below this size is not divided. Each shard costs a connection, a range
+#: request, a part file and -- because the merge is a second copy -- its own bytes
+#: on the volume again, and a file this small is over before any of that pays for
+#: itself. A file of zero or a few bytes divides into one region like any other.
+MIN_SHARD_BYTES = 4 * 1024 * 1024
+
+#: How often the main thread looks up from its shards. A finished shard wakes the
+#: wait immediately; this is the ceiling on how long a *silent* one can hold the
+#: progress reports -- and with them the lease -- back.
+DEFAULT_SHARD_POLL_SECONDS = 0.5
 
 #: The two sentences a volume fault is written down with. Constants rather than
 #: literals at each site because they are the same fault whether it is found by
@@ -242,6 +264,9 @@ class MaterialDownloadExecutor:
         stall_seconds: float = DEFAULT_STALL_SECONDS,
         progress_min_bytes: int = DEFAULT_PROGRESS_MIN_BYTES,
         progress_min_seconds: float = DEFAULT_PROGRESS_MIN_SECONDS,
+        shards: int = DEFAULT_SHARD_COUNT,
+        min_shard_bytes: int = MIN_SHARD_BYTES,
+        shard_poll_seconds: float = DEFAULT_SHARD_POLL_SECONDS,
     ) -> None:
         self.client = client
         self.agent_id = agent_id
@@ -262,6 +287,9 @@ class MaterialDownloadExecutor:
         self._stall_seconds = stall_seconds
         self._progress_min_bytes = progress_min_bytes
         self._progress_min_seconds = progress_min_seconds
+        self._shards = shards
+        self._min_shard_bytes = min_shard_bytes
+        self._shard_poll_seconds = shard_poll_seconds
 
     def _node_credential(self) -> str:
         """The credential to report under, or a fault if this process has none.
@@ -363,7 +391,12 @@ class MaterialDownloadExecutor:
         except NameUnusableError:
             raise UnusableName("the material leaves no usable file name") from None
         try:
-            sink.require_room(lease.total_bytes)
+            # A divided download holds the shards and the file it merges them
+            # into at the same time, so it needs the room twice. Asking for one
+            # copy here would pass a volume that fills during the merge -- which
+            # is the failure this check exists to find before a byte is fetched
+            # rather than after an hour of it.
+            sink.require_room(lease.total_bytes * (2 if self._plan(lease, sink) else 1))
         except InsufficientSpaceError:
             raise DiskInsufficient(NO_ROOM_MESSAGE) from None
         return sink, name
@@ -425,26 +458,86 @@ class MaterialDownloadExecutor:
         """
         try:
             return self._transfer(lease, sink, name, resume)
-        except SourceUnavailableError as exc:
-            # The address was refused or has expired. Retrying the same address
-            # would ask the same dead question, so this is not retryable: Cloud
-            # issues a new one.
-            raise SourceUnavailable(str(exc)) from None
-        except SourceStalledError as exc:
-            raise Stalled(str(exc)) from None
-        except TransferUnavailableError as exc:
-            raise LeaseUnconfirmed(str(exc)) from None
-        except OSError as exc:
-            # The volume failed while the download was running -- the case the
-            # check before it cannot see, because the check is a moment and this
-            # is everything after it. An errno nothing here names is re-raised
-            # rather than filed under a reason that might not be true.
-            fault = _fault_for_oserror(exc)
+        except Exception as exc:
+            fault = _classify_transfer_error(exc)
             if fault is None:
+                # Nothing here names it, so it is re-raised as itself rather than
+                # filed under a reason that might not be true -- and `str(exc)` is
+                # exactly the string that must not be used as one.
                 raise
             raise fault from None
 
     def _transfer(
+        self,
+        lease: TransferLease,
+        sink: DownloadSink,
+        name: str,
+        resume: Optional[TransferResume],
+    ) -> tuple[int, str]:
+        """One attempt, on one connection or on several -- see `_plan`.
+
+        The rest of this module does not care which happened: both return the
+        bytes written and the digest of the whole object, and both leave either
+        a part file that is not the file or nothing at all.
+        """
+        if self._plan(lease, sink):
+            return self._transfer_sharded(lease, sink, name, resume)
+        return self._transfer_single(lease, sink, name, resume)
+
+    def _plan(self, lease: TransferLease, sink: DownloadSink) -> bool:
+        """Whether this attempt divides the download, or runs it on one connection.
+
+        The order of these three checks is the decision. A shard part wins over
+        the single part, because the only way to have both is a merge that a crash
+        cut short -- and the merge writes the part from its beginning, so the part
+        on disk is the first half of a file whose second half is still in the
+        shards. Finishing that single-stream would append the middle of the object
+        to the start of it. A single part with no shards is the other way round: a
+        download that was already running when this module learned to divide one,
+        and it is finished the way it began rather than thrown away for something
+        the operator did not do.
+        """
+        if self._shard_count(lease.total_bytes) == 1:
+            return False
+        if sink.shard_indices(lease.task_id):
+            return True
+        return not sink.resume_offset(lease.task_id)
+
+    def _shard_count(self, total_bytes: int) -> int:
+        """How many connections this download uses: the size's answer, capped.
+
+        A pure function of the declared size, so an attempt that follows another
+        derives the same number and finds the part files it can resume. Never
+        fewer than one, because a plan of zero regions is not a plan.
+        """
+        if total_bytes <= 0:
+            return 1
+        return max(1, min(self._shards, total_bytes // self._min_shard_bytes))
+
+    def _progress_for(
+        self, lease: TransferLease, name: str, resume: Optional[TransferResume]
+    ) -> _Progress:
+        """The reporter for one attempt, seeded with what the last one reported."""
+        return _Progress(
+            client=self.client,
+            # The method, not its answer: this reporter outlives one report, and
+            # the credential it reports under is whichever is current when the
+            # report is sent. Reading it here would still pass the check below --
+            # it is the *later* reports that would go out under a credential
+            # Cloud has already replaced.
+            credential=self._node_credential,
+            record=self._record,
+            task_id=lease.task_id,
+            name=name,
+            total_bytes=lease.total_bytes,
+            already_reported=resume.bytes_done if resume is not None else 0,
+            lease_seconds=lease.lease_seconds,
+            clock=self._clock,
+            min_bytes=self._progress_min_bytes,
+            min_seconds=self._progress_min_seconds,
+        )
+
+    def _transfer_single(
         self,
         lease: TransferLease,
         sink: DownloadSink,
@@ -469,24 +562,7 @@ class MaterialDownloadExecutor:
             for chunk in sink.part_chunks(lease.task_id):
                 digest.update(chunk)
 
-        progress = _Progress(
-            client=self.client,
-            # The method, not its answer: this reporter outlives one report, and
-            # the credential it reports under is whichever is current when the
-            # report is sent. Reading it here would still pass the check below --
-            # it is the *later* reports that would go out under a credential
-            # Cloud has already replaced.
-            credential=self._node_credential,
-            record=self._record,
-            task_id=lease.task_id,
-            name=name,
-            total_bytes=lease.total_bytes,
-            already_reported=resume.bytes_done if resume is not None else 0,
-            lease_seconds=lease.lease_seconds,
-            clock=self._clock,
-            min_bytes=self._progress_min_bytes,
-            min_seconds=self._progress_min_seconds,
-        )
+        progress = self._progress_for(lease, name, resume)
 
         written = offset
         if offset < lease.total_bytes:
@@ -544,6 +620,197 @@ class MaterialDownloadExecutor:
         if hexdigest != lease.expected_sha256.lower():
             raise Integrity("the bytes delivered do not match the digest the task declared")
         return written, hexdigest
+
+    def _transfer_sharded(
+        self,
+        lease: TransferLease,
+        sink: DownloadSink,
+        name: str,
+        resume: Optional[TransferResume],
+    ) -> tuple[int, str]:
+        """One attempt across several connections, merged before anyone sees it.
+
+        The object is not divided at the source in any way: the lease's one
+        address is opened once per region, each connection asking for the bytes
+        that region covers, and each region appends to a part file of its own.
+        The merge is what makes them one file, and it happens before the size and
+        digest checks rather than after -- those are over the whole object, and
+        sha256 cannot be composed from per-region digests, so the merge reads
+        every byte back and that one read is also the check's.
+
+        Progress is the main thread's, on the sum of every shard's file. That is
+        not a detail: N threads reporting their own figures would put N clocks
+        and N sequences into one task's progress, and the figure Cloud keeps is
+        defined to only ever go up.
+        """
+        count = self._shard_count(lease.total_bytes)
+        regions = _shard_regions(lease.total_bytes, count)
+        self._check_shard_plan(lease, sink, regions)
+
+        progress = self._progress_for(lease, name, resume)
+        running = _RunningTotal(
+            sum(sink.shard_offset(lease.task_id, shard) for shard in range(count))
+        )
+        stop = threading.Event()
+        faults: dict[int, BaseException] = {}
+
+        pool = ThreadPoolExecutor(max_workers=count, thread_name_prefix="shard")
+        try:
+            pending = {
+                pool.submit(
+                    self._shard_worker,
+                    lease,
+                    sink,
+                    shard,
+                    start,
+                    length,
+                    running,
+                    stop,
+                    faults,
+                )
+                for shard, (start, length) in enumerate(regions)
+            }
+            while pending:
+                _, pending = wait(list(pending), timeout=self._shard_poll_seconds)
+                if faults:
+                    # The other shards are told to stop before this attempt ends:
+                    # filling a file whose task Cloud has already finished
+                    # elsewhere is the one thing worse than wasting the bytes.
+                    stop.set()
+                    break
+                progress.note(running.value)
+        except BaseException:
+            stop.set()
+            raise
+        finally:
+            # Waiting here can cost up to one socket timeout, on the failure
+            # path only, and only for a shard already blocked in a read. The
+            # alternative -- leaving threads writing into a part directory the
+            # retry loop is about to discard -- is worse than the wait.
+            pool.shutdown(wait=True, cancel_futures=True)
+
+        if any(isinstance(exc, _RangeIgnored) for exc in faults.values()):
+            # Not a fault. This source answers a ranged request with the whole
+            # object, so every region but the first would be filled from byte
+            # zero. The single-stream path already has the answer to this server
+            # -- throw the part away and ask for everything -- and taking it in
+            # the same attempt is why this is not reported as a failure: the
+            # address is fine and the file is still one attempt away.
+            sink.discard(lease.task_id)
+            logger.info(
+                "the source ignored the range request for %s; restarting it as one stream",
+                lease.task_id,
+                extra={"task_id": lease.task_id},
+            )
+            return self._transfer_single(lease, sink, name, resume)
+        if faults:
+            _raise_worst_fault(faults)
+
+        # Each shard returns when its region ends or when the server stops
+        # sending, and the two are indistinguishable from the worker's side, so
+        # the sizes are what settle it. A region that is short is the link dying,
+        # which is a stall: the bytes it does hold are a head start.
+        for shard, (_, length) in enumerate(regions):
+            held = sink.shard_offset(lease.task_id, shard)
+            if held != length:
+                raise Stalled(
+                    f"a part of the download stopped at {held} of {length} bytes"
+                )
+
+        digest = hashlib.sha256()
+
+        def merged(chunk: bytes) -> None:
+            digest.update(chunk)
+            # The merge is minutes of disk work on a large file with no bytes
+            # arriving, and it is still holding a lease: this is the only thing
+            # on this path that renews it. The count does not move -- every one
+            # of these bytes was already reported as it arrived -- so this is a
+            # heartbeat and not a progress figure.
+            progress.note(lease.total_bytes)
+
+        written = sink.assemble_shards(lease.task_id, count, merged)
+        hexdigest = digest.hexdigest()
+        if hexdigest != lease.expected_sha256.lower():
+            raise Integrity("the bytes delivered do not match the digest the task declared")
+        return written, hexdigest
+
+    def _check_shard_plan(
+        self, lease: TransferLease, sink: DownloadSink, regions: list[tuple[int, int]]
+    ) -> None:
+        """Refuse part files that belong to a different division of the object.
+
+        The shard count is a constant of this module, so changing it changes what
+        a half-finished download's part files mean -- and both directions are
+        visible without knowing what the old count was. Shrinking leaves shard
+        numbers this plan has no region for; growing makes every region shorter
+        than the shard file that already covers it. Without either check the
+        bytes a shard holds are still appended in order and the file still has
+        the declared length, so nothing downstream would say the content is
+        wrong until the digest did.
+        """
+        indices = sink.shard_indices(lease.task_id)
+        if indices and max(indices) >= len(regions):
+            raise Integrity("part of this download on disk belongs to a different plan")
+        for shard, (_, length) in enumerate(regions):
+            if sink.shard_offset(lease.task_id, shard) > length:
+                raise Integrity("part of this download on disk belongs to a different plan")
+
+    def _shard_worker(
+        self,
+        lease: TransferLease,
+        sink: DownloadSink,
+        shard: int,
+        start: int,
+        length: int,
+        running: "_RunningTotal",
+        stop: threading.Event,
+        faults: dict[int, BaseException],
+    ) -> None:
+        """Fetch one region of the object into that shard's own part file.
+
+        Runs on a worker thread, so it does as little as it can: it appends to
+        its own file and adds to the shared count. It never reports progress,
+        never reads the save directory and never touches another shard's file --
+        which is what keeps the concurrency from reaching anywhere else in this
+        module.
+        """
+        try:
+            if stop.is_set():
+                return
+            done = sink.shard_offset(lease.task_id, shard)
+            if done >= length:
+                # Already complete, so there is no reason to open the address:
+                # asking for the byte past the end earns a 416, which is a fact
+                # about the request and not about these bytes.
+                return
+            offset = start + done
+            with open_source(
+                lease.download_url, offset, opener=self._opener, timeout=self._stall_seconds
+            ) as stream:
+                if offset > 0 and not stream.range_honoured:
+                    # Shard zero asking for the whole object from byte zero and
+                    # getting it is not this: `offset > 0` is what says a range
+                    # was asked for and refused. The first region's file is not
+                    # touched either way, so a caller that falls back on this
+                    # keeps only bytes that are a real prefix of the object.
+                    raise _RangeIgnored()
+                if stream.total_bytes >= 0 and stream.total_bytes != lease.total_bytes:
+                    raise Integrity(
+                        "the source is not the object the task declared: it is "
+                        f"{stream.total_bytes} bytes where the task says {lease.total_bytes}"
+                    )
+                remaining = length - done
+                while remaining > 0:
+                    if stop.is_set():
+                        return
+                    chunk = stream.read(min(self._chunk_bytes, remaining))
+                    if not chunk:
+                        break
+                    sink.append_shard(lease.task_id, shard, chunk)
+                    remaining -= len(chunk)
+                    running.add(len(chunk))
+        except Exception as exc:  # noqa: BLE001 - classified on the main thread
+            faults[shard] = _classify_transfer_error(exc) or exc
 
     # ---- getting the result out ----
 
@@ -617,8 +884,12 @@ class MaterialDownloadExecutor:
         one of eight fixed sentences and never the world's: `error_message`
         travels to a Cloud table, and neither a path nor an address may go with
         it.
+
+        How far it got is the task's, not one file's: a divided download has no
+        single part file to measure, and `written_bytes` is what answers the
+        question in either layout.
         """
-        completed = sink.resume_offset(lease.task_id) if sink is not None else None
+        completed = sink.written_bytes(lease.task_id) if sink is not None else None
         logger.warning(
             "material download failed: %s %s (%s)",
             lease.task_id,
@@ -646,6 +917,110 @@ class MaterialDownloadExecutor:
                 lease, OUTCOME_UNREPORTED, completed_bytes=completed, error_code=fault.code
             )
         return _outcome(lease, OUTCOME_FAILED, completed_bytes=completed, error_code=fault.code)
+
+
+class _RangeIgnored(Exception):
+    """The source answered a request for part of the object with all of it.
+
+    Not a `DownloadFault`: nothing failed, and the correct answer is not to
+    report a code at all but to ask for the whole object in one request, which
+    this module already knows how to do.
+    """
+
+
+class _RunningTotal:
+    """What every shard has written, added to from their threads.
+
+    A lock rather than a per-shard count summed at the end, because the number
+    is read while the shards are writing: a reading that missed a shard would be
+    a figure below the last one reported, and the sequence Cloud keeps is
+    defined to only ever go up.
+    """
+
+    def __init__(self, start: int) -> None:
+        self._value = start
+        self._lock = threading.Lock()
+
+    def add(self, count: int) -> None:
+        with self._lock:
+            self._value += count
+
+    @property
+    def value(self) -> int:
+        with self._lock:
+            return self._value
+
+
+def _shard_regions(total_bytes: int, count: int) -> list[tuple[int, int]]:
+    """`(start, length)` per shard: contiguous, disjoint, and all of `total_bytes`.
+
+    Derived from the size alone, so an attempt that follows another with the same
+    shard count divides the object the same way and can resume from the part
+    files the first one left. The remainder is spread one byte at a time over the
+    leading shards rather than left to the last, which keeps the regions within a
+    byte of each other for every size -- a last shard that took the whole
+    remainder would be the one slow region nobody is waiting for.
+    """
+    base, remainder = divmod(total_bytes, count)
+    regions = []
+    start = 0
+    for index in range(count):
+        length = base + (1 if index < remainder else 0)
+        regions.append((start, length))
+        start += length
+    return regions
+
+
+def _classify_transfer_error(exc: BaseException) -> Optional[DownloadFault]:
+    """The fault an exception from the transfer names, or `None` for no opinion.
+
+    One function because a download and its shards must not have two taxonomies:
+    a shard that hits a dead address has to be reported as the same thing a
+    single-stream attempt would report. `SessionInvalidError` is not in the list,
+    deliberately -- a refused node credential is not something either of them can
+    outlast, and it is the runner's to act on.
+    """
+    if isinstance(exc, DownloadFault):
+        return exc
+    if isinstance(exc, SourceUnavailableError):
+        # The address was refused or has expired. Retrying the same address
+        # would ask the same dead question, so this is not retryable: Cloud
+        # issues a new one.
+        return SourceUnavailable(str(exc))
+    if isinstance(exc, SourceStalledError):
+        return Stalled(str(exc))
+    if isinstance(exc, TransferUnavailableError):
+        return LeaseUnconfirmed(str(exc))
+    if isinstance(exc, OSError):
+        # The volume failed while the download was running -- the case the check
+        # before it cannot see, because the check is a moment and this is
+        # everything after it.
+        return _fault_for_oserror(exc)
+    return None
+
+
+def _raise_worst_fault(faults: dict[int, BaseException]) -> NoReturn:
+    """Report the shard failure that says the most, and never return.
+
+    An exception nothing classifies is raised as itself: filing it under one of
+    the eight download reasons would put a reason in front of the operator that
+    is not the reason, and it is the one outcome here that means this Agent has
+    a bug rather than that a download went wrong.
+
+    Otherwise a non-retryable fault wins over a retryable one. An expired address
+    is not fixed by trying again, and reporting the stall some other shard
+    happened to hit would spend the attempt budget on a question already
+    answered. Shard order breaks the tie, so the same set of failures always
+    reports the same thing.
+    """
+    ordered = [faults[shard] for shard in sorted(faults)]
+    for exc in ordered:
+        if not isinstance(exc, DownloadFault):
+            raise exc
+    for fault in ordered:
+        if not fault.retryable:
+            raise fault
+    raise ordered[0]
 
 
 class _Progress:

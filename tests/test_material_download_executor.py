@@ -22,6 +22,7 @@ import re
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -79,6 +80,38 @@ TITLE = "春日"
 FILE_NAME = f"{DATE_DIR}/{GAME_NAME}-42-{TITLE}.mp4"
 
 CONTRACT = ROOT / "contracts" / "local-error-codes" / "v1" / "transfer.yaml"
+
+#: How many connections the divided-download arms ask for, and the size below
+#: which a body stays whole. The two are constructor arguments so an arm can make
+#: a four-kilobyte body divide: the production threshold is four mebibytes, and a
+#: suite that needed thirty-two mebibytes per arm to look at this path would be
+#: measuring the volume rather than the executor.
+SHARDS = 4
+SHARD_MIN_BYTES = 1024
+#: Two chunks per shard at the default test chunk size, and a size that divides by
+#: `SHARDS` evenly -- the arms that care about an uneven division cut the bytes
+#: off this one so the two cases are the same fixture.
+SHARD_BODY = bytes(range(256)) * 64
+SHARD_SIZE = len(SHARD_BODY) // SHARDS
+
+
+def sharded(**overrides: object) -> dict[str, object]:
+    """The overrides that let a small body divide, for `run_download`/`executor`."""
+    settings: dict[str, object] = {"shards": SHARDS, "min_shard_bytes": SHARD_MIN_BYTES}
+    settings.update(overrides)
+    return settings
+
+
+def shards_of(body: bytes, count: int) -> list[bytes]:
+    """`body` cut into `count` contiguous pieces, remainder spread over the front."""
+    size, extra = divmod(len(body), count)
+    pieces = []
+    at = 0
+    for index in range(count):
+        length = size + (1 if index < extra else 0)
+        pieces.append(body[at : at + length])
+        at += length
+    return pieces
 
 
 def sha256(body: bytes) -> str:
@@ -214,6 +247,11 @@ class ServingOpener:
         if asked:
             offset = int(str(asked).removeprefix("bytes=").rstrip("-"))
         self.calls.append((url, offset, timeout))
+        # `stalls` and `bodies` below are scripts of "the n-th call", which is an
+        # ordering this fake gets from a *single* caller. `DownloadTest.executor`
+        # therefore asks for one shard: a divided download would hand the script
+        # to whichever thread arrived first. `ShardOpener` is the one for those
+        # arms, and it scripts by offset, which does not depend on arrival.
         if self.raises is not None:
             raise self.raises
         stall_after = self.stalls.pop(0) if self.stalls else None
@@ -237,6 +275,68 @@ class ServingOpener:
     @property
     def offsets(self) -> list[int]:
         """The byte each request asked to start at, in order."""
+        return [offset for _, offset, _ in self.calls]
+
+
+class ShardOpener:
+    """A CDN for the divided-download arms, scripting its answers by offset.
+
+    `ServingOpener`'s `stalls` and `bodies` are scripts of "the n-th call", which
+    only means something when one caller is making the calls in order. Here the
+    shards run at the same time, so the n-th call is whichever thread arrived
+    first -- an arm written that way is a coin toss that passes most of the time.
+    Every script here is a mapping keyed by the offset being asked for, which is
+    a property of the request and not of the race.
+
+    Each script entry is consumed on use, so "the first attempt at this region
+    stops short and the next one does not" is the same spelling as
+    `ServingOpener`'s one-shot lists.
+    """
+
+    def __init__(
+        self,
+        body: bytes = SHARD_BODY,
+        *,
+        honour_range: bool = True,
+        fails: "dict[int, Exception] | None" = None,
+        truncates: "dict[int, int] | None" = None,
+        content_range_total: int | None = None,
+    ) -> None:
+        self.body = body
+        self.honour_range = honour_range
+        self.content_range_total = content_range_total
+        #: Offset -> the exception its request raises.
+        self.fails = dict(fails or {})
+        #: Offset -> how many bytes that request serves before the body ends.
+        self.truncates = dict(truncates or {})
+        self.calls: list[tuple[str, int, float]] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, url: str, headers: dict, timeout: float) -> ServingBody:
+        asked = headers.get("Range") if hasattr(headers, "get") else None
+        offset = int(str(asked).removeprefix("bytes=").rstrip("-")) if asked else 0
+        with self._lock:
+            self.calls.append((url, offset, timeout))
+            failure = self.fails.pop(offset, None)
+            truncate = self.truncates.pop(offset, None)
+        if failure is not None:
+            raise failure
+        served = self.body[offset:] if self.honour_range else self.body
+        if truncate is not None:
+            served = served[:truncate]
+        headers_out: dict[str, str] = {}
+        if offset and self.honour_range:
+            total = (
+                len(self.body) if self.content_range_total is None else self.content_range_total
+            )
+            headers_out["Content-Range"] = f"bytes {offset}-{offset + len(served) - 1}/{total}"
+            return ServingBody(served, status=206, headers=headers_out)
+        headers_out["Content-Length"] = str(len(served))
+        return ServingBody(served, status=200, headers=headers_out)
+
+    @property
+    def offsets(self) -> list[int]:
+        """The byte each request asked to start at, in the order they arrived."""
         return [offset for _, offset, _ in self.calls]
 
 
@@ -307,6 +407,11 @@ class DownloadTest(unittest.TestCase):
             "clock": StepClock(),
             "today": lambda: TODAY,
             "sleeper": self.sleeps.append,
+            # Explicit rather than relying on the body being too small to divide:
+            # these arms are about the single-stream path, and an arm that only
+            # happens to be single-stream would start measuring the other one the
+            # day the threshold moves.
+            "shards": 1,
         }
         settings.update(overrides)
         return MaterialDownloadExecutor(
@@ -336,6 +441,21 @@ class DownloadTest(unittest.TestCase):
 
     def plant_part(self, data: bytes, task_id: str = TASK_ID) -> None:
         DownloadSink(self.directory).append(task_id, data)
+
+    def plant_shard(self, index: int, data: bytes, task_id: str = TASK_ID) -> None:
+        DownloadSink(self.directory).append_shard(task_id, index, data)
+
+    def plant_all_shards(self, body: bytes, count: int = SHARDS, task_id: str = TASK_ID) -> None:
+        """Every shard of `body`, so a download has nothing left to fetch.
+
+        Divided here rather than by asking the module, so the fixture is not the
+        implementation talking to itself. A division that disagreed with the
+        executor's would leave the arm asserting nothing: the arms that use this
+        also assert the merged file, so the two divisions are pinned together by
+        the bytes that come out.
+        """
+        for index, piece in enumerate(shards_of(body, count)):
+            self.plant_shard(index, piece, task_id)
 
     def part_bytes(self, task_id: str = TASK_ID) -> bytes:
         return DownloadSink(self.directory).part_path(task_id).read_bytes()
@@ -1059,6 +1179,305 @@ class RangeIgnoredTest(DownloadTest):
 
         self.assertEqual(opener.calls[0][1], CHUNK, "the request offered to resume")
         self.assertEqual(len(opener.calls), 1, "and was not re-issued at the server")
+
+
+class DividedDownloadTest(DownloadTest):
+    """The download that uses several connections to the one address Cloud issued.
+
+    Nothing about the lease changes: it is one object, one address, one size, one
+    digest. What these arms are about is that dividing the transfers does not
+    change what ends up on disk or what Cloud is told -- and that the cases which
+    would let it change are refused rather than papered over.
+    """
+
+    def test_every_region_of_the_object_is_asked_for_once(self) -> None:
+        opener = ShardOpener()
+        outcome = self.run_download(opener, lease=make_lease(SHARD_BODY), **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), SHARD_BODY)
+        self.assertEqual(sha256(self.saved()), sha256(SHARD_BODY))
+        self.assertEqual(sorted(opener.offsets), [0, SHARD_SIZE, 2 * SHARD_SIZE, 3 * SHARD_SIZE])
+        self.assertEqual(
+            {url for url, _, _ in opener.calls},
+            {SIGNED_URL},
+            "one lease's one address, opened per region",
+        )
+
+    def test_a_size_that_does_not_divide_leaves_no_gap_and_no_overlap(self) -> None:
+        """The regions have to tile the object exactly, however the size falls.
+
+        An overlap would fetch bytes twice and still produce the declared length
+        if the merge trusted the shard files' sizes; a gap would produce a file
+        that is one region short. The bytes are what decide it. The offsets are
+        asserted too because *where* the remainder goes is a fact about this
+        module and not a free choice: it is what a later attempt has to derive
+        again to find the same shard files.
+        """
+        body = SHARD_BODY[:-3]
+        opener = ShardOpener(body)
+        outcome = self.run_download(opener, lease=make_lease(body), **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), body)
+        self.assertEqual(sorted(opener.offsets), [0, 4096, 8191, 12286])
+
+    def test_a_file_below_the_threshold_is_not_divided_however_many_are_asked_for(
+        self,
+    ) -> None:
+        """Dividing costs a connection, a part file and a second copy of the bytes.
+
+        Below the threshold that is more than the parallelism saves, and it is the
+        *size* that says so: the same executor asked for eight connections
+        downloads this body on one, which is the difference between the ceiling
+        and the answer.
+        """
+        opener = ShardOpener()
+        outcome = self.run_download(opener, lease=make_lease(SHARD_BODY), shards=8)
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), SHARD_BODY)
+        self.assertEqual(opener.offsets, [0], "one connection for a file this small")
+
+    def test_the_regions_run_at_the_same_time(self) -> None:
+        """A serial implementation cannot pass this, and nothing else can tell.
+
+        Opening the regions one after another asks for the same offsets and
+        writes the same file, so the difference is only visible while it is
+        happening. The barrier opens when every shard has arrived; its timeout
+        turns a serial implementation into a failure rather than a hang.
+        """
+        opener = ShardOpener()
+        barrier = threading.Barrier(SHARDS)
+
+        def gated(url: str, headers: dict, timeout: float) -> ServingBody:
+            barrier.wait(timeout=5.0)
+            return opener(url, headers, timeout)
+
+        outcome = self.run_download(gated, lease=make_lease(SHARD_BODY), **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), SHARD_BODY)
+
+    def test_a_shard_that_stops_early_resumes_from_its_own_bytes_alone(self) -> None:
+        """The shard file is the resume record, exactly as the single part is."""
+        opener = ShardOpener(truncates={SHARD_SIZE: SHARD_SIZE // 2})
+        lease = make_lease(SHARD_BODY, max_attempts=2)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), SHARD_BODY)
+        self.assertIn(
+            SHARD_SIZE + SHARD_SIZE // 2,
+            opener.offsets,
+            "the region that stopped is asked for again from where it stopped",
+        )
+        for start in (0, 2 * SHARD_SIZE, 3 * SHARD_SIZE):
+            self.assertEqual(opener.offsets.count(start), 1, f"region {start} was already whole")
+
+    def test_a_stall_that_survives_the_budget_reports_what_the_shards_hold(self) -> None:
+        """A divided download has no single part file for the count to come from."""
+        opener = ShardOpener(truncates={SHARD_SIZE: SHARD_SIZE // 2})
+        lease = make_lease(SHARD_BODY, max_attempts=1)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_FAILED)
+        self.assertEqual(outcome["error_code"], ERROR_STALLED)
+        self.assertEqual(
+            outcome["completed_bytes"],
+            3 * SHARD_SIZE + SHARD_SIZE // 2,
+            "three regions whole and one half, counted across the shard files",
+        )
+
+    def test_a_digest_that_does_not_match_never_becomes_the_file(self) -> None:
+        body = SHARD_BODY[:-1] + bytes([SHARD_BODY[-1] ^ 0xFF])
+        opener = ShardOpener(body)
+        lease = make_lease(SHARD_BODY, max_attempts=1)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_FAILED)
+        self.assertEqual(outcome["error_code"], ERROR_INTEGRITY_FAILED)
+        self.assertFalse((self.directory / FILE_NAME).exists())
+
+    def test_a_region_whose_total_disagrees_is_refused(self) -> None:
+        opener = ShardOpener(content_range_total=len(SHARD_BODY) + 1)
+        lease = make_lease(SHARD_BODY, max_attempts=1)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["error_code"], ERROR_INTEGRITY_FAILED)
+
+    def test_an_address_a_region_is_refused_is_not_retried(self) -> None:
+        """One dead address is dead for every region -- Cloud issues a new lease."""
+        refusal = urlerror.HTTPError(SIGNED_URL, 403, "Forbidden", {}, None)
+        opener = ShardOpener(fails={SHARD_SIZE: refusal})
+        lease = make_lease(SHARD_BODY, max_attempts=3)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_FAILED)
+        self.assertEqual(outcome["error_code"], ERROR_SOURCE_UNAVAILABLE)
+        self.assertEqual(opener.offsets.count(0), 1, "no second attempt was made")
+
+    def test_a_dead_address_wins_over_a_stall_however_the_shards_are_numbered(self) -> None:
+        """The report has to be the one that says what to do, not the first to arrive.
+
+        A retryable fault costs an attempt and asks the same dead address again;
+        the non-retryable one is the answer. Both regions are made to fail, with
+        the stall on the lower shard, so a rule of "report whichever failed
+        first" answers the wrong question here.
+        """
+        opener = ShardOpener(
+            fails={
+                SHARD_SIZE: urlerror.URLError("connection reset"),
+                2 * SHARD_SIZE: urlerror.HTTPError(SIGNED_URL, 403, "Forbidden", {}, None),
+            }
+        )
+        lease = make_lease(SHARD_BODY, max_attempts=3)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_FAILED)
+        self.assertEqual(outcome["error_code"], ERROR_SOURCE_UNAVAILABLE)
+
+    def test_a_lease_lost_while_the_shards_run_is_not_a_download_failure(self) -> None:
+        """The reports are the main thread's, so a lost lease has to escape the pool.
+
+        A raised `409` inside the pool block would otherwise be a failure of the
+        download -- a reason code for something Cloud has already decided.
+        """
+        self.cloud.raise_on["progress"] = TransferLeaseLostError("gone")
+        opener = ShardOpener()
+
+        outcome = self.run_download(
+            opener, lease=make_lease(SHARD_BODY), **sharded(progress_min_bytes=1)
+        )
+
+        self.assertEqual(outcome["status"], OUTCOME_LEASE_LOST)
+        self.assertEqual(self.cloud.completions, [])
+        self.assertFalse((self.directory / FILE_NAME).exists())
+
+    def test_a_source_that_ignores_the_range_falls_back_without_spending_an_attempt(self) -> None:
+        """The one server answer that is not a failure, and the budget it must not eat.
+
+        `max_attempts=1` is the assertion: a fallback that reported a fault first
+        would have nothing left to retry with, and this download would fail on a
+        server the single-stream path has always handled.
+        """
+        opener = ShardOpener(honour_range=False)
+        lease = make_lease(SHARD_BODY, max_attempts=1)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), SHARD_BODY)
+        self.assertEqual(opener.offsets[-1], 0, "the retry asked for the whole object")
+
+    def test_the_shard_files_are_gone_once_the_file_is_there(self) -> None:
+        self.run_download(ShardOpener(), lease=make_lease(SHARD_BODY), **sharded())
+
+        self.assertFalse(DownloadSink(self.directory).part_directory().exists())
+
+    def test_the_progress_figures_are_the_whole_download_and_never_go_backwards(self) -> None:
+        opener = ShardOpener()
+        lease = make_lease(SHARD_BODY)
+
+        self.run_download(opener, lease=lease, **sharded(progress_min_bytes=1))
+
+        counts = [completed for _, _, completed, _ in self.cloud.progress]
+        self.assertTrue(counts, "a download of this size reports something")
+        self.assertEqual(counts, sorted(counts))
+        self.assertEqual(counts[-1], len(SHARD_BODY))
+
+    def test_a_download_that_does_not_divide_asks_for_room_for_one_copy(self) -> None:
+        self.assertEqual(self._room_asked(shards=1), len(SHARD_BODY))
+
+    def test_a_download_that_divides_asks_for_room_for_the_merge_as_well(self) -> None:
+        """The shards and the file they are merged into are on the volume together.
+
+        A volume with room for exactly one copy of the file passes the check the
+        single-stream path makes and then fills during the merge -- which is the
+        failure the check exists to find early.
+        """
+        self.assertEqual(self._room_asked(**sharded()), 2 * len(SHARD_BODY))
+
+    def _room_asked(self, **overrides: object) -> int:
+        asked: list[int] = []
+        patcher = mock.patch.object(DownloadSink, "require_room", lambda self, total: asked.append(total))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.run_download(ShardOpener(), lease=make_lease(SHARD_BODY), **overrides)
+        self.assertEqual(len(asked), 1)
+        return asked[0]
+
+    def test_a_part_that_predates_dividing_is_finished_on_one_connection(self) -> None:
+        """A download already running when this module learned to divide.
+
+        It is not thrown away and it is not resumed onto: the part file's bytes
+        are a head start only to the layout that wrote them.
+        """
+        self.plant_part(SHARD_BODY[:2048])
+        opener = ShardOpener()
+        resume = TransferResume(FILE_NAME, 2048)
+
+        outcome = self.run_download(
+            opener, lease=make_lease(SHARD_BODY), resume=resume, **sharded()
+        )
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), SHARD_BODY)
+        self.assertEqual(opener.offsets, [2048], "one connection, resumed where it stopped")
+
+    def test_a_merge_a_crash_left_half_written_is_redone_from_the_shards(self) -> None:
+        """Both layouts on disk at once is a dead merge, and the shards are the truth.
+
+        The merge writes its file from the beginning, so a half-merged part is
+        not a head start -- it is the first half of an object whose second half
+        is still in the shards, and appending to it would put the middle of the
+        object where its end belongs.
+        """
+        self.plant_all_shards(SHARD_BODY)
+        self.plant_part(SHARD_BODY[:1000])
+        opener = ShardOpener()
+
+        outcome = self.run_download(opener, lease=make_lease(SHARD_BODY), **sharded())
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.saved(), SHARD_BODY)
+        self.assertEqual(opener.calls, [], "the shards already held every byte")
+
+    def test_shard_files_from_a_different_plan_are_refused_before_the_address_is_opened(
+        self,
+    ) -> None:
+        """Nothing in a part file says which division wrote it, so the plan checks itself.
+
+        A shard number the current plan has no region for is a leftover, and its
+        bytes would still be appended in order -- producing a file of exactly the
+        declared length holding a document assembled from two different
+        divisions of the object.
+        """
+        self.plant_shard(SHARDS, b"x" * 10)
+        opener = ShardOpener()
+        lease = make_lease(SHARD_BODY, max_attempts=1)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["error_code"], ERROR_INTEGRITY_FAILED)
+        self.assertEqual(opener.calls, [], "refused before a byte was fetched")
+
+    def test_a_shard_file_longer_than_its_region_is_refused(self) -> None:
+        """The other direction of the same drift: a region that has got shorter."""
+        self.plant_shard(0, b"x" * (SHARD_SIZE + 1))
+        opener = ShardOpener()
+        lease = make_lease(SHARD_BODY, max_attempts=1)
+
+        outcome = self.run_download(opener, lease=lease, **sharded())
+
+        self.assertEqual(outcome["error_code"], ERROR_INTEGRITY_FAILED)
+        self.assertEqual(opener.calls, [])
 
 
 class CloudTroubleTest(DownloadTest):
