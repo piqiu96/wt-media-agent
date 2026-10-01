@@ -366,5 +366,154 @@ class SpaceTest(SinkTestCase):
         self.assertEqual(list(self.sink.part_chunks("task-1", chunk_bytes=2)), [b"ab", b"cd", b"ef"])
 
 
+class ShardedPartTest(SinkTestCase):
+    """The part files a parallel download writes, and the merge that ends it.
+
+    A sharded download cannot use one append-only file per task: N threads
+    appending to one file interleave their bytes, giving a file of the right
+    length holding the wrong object. So each shard owns a file and the merge puts
+    them back in order. What each file is worth is unchanged -- its size is how
+    much of that shard arrived -- which is what keeps resume working with no new
+    place to record progress.
+    """
+
+    def test_a_shard_part_is_a_file_of_its_own_beside_the_single_stream_part(self):
+        single = self.sink.part_path("task-1")
+        shards = [self.sink.part_path("task-1", index) for index in range(3)]
+
+        self.assertEqual(len(set(shards)), 3)
+        self.assertNotIn(single, shards)
+        self.assertTrue(all(path.parent == self.sink.part_directory() for path in shards))
+
+    def test_a_negative_shard_index_is_refused(self):
+        """Shard numbers are positions in a plan; there is no shard before the first."""
+        with self.assertRaises(ValueError):
+            self.sink.part_path("task-1", -1)
+
+    def test_each_shard_measures_only_its_own_bytes(self):
+        """The whole resume story is this: a shard's size is that shard's progress."""
+        self.sink.append_shard("task-1", 0, b"abc")
+        self.sink.append_shard("task-1", 1, b"de")
+
+        self.assertEqual(self.sink.shard_offset("task-1", 0), 3)
+        self.assertEqual(self.sink.shard_offset("task-1", 1), 2)
+
+    def test_a_shard_that_never_arrived_measures_zero(self):
+        """A shard with no file is the same "nothing yet" as a missing part file."""
+        self.assertEqual(self.sink.shard_offset("task-1", 0), 0)
+
+    def test_assembling_shards_writes_them_in_number_order(self):
+        """Order is the whole content of the merge -- shard 1 is not shard 0."""
+        for index, chunk in enumerate([b"ab", b"cd", b"ef"]):
+            self.sink.append_shard("task-1", index, chunk)
+
+        seen = []
+        written = self.sink.assemble_shards("task-1", 3, seen.append)
+
+        self.assertEqual(self.sink.part_path("task-1").read_bytes(), b"abcdef")
+        self.assertEqual(written, 6)
+        self.assertEqual(b"".join(seen), b"abcdef")
+
+    def test_assembling_truncates_a_merge_an_interrupted_attempt_left_behind(self):
+        """A half-merged part from a crash is overwritten, not appended to.
+
+        The merge can only be interrupted by the process dying, so the next
+        attempt finds a part file longer than it is about to write. Opening it
+        for append would leave the tail of the previous object in the result.
+        """
+        self.sink.append("task-1", b"stale-stale-stale")
+        self.sink.append_shard("task-1", 0, b"ab")
+        self.sink.append_shard("task-1", 1, b"cd")
+
+        self.sink.assemble_shards("task-1", 2, lambda chunk: None)
+
+        self.assertEqual(self.sink.part_path("task-1").read_bytes(), b"abcd")
+
+    def test_shard_indices_names_the_shards_that_are_there(self):
+        """Which shard files exist is what tells a stale plan from the current one."""
+        self.sink.append_shard("task-1", 2, b"x")
+        self.sink.append_shard("task-1", 0, b"x")
+
+        self.assertEqual(self.sink.shard_indices("task-1"), [0, 2])
+
+    def test_shard_indices_does_not_count_the_single_stream_part(self):
+        """The one file that is not a shard must not be read as shard zero."""
+        self.sink.append("task-1", b"xxx")
+
+        self.assertEqual(self.sink.shard_indices("task-1"), [])
+
+    def test_shard_indices_of_a_task_with_nothing_on_disk_is_empty(self):
+        self.assertEqual(self.sink.shard_indices("task-1"), [])
+
+    def test_written_bytes_is_what_the_shards_hold_together(self):
+        """What a failure report means by "how far it got" with N shards in flight."""
+        self.sink.append_shard("task-1", 0, b"de")
+        self.sink.append_shard("task-1", 1, b"fghi")
+
+        self.assertEqual(self.sink.written_bytes("task-1"), 6)
+
+    def test_written_bytes_does_not_double_count_a_merge_that_just_finished(self):
+        """The merged part and the shards are two views of one number, not two halves.
+
+        Between the merge and the commit both layouts are on disk holding the
+        whole object. Adding them would report twice the file -- and it is not a
+        theoretical window: a digest that fails right after a merge is exactly a
+        failure reported from inside it.
+        """
+        for index, chunk in enumerate([b"ab", b"cd"]):
+            self.sink.append_shard("task-1", index, chunk)
+        self.sink.assemble_shards("task-1", 2, lambda chunk: None)
+
+        self.assertEqual(self.sink.part_path("task-1").read_bytes(), b"abcd")
+        self.assertEqual(self.sink.written_bytes("task-1"), 4)
+
+    def test_written_bytes_follows_the_shards_while_a_merge_is_still_running(self):
+        """A half-written merge is behind the shards, and the shards are the truth."""
+        for index, chunk in enumerate([b"ab", b"cd"]):
+            self.sink.append_shard("task-1", index, chunk)
+        self.sink.append("task-1", b"a")
+
+        self.assertEqual(self.sink.written_bytes("task-1"), 4)
+
+    def test_written_bytes_leaves_a_task_whose_id_starts_the_same_alone(self):
+        """`task-1` and `task-10` share a prefix; only one of them owns these files.
+
+        A prefix match without the `.part` boundary would count, and discard, a
+        neighbouring task's bytes -- a wrong number that reports as progress.
+        """
+        self.sink.append_shard("task-10", 0, b"x" * 5)
+
+        self.assertEqual(self.sink.written_bytes("task-1"), 0)
+        self.assertEqual(self.sink.written_bytes("task-10"), 5)
+
+    def test_discarding_removes_every_shard_as_well_as_the_single_stream_part(self):
+        self.sink.append("task-1", b"abc")
+        self.sink.append_shard("task-1", 0, b"d")
+        self.sink.append_shard("task-1", 1, b"e")
+
+        self.sink.discard("task-1")
+
+        self.assertEqual(self.sink.written_bytes("task-1"), 0)
+        self.assertFalse(self.sink.part_directory().exists())
+
+    def test_discarding_leaves_a_task_whose_id_starts_the_same_alone(self):
+        self.sink.append_shard("task-10", 0, b"x" * 5)
+
+        self.sink.discard("task-1")
+
+        self.assertEqual(self.sink.written_bytes("task-10"), 5)
+
+    def test_committing_removes_the_shard_parts_and_the_directory(self):
+        """A shard file left behind keeps the part directory -- and its bytes -- alive."""
+        for index, chunk in enumerate([b"ab", b"cd"]):
+            self.sink.append_shard("task-1", index, chunk)
+        self.sink.assemble_shards("task-1", 2, lambda chunk: None)
+
+        final = self.sink.commit("task-1", "a-1.mp4")
+
+        self.assertEqual(final.read_bytes(), b"abcd")
+        self.assertFalse(self.sink.part_directory().exists())
+
+
 if __name__ == "__main__":
     unittest.main()

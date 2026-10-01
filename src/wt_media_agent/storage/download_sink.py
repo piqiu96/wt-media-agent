@@ -7,6 +7,13 @@ name only through `commit`, which fsyncs and then `os.replace`s. A `.part` that
 never commits is left exactly as it was -- it is never renamed, and nothing
 downstream can mistake it for the file.
 
+A download that runs N connections at once cannot share one part file: N writers
+appending to it interleave their bytes. It writes `<task_id>.part.<k>` instead,
+one per connection, each still append-only and each still its own resume
+authority, and `assemble_shards` merges them in order before the commit. The
+single-stream `<task_id>.part` remains, and is what N=1 and any download already
+in flight before this module learned to shard still use.
+
 Two placements are deliberate:
 
 - **The part directory is inside the save directory**, not in the system temp
@@ -31,7 +38,7 @@ import os
 import shutil
 from datetime import date
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 #: Windows refuses these as file names, with or without an extension. The Agent
 #: runs on macOS and Windows from one codebase, so the name is sanitized for the
@@ -213,8 +220,14 @@ class DownloadSink:
     def part_directory(self) -> Path:
         return self._directory / ".wt-media-part"
 
-    def part_path(self, task_id: str) -> Path:
-        return self.part_directory() / f"{_safe_task_id(task_id)}.part"
+    def part_path(self, task_id: str, shard: int | None = None) -> Path:
+        """The part file for this task: one per shard, or the single-stream one."""
+        stem = f"{_safe_task_id(task_id)}.part"
+        if shard is None:
+            return self.part_directory() / stem
+        if shard < 0:
+            raise ValueError("a shard index is a position in the plan, not a sign")
+        return self.part_directory() / f"{stem}.{shard}"
 
     def resume_offset(self, task_id: str) -> int:
         """Bytes already on disk for this task, as the part file measures them.
@@ -262,20 +275,131 @@ class DownloadSink:
         with open(path, "ab") as handle:
             return handle.write(chunk)
 
+    def shard_offset(self, task_id: str, shard: int) -> int:
+        """Bytes already on disk for one shard -- `resume_offset`, per part.
+
+        Same authority as the single-stream case, and for the same reason: the
+        shard file's own size is the only record of how much of that shard
+        arrived, and a size is not something that can drift ahead of the bytes.
+        """
+        return _file_size(self.part_path(task_id, shard))
+
+    def append_shard(self, task_id: str, shard: int, chunk: bytes) -> int:
+        """Append `chunk` to one shard's part file, creating it and its directory."""
+        path = self.part_path(task_id, shard)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "ab") as handle:
+            return handle.write(chunk)
+
+    def assemble_shards(
+        self,
+        task_id: str,
+        count: int,
+        consume: Callable[[bytes], None],
+        chunk_bytes: int = PART_READ_CHUNK_BYTES,
+    ) -> int:
+        """Merge the shard parts into the part file, in shard order.
+
+        Opened for writing rather than appending, because the only way to reach
+        this with a part file already there is a merge that a crash cut short --
+        appending would leave the tail of the object the previous attempt was
+        writing in the middle of this one.
+
+        `consume` sees every byte in order. The digest has to cover the whole
+        object and sha256 cannot be composed from per-shard digests, so this one
+        sequential read happens no matter how the bytes arrived. The hashing
+        itself stays in the caller: this layer moves bytes and does not decide
+        what they mean.
+        """
+        written = 0
+        with open(self.part_path(task_id), "wb") as target:
+            for shard in range(count):
+                with open(self.part_path(task_id, shard), "rb") as source:
+                    while True:
+                        chunk = source.read(chunk_bytes)
+                        if not chunk:
+                            break
+                        target.write(chunk)
+                        consume(chunk)
+                        written += len(chunk)
+        return written
+
+    def shard_indices(self, task_id: str) -> list[int]:
+        """The shard numbers this task has a part file for, ascending.
+
+        The count of shards is the download's own decision and it can change
+        between attempts, and a shard file from a different division means
+        something else now: its bytes are a prefix of a region that has moved.
+        A caller resuming a sharded download asks this to see whether the part
+        files on disk are the ones its own plan would have written.
+        """
+        prefix = f"{self.part_path(task_id).name}."
+        return sorted(
+            int(path.name.removeprefix(prefix))
+            for path in self._task_parts(task_id)
+            if path.name.startswith(prefix)
+        )
+
+    def written_bytes(self, task_id: str) -> int:
+        """How much of this task's object is on disk, in either layout.
+
+        A failure report says how far the download got, and with N shards in
+        flight that is no single file's size. The two layouts are two views of
+        one number rather than two contributions to it: the shards partition the
+        object, and the merge is a byte-for-byte prefix of their concatenation,
+        so the longer view is the answer.
+
+        Adding them instead would double-count the whole object in the window
+        between a finished merge and the commit that clears the shards -- and
+        that window is reachable, because a digest that fails just after a merge
+        is reported from inside it. Taking the shard total alone would be wrong
+        the other way, from the start of a merge until the first shard's worth of
+        bytes has been copied, which is the same window seen from its other end.
+        """
+        stem = f"{_safe_task_id(task_id)}.part"
+        merged = 0
+        shards = 0
+        for path in self._task_parts(task_id):
+            size = _file_size(path)
+            if path.name == stem:
+                merged = size
+            else:
+                shards += size
+        return max(merged, shards)
+
+    def _task_parts(self, task_id: str) -> list[Path]:
+        """Every part file this task owns -- the single-stream one and the shards.
+
+        Matched on the exact stem, not a prefix and not a glob: `task-1` and
+        `task-10` share one, so a looser match would let either count, or delete,
+        the other's bytes.
+        """
+        stem = f"{_safe_task_id(task_id)}.part"
+        try:
+            entries = list(self.part_directory().iterdir())
+        except OSError:
+            return []
+        owned = []
+        for entry in entries:
+            if entry.name == stem or entry.name.startswith(f"{stem}."):
+                owned.append(entry)
+        return owned
+
     def discard(self, task_id: str) -> None:
         """Throw the part away -- after a server ignored `Range`, say.
 
         A discard that raced with nothing is not an error: the caller discards
         because it must not resume, and a part that is already gone is the state
-        it wanted.
+        it wanted. Every file the task owns goes, shards included -- a shard left
+        behind is a resume that silently starts from another attempt's bytes.
         """
-        path = self.part_path(task_id)
+        for path in self._task_parts(task_id):
+            try:
+                path.unlink()
+            except OSError:
+                pass
         try:
-            path.unlink()
-        except OSError:
-            pass
-        try:
-            path.parent.rmdir()
+            self.part_directory().rmdir()
         except OSError:
             pass
 
@@ -304,11 +428,25 @@ class DownloadSink:
                 os.fsync(handle)
             finally:
                 os.close(handle)
-        try:
-            part.parent.rmdir()
-        except OSError:
-            pass
+        # The shard parts have done their job and the merged part no longer
+        # exists under that name, so the only files left are shards. They are
+        # removed after the rename: deleting them first would throw away the
+        # bytes a re-merge needs if the rename itself fails.
+        self.discard(task_id)
         return final
+
+
+def _file_size(path: Path) -> int:
+    """A file's size, or zero when it is not there to be measured.
+
+    Every caller here is answering "how much has arrived", and a file that has
+    gone missing has arrived as nothing. The race is real rather than
+    theoretical: `discard` runs on the same task from the retry loop.
+    """
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _sanitize(title: str) -> str:
