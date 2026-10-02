@@ -9,6 +9,7 @@ import platform
 import re
 import shutil
 import subprocess
+import time
 from typing import Callable, Protocol
 
 from wt_media_agent.runtime.version import __version__
@@ -75,6 +76,49 @@ SystemInfo = Callable[[], tuple[str, str]]
 VersionProbe = Callable[[tuple[str, ...]], str | None]
 
 
+class BitBrowserScanCache:
+    """Remembers the last successful profile scan for a bounded while.
+
+    The scan is the expensive half of `/api/v1/status`: one `POST
+    /browser/list` per 100 profiles against the BitBrowser app, measured at
+    0.22-0.31 s and 78 KB on a 40-profile machine, asked for every 30 s by the
+    top bar's status pill. A caller that only wants a verdict may reuse a scan
+    up to `ttl_seconds` old instead of paying that again.
+
+    Only *successful* scans are kept. A failed one raises before anything is
+    recorded, so a closed BitBrowser reports `unreachable` rather than being
+    papered over with the last good answer.
+
+    Reuse can therefore describe a machine that has since changed -- that is
+    what it is for, and it is why the live scan stays the default: the account
+    id this carries is what Cloud's execution gate and the bind flow act on,
+    and a stale id there is a wrong answer rather than a late one.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._snapshot: ProfileSnapshot | None = None
+        self._taken_at = 0.0
+
+    def snapshot(self, scanner: ProfileScanner) -> ProfileSnapshot:
+        now = self._clock()
+        if self._snapshot is not None and now - self._taken_at < self._ttl_seconds:
+            return self._snapshot
+        return self.record(scanner.scan_profiles())
+
+    def record(self, snapshot: ProfileSnapshot) -> ProfileSnapshot:
+        """Adopt a snapshot someone else just took, so the next reuse sees it."""
+        self._snapshot = snapshot
+        self._taken_at = self._clock()
+        return snapshot
+
+
 class RuntimeEnvironmentCollector:
     """Collects only facts explicitly approved for a runtime heartbeat."""
 
@@ -84,6 +128,7 @@ class RuntimeEnvironmentCollector:
         self,
         *,
         bitbrowser: ProfileScanner,
+        scan_cache: BitBrowserScanCache | None = None,
         system_info: SystemInfo | None = None,
         python_version: Callable[[], str] | None = None,
         command_version: VersionProbe | None = None,
@@ -92,6 +137,7 @@ class RuntimeEnvironmentCollector:
         agent_version: str = __version__,
     ) -> None:
         self._bitbrowser = bitbrowser
+        self._scan_cache = scan_cache
         self._system_info = system_info or (lambda: (platform.system(), platform.machine()))
         self._python_version = python_version or (lambda: platform.python_version())
         self._command_version = command_version or _command_version
@@ -111,7 +157,11 @@ class RuntimeEnvironmentCollector:
         main_user_id = ""
         profile_ids: tuple[str, ...] = ()
         try:
-            snapshot = self._bitbrowser.scan_profiles()
+            snapshot = (
+                self._scan_cache.snapshot(self._bitbrowser)
+                if self._scan_cache is not None
+                else self._bitbrowser.scan_profiles()
+            )
             main_user_id = snapshot.main_user_id
             profile_ids = tuple(sorted(profile.bit_profile_id for profile in snapshot.profiles))
         except BitBrowserIdentityError:

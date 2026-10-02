@@ -9,9 +9,13 @@ that from coming back.
 from __future__ import annotations
 
 import ast
+import http.client
 import inspect
+import json
 import re
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 import sys
 
@@ -22,14 +26,28 @@ sys.path.insert(0, str(ROOT / "tests"))
 from support import UnusedBitBrowser
 
 from wt_media_agent.local_api import server as server_module
-from wt_media_agent.local_api.server import LocalApiServer
+from wt_media_agent.local_api.server import LocalApiServer, make_handler
 from wt_media_agent.local_api.state import LocalAgentState
-from wt_media_agent.clients.bitbrowser import BitBrowserIdentityError
+from wt_media_agent.clients.bitbrowser import BitBrowserIdentityError, BitProfile, ProfileSnapshot
 
 
 class IdentityErrorClient:
     def scan_profiles(self):
         raise BitBrowserIdentityError("no profile facts")
+
+
+class CountingClient:
+    """A scanner that answers, and says how many times it was asked."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def scan_profiles(self) -> ProfileSnapshot:
+        self.calls += 1
+        return ProfileSnapshot(
+            main_user_id=f"main-user-{self.calls}",
+            profiles=(BitProfile("profile-1", "bit-user-1", "main-user-1", "Account 1", 1, "", "", 1, "", "", "noproxy", "", 0),),
+        )
 
 
 class BitBrowserInjectionTests(unittest.TestCase):
@@ -147,6 +165,87 @@ class LocalApiServerTests(unittest.TestCase):
 
         self.assertIn("event: status", event)
         self.assertIn('"status":"idle"', event)
+
+
+class StatusScanParameterTests(unittest.TestCase):
+    """`?scan=reuse` is the only way to ask for a cached BitBrowser scan.
+
+    Driven over a real socket rather than by calling `status()` directly: what is
+    at issue is whether the *query string* reaches the server at all, and a
+    server that ignores it looks identical from the method call.
+    """
+
+    def setUp(self) -> None:
+        self.client = CountingClient()
+        self.server = LocalApiServer(LocalAgentState(), bitbrowser=self.client)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.server))
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> dict:
+        connection = http.client.HTTPConnection("127.0.0.1", self.httpd.server_port, timeout=10)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200, path)
+            return json.loads(response.read())
+        finally:
+            connection.close()
+
+    def test_the_default_and_live_always_scan(self) -> None:
+        """An existing caller keeps the behavior it has today: a fresh scan."""
+        self._get("/api/v1/status")
+        self._get("/api/v1/status?scan=live")
+
+        self.assertEqual(self.client.calls, 2)
+
+    def test_reuse_serves_the_first_scan_to_the_second_request(self) -> None:
+        first = self._get("/api/v1/status?scan=reuse")
+        second = self._get("/api/v1/status?scan=reuse")
+
+        self.assertEqual(self.client.calls, 1)
+        self.assertEqual(second, first)
+
+    def test_a_live_scan_does_not_satisfy_a_later_reuse(self) -> None:
+        """Only the reuse path and the explicit scan route fill the cache.
+
+        Pinned rather than incidental: it is what makes the first background tick
+        after a manual check still scan, instead of the two paths quietly
+        depending on one another.
+        """
+        self._get("/api/v1/status")
+        self._get("/api/v1/status?scan=reuse")
+        self._get("/api/v1/status?scan=reuse")
+
+        self.assertEqual(self.client.calls, 2)
+
+    def test_an_unknown_scan_value_behaves_like_the_default(self) -> None:
+        """Only an explicit `reuse` is allowed to reuse; anything else is live."""
+        self._get("/api/v1/status?scan=Reuse")
+        self._get("/api/v1/status?scan=1")
+
+        self.assertEqual(self.client.calls, 2)
+
+    def test_the_explicit_scan_route_fills_the_cache(self) -> None:
+        self._post("/api/v1/bit-browser/profile-scans")
+        self._get("/api/v1/status?scan=reuse")
+
+        self.assertEqual(self.client.calls, 1)
+
+    def _post(self, path: str) -> dict:
+        connection = http.client.HTTPConnection("127.0.0.1", self.httpd.server_port, timeout=10)
+        try:
+            connection.request("POST", path)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200, path)
+            return json.loads(response.read())
+        finally:
+            connection.close()
 
 
 class LoggerNameTests(unittest.TestCase):

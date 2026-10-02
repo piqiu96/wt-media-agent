@@ -46,6 +46,12 @@ DEFAULT_LOCAL_API_PORT = 8765
 DEFAULT_BITBROWSER_API_URL = "http://127.0.0.1:54345"
 DEFAULT_BITBROWSER_TIMEOUT = 5.0
 
+# How long a caller that explicitly asked to reuse may be served an earlier
+# profile scan. `GET /api/v1/status?scan=reuse` is the only way to ask; the
+# live scan stays the default because the account id it carries is what Cloud's
+# execution gate and the bind flow act on.
+BITBROWSER_SCAN_REUSE_SECONDS = 300.0
+
 # Log retention (CHG-057 T-07, rewritten by CHG-058 T-02; the rulings 六 and 三).
 # Two bounds remain: a record too large for one line is truncated and marked
 # rather than allowed to grow the file, and a rolled file older than 14 days is

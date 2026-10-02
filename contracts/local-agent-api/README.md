@@ -11,7 +11,7 @@ Paths the formal definition holds, by the change that added them:
 - CHG-20260923-057: `GET /api/v1/health` (aggregate health; `/healthz` stays frozen)
 - CHG-20260924-061: `GET /api/v1/save-directory`, `POST /api/v1/save-directory`
 
-Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.09.27.1`. The
+Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.03.1`. The
 revision is that file's own `info.version`, and the file is the only place the
 number is written down. The list above is checked against the file's `paths:` and
 their methods by `tests/test_contract_docs.py`, so an endpoint added to one and

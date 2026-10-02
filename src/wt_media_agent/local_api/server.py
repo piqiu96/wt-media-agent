@@ -40,7 +40,11 @@ from wt_media_agent.services.net.proxy import (
     check_proxy_connectivity,
     parse_first_proxy_address,
 )
-from wt_media_agent.runtime.environment import RuntimeEnvironmentCollector
+from wt_media_agent.runtime.constants import BITBROWSER_SCAN_REUSE_SECONDS
+from wt_media_agent.runtime.environment import (
+    BitBrowserScanCache,
+    RuntimeEnvironmentCollector,
+)
 from wt_media_agent.runtime.logging import begin_operation, end_operation
 from wt_media_agent.runtime.node_credential import NodeCredential
 
@@ -110,6 +114,11 @@ class LocalApiServer:
         # here could reach BitBrowser without anyone deciding it should. The
         # client comes from `bootstrap` (ADR-0016 §2).
         self.bitbrowser = bitbrowser
+        # Lives here rather than on the collector because the collector is built
+        # per request; only `/api/v1/status?scan=reuse` passes it down.
+        self._bitbrowser_scan = BitBrowserScanCache(
+            ttl_seconds=BITBROWSER_SCAN_REUSE_SECONDS
+        )
 
     def _check_auth(self, headers: dict[str, str]) -> bool:
         if not self.auth_token:
@@ -137,12 +146,21 @@ class LocalApiServer:
             self.state, self.bitbrowser, self.store, self.cloud
         ).to_dict()
 
-    def status(self) -> dict[str, object]:
+    def status(self, *, reuse_scan: bool = False) -> dict[str, object]:
+        """`/api/v1/status`. `reuse_scan` is opt-in; the live scan is the default.
+
+        The account id this response carries is what Cloud's execution gate and
+        the bind flow act on, so only a caller that wants a verdict and not an
+        account id -- the top bar's automatic tick -- may ask for a reused scan.
+        """
         started_at = time.monotonic()
         logger.info("local_api.status.start")
         base = self.state.snapshot()
         try:
-            environment = RuntimeEnvironmentCollector(bitbrowser=self.bitbrowser).collect().to_dict()
+            environment = RuntimeEnvironmentCollector(
+                bitbrowser=self.bitbrowser,
+                scan_cache=self._bitbrowser_scan if reuse_scan else None,
+            ).collect().to_dict()
             base.update(environment)
             if self.store:
                 incomplete = self.store.get_incomplete_checkpoints()
@@ -178,7 +196,9 @@ class LocalApiServer:
 
     def profile_scan_response(self) -> tuple[int, dict[str, object]]:
         try:
-            return 200, self.bitbrowser.scan_profiles().to_dict()
+            snapshot = self.bitbrowser.scan_profiles()
+            self._bitbrowser_scan.record(snapshot)
+            return 200, snapshot.to_dict()
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
         except BitBrowserResponseError:
@@ -590,12 +610,16 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             if not self._check_auth():
                 self._write_json(401, {"error": "unauthorized"})
                 return
-            if self.path == "/healthz":
+            # Only `/api/v1/status` reads a query string; every other branch below
+            # keeps matching the raw `self.path` it always has.
+            route = urlparse.urlsplit(self.path)
+            if route.path == "/healthz":
                 self._write_json(200, api.health())
-            elif self.path == "/api/v1/health":
+            elif route.path == "/api/v1/health":
                 self._write_json(200, api.health_report_response())
-            elif self.path == "/api/v1/status":
-                self._write_json(200, {"data": api.status()})
+            elif route.path == "/api/v1/status":
+                scan = urlparse.parse_qs(route.query).get("scan", ["live"])[0]
+                self._write_json(200, {"data": api.status(reuse_scan=scan == "reuse")})
             elif self.path == "/api/v1/save-directory":
                 status, payload = api.save_directory_response()
                 self._write_json(status, payload)

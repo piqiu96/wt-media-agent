@@ -3,7 +3,8 @@ info:
   title: WT Media Local Agent Loopback API
   # Bumped by CHG-20260923-057 T-08: /api/v1/health added, /healthz untouched.
   # Bumped by CHG-20260924-061 T-04: /api/v1/save-directory added.
-  version: 2026.09.27.1
+  # Bumped by CHG-20261002-074: `scan` parameter added to /api/v1/status.
+  version: 2026.10.03.1
 servers:
   - url: http://127.0.0.1:8765
 paths:
@@ -43,6 +44,30 @@ paths:
   /api/v1/status:
     get:
       operationId: localAgentStatus
+      description: |
+        Current observable Agent state, including the BitBrowser profile scan.
+        That scan is one `POST /browser/list` against the BitBrowser app, so a
+        caller that polls only to show a health verdict may ask to reuse a
+        recent one instead of paying for a fresh one every time.
+
+        `scan=reuse` serves the last *successful* scan if it is under five
+        minutes old (otherwise it scans anyway), and is only for background
+        polling. The live scan is the default because `main_user_id` is what
+        Cloud's execution gate and the account-bind flow act on: a reused one
+        can describe a machine that has since changed account, and a stale id
+        there is a wrong answer rather than a late one.
+      parameters:
+        - name: scan
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [live, reuse]
+            default: live
+          description: |
+            `live` (default, and what an absent parameter means) scans
+            BitBrowser now. `reuse` accepts a scan up to five minutes old and
+            may still scan when none is cached.
       responses:
         '200':
           description: Current observable Agent state.
