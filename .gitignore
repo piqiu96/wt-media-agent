@@ -9,3 +9,7 @@ build/
 *.egg-info/
 *.log
 .pytest_cache/
+# Generated skill copies distributed by workspace `scripts/sync_skills.py`;
+# rebuild with that script instead of committing them.
+.claude
+.codex
