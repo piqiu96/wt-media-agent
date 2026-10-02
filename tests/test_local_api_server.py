@@ -209,6 +209,12 @@ class StatusScanParameterTests(unittest.TestCase):
         second = self._get("/api/v1/status?scan=reuse")
 
         self.assertEqual(self.client.calls, 1)
+        # `disk` is measured live on every request, so comparing it would make
+        # this a disk-churn detector: any write landing between the two calls
+        # moves free_megabytes and the comparison fails, on a machine the cache
+        # behaved correctly on. The scan facts are what reuse governs.
+        for response in (first, second):
+            response["data"].pop("disk")
         self.assertEqual(second, first)
 
     def test_a_live_scan_does_not_satisfy_a_later_reuse(self) -> None:
