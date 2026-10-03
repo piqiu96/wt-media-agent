@@ -27,7 +27,10 @@ def probe(binary: Path, timeout: float) -> None:
         raise FileNotFoundError(binary)
     port = free_loopback_port()
     token = secrets.token_urlsafe(24)
-    with tempfile.TemporaryDirectory(prefix="wt-media-sidecar-smoke-") as data_dir:
+    # On Windows, PyInstaller's one-file parent can leave its child holding the
+    # log briefly after healthz succeeds. Kill the whole process tree below;
+    # tolerate a delayed file unlock while the ephemeral CI runner exits.
+    with tempfile.TemporaryDirectory(prefix="wt-media-sidecar-smoke-", ignore_cleanup_errors=os.name == "nt") as data_dir:
         env = os.environ.copy()
         env.update({
             "WT_MEDIA_LOCAL_API_HOST": "127.0.0.1",
@@ -57,7 +60,11 @@ def probe(binary: Path, timeout: float) -> None:
                     time.sleep(0.2)
             raise TimeoutError(f"sidecar did not answer authenticated healthz within {timeout}s")
         finally:
-            process.terminate()
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            elif process.poll() is None:
+                process.terminate()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
