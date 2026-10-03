@@ -201,7 +201,10 @@ def build(target: str, output_dir: Path, manifest: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", default=native_target())
+    # Resolve the native target only when a freeze is requested. Config-only
+    # staging and argument validation also run in Linux CI, where this Desktop
+    # Sidecar intentionally has no native build target.
+    parser.add_argument("--target", default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument(
@@ -229,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"config-file={name}")
     if args.output_dir is None:
         return 0
-    output = build(args.target, args.output_dir, args.manifest)
+    output = build(args.target or native_target(), args.output_dir, args.manifest)
     print(output)
     return 0
 

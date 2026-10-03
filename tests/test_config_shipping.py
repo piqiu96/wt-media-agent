@@ -227,7 +227,8 @@ class ConfigSyncCliTest(unittest.TestCase):
     def test_staging_the_configuration_alone_does_not_freeze_a_sidecar(self):
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "Contents" / "Resources" / "config"
-            self.assertEqual(self.script.main(["--config-dir", str(destination)]), 0)
+            with mock.patch.object(self.script.platform, "system", return_value="Linux"):
+                self.assertEqual(self.script.main(["--config-dir", str(destination)]), 0)
             self.assertEqual(self.script.mirror_differences(ONLINE_DIR, destination), [])
 
     def test_a_call_with_nothing_to_do_is_an_error(self):
