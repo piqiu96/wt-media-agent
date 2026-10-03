@@ -15,10 +15,9 @@
 environment = "production"
 
 [cloud]
-# Decided (Q-01, closed 2026-09-25): the production deployment is the local
-# Cloud service on 127.0.0.1:18080, so the loopback value below is the release
-# value rather than a placeholder. A loopback address cannot send credentials
-# off the machine, and the desktop window's CSP allows this origin only.
+# The source checkout retains a loopback default for local development. Tagged
+# release builds inject the Manifest's public HTTPS Cloud origin before freezing
+# the Agent and bundling this file; the bundled value is verified again later.
 base_url = "http://127.0.0.1:18080"
 timeout_seconds = 10.0
 
