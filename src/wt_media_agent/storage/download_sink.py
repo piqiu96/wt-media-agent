@@ -408,26 +408,28 @@ class DownloadSink:
 
         The caller has already checked size and digest; this is only the rename.
         The date subdirectory may not exist yet, so it is created here. The part
-        is fsynced first and the directories second, so a crash between the two
-        leaves a file that is either absent or complete -- never
+        is fsynced first and, on POSIX, the directories second, so a crash
+        between the two leaves a file that is either absent or complete -- never
         present-and-empty, which is what a rename without the first fsync can
-        produce.
+        produce. Windows requires a writable file handle for fsync and does not
+        support this POSIX directory-fsync path.
         """
         part = self.part_path(task_id)
         final = self._directory / name
         final.parent.mkdir(parents=True, exist_ok=True)
-        handle = os.open(part, os.O_RDONLY)
+        handle = os.open(part, os.O_RDWR if os.name == "nt" else os.O_RDONLY)
         try:
             os.fsync(handle)
         finally:
             os.close(handle)
         os.replace(part, final)
-        for directory in {final.parent, self._directory}:
-            handle = os.open(directory, os.O_RDONLY)
-            try:
-                os.fsync(handle)
-            finally:
-                os.close(handle)
+        if os.name != "nt":
+            for directory in {final.parent, self._directory}:
+                handle = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(handle)
+                finally:
+                    os.close(handle)
         # The shard parts have done their job and the merged part no longer
         # exists under that name, so the only files left are shards. They are
         # removed after the rename: deleting them first would throw away the

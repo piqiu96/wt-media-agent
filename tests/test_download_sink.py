@@ -10,7 +10,9 @@ side knows what filesystem it is writing to.
 
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import tempfile
 import unittest
 from datetime import date
@@ -270,6 +272,36 @@ class PartFileTest(SinkTestCase):
 
 
 class CommitTest(SinkTestCase):
+    def test_windows_commit_flushes_with_a_writable_file_handle_without_opening_directories(self):
+        """A full part must reach its final name under Windows file-handle rules."""
+        self.sink.append_shard("task-1", 0, b"abc")
+        self.sink.append_shard("task-1", 1, b"def")
+        self.sink.assemble_shards("task-1", 2, lambda _: None)
+        real_open, real_fsync = os.open, os.fsync
+        modes = {}
+
+        def windows_open(path, flags, *args, **kwargs):
+            handle = real_open(path, flags, *args, **kwargs)
+            modes[handle] = flags
+            return handle
+
+        def windows_fsync(handle):
+            if stat.S_ISDIR(os.fstat(handle).st_mode) or not modes[handle] & (
+                os.O_WRONLY | os.O_RDWR
+            ):
+                raise OSError(errno.EBADF, "Bad file descriptor")
+            real_fsync(handle)
+
+        with (
+            mock.patch.object(os, "name", "nt"),
+            mock.patch("wt_media_agent.storage.download_sink.os.open", side_effect=windows_open),
+            mock.patch("wt_media_agent.storage.download_sink.os.fsync", side_effect=windows_fsync),
+        ):
+            final = self.sink.commit("task-1", "20260930/a-1.mp4")
+
+        self.assertEqual(final.read_bytes(), b"abcdef")
+        self.assertFalse(self.sink.part_directory().exists())
+
     def test_committing_makes_it_the_file_and_empties_the_part_directory(self):
         self.sink.append("task-1", b"abcdef")
         final = self.sink.commit("task-1", "a-1.mp4")
