@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import ssl
 import unittest
 from datetime import date
 from typing import Mapping
@@ -435,6 +436,18 @@ class HttpTransferTransportTest(unittest.TestCase):
 
         self.assertEqual(status, 409)
         self.assertEqual(body, {"message": "task is cancelled"})
+
+    def test_certificate_failure_has_a_safe_transport_diagnosis(self) -> None:
+        client = CloudAgentClient("https://cloud.test", transport=silent_primary_transport)
+        failure = urlerror.URLError(ssl.SSLCertVerificationError("private URL?token=SECRET"))
+        with mock.patch(
+            "wt_media_agent.clients.cloud.client.request.urlopen", side_effect=failure
+        ):
+            with self.assertRaisesRegex(
+                TransferUnavailableError, "Cloud TLS certificate verification failed"
+            ) as caught:
+                client._http_transfer_transport("POST", "/x", {}, {})
+        self.assertNotIn("SECRET", str(caught.exception))
 
 
 if __name__ == "__main__":

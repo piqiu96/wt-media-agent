@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from wt_media_agent.clients.cloud import SessionInvalidError, TransferLease, TransferTerminal
+from wt_media_agent.clients.cloud import SessionInvalidError, TransferLease, TransferTerminal, TransferUnavailableError
 from wt_media_agent.executors.material_download import OUTCOME_SUCCESS
 from wt_media_agent.executors.protocol import ExecutorFactory
 from wt_media_agent.runner.config import TaskRunnerConfig
@@ -352,6 +352,29 @@ class TransferRunnerTest(unittest.TestCase):
         self.assertTrue(runner._running)
         self.assertEqual(self.seen, [])
         self.assertIsNone(self.store.get_checkpoint(TASK_ID))
+
+    def test_claim_transport_warning_is_deduplicated_and_resets_after_recovery(self) -> None:
+        self.cloud.raises = TransferUnavailableError("Cloud TLS certificate verification failed")
+        runner = self.runner()
+        with self.assertLogs(LOGGER, level=logging.WARNING) as logs:
+            runner._poll_once()
+            runner._poll_once()
+            self.cloud.raises = None
+            runner._poll_once()
+            self.cloud.raises = TransferUnavailableError("Cloud TLS certificate verification failed")
+            runner._poll_once()
+        warnings = [record for record in logs.records if record.levelno == logging.WARNING]
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(all("TLS certificate verification failed" in r.message for r in warnings))
+
+    def test_claim_warning_does_not_copy_server_detail(self) -> None:
+        self.cloud.raises = TransferUnavailableError(
+            "the transfer endpoint answered HTTP 503: https://cdn.test/x?signature=SECRET"
+        )
+        with self.assertLogs(LOGGER, level=logging.WARNING) as logs:
+            self.runner()._poll_once()
+        self.assertIn("HTTP 503", logs.output[0])
+        self.assertNotIn("SECRET", logs.output[0])
 
     def test_a_transfer_type_with_no_executor_is_reported_in_the_log(self) -> None:
         """No entry at all and an unwired entry are the same fact to the operator."""

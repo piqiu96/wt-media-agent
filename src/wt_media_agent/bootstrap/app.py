@@ -38,7 +38,7 @@ from wt_media_agent.runner.config import TaskRunnerConfig
 from wt_media_agent.runner.registry import default_executor_factories
 from wt_media_agent.runner.runner import TaskRunner
 from wt_media_agent.runner.transfer import TransferRunner
-from wt_media_agent.runtime.config import AgentConfig, load_config
+from wt_media_agent.runtime.config import AgentConfig, configure_frozen_ca_bundle, load_config
 from wt_media_agent.runtime.constants import (
     DEFAULT_LEASE_SECONDS,
     MAX_RETRIES,
@@ -117,6 +117,10 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # 3. Logging, so anything after this point is visible where the operator
     #    configured it to be.
     configure_from(config)
+
+    # PyInstaller's Python may have no system CA store on the installed Mac.
+    # Configure the verified embedded trust store before constructing clients.
+    configure_frozen_ca_bundle()
 
     db_path = database_path(config)
 

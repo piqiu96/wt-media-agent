@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import logging
 import os
+import ssl
 import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, MutableMapping
 
 from wt_media_agent.runtime.constants import (
     DEFAULT_BITBROWSER_API_URL,
@@ -41,6 +42,37 @@ logger = logging.getLogger(__name__)
 
 CONFIG_DIR_NAME = "config"
 CONFIG_FILE_NAME = "agent.toml"
+
+
+def configure_frozen_ca_bundle(
+    *,
+    frozen: bool | None = None,
+    bundle_root: Path | None = None,
+    environment: MutableMapping[str, str] | None = None,
+) -> Path | None:
+    """Select the bundled public CA store before a frozen Agent opens HTTPS.
+
+    An explicit SSL_CERT_FILE supports a private trust environment. Source runs
+    retain Python's existing system trust selection. A frozen release with no
+    usable CA store fails at startup instead of silently losing task polls.
+    """
+    if not (is_frozen() if frozen is None else frozen):
+        return None
+    values = os.environ if environment is None else environment
+    explicit = values.get("SSL_CERT_FILE", "").strip()
+    embedded_root = getattr(sys, "_MEIPASS", None)
+    if not explicit and bundle_root is None and not embedded_root:
+        raise RuntimeError("CA bundle location is missing from the frozen Agent")
+    root = bundle_root if bundle_root is not None else Path(embedded_root or "")
+    selected = Path(explicit).expanduser() if explicit else root / "certs" / "ca-bundle.pem"
+    try:
+        ssl.create_default_context(cafile=str(selected))
+    except (OSError, ssl.SSLError) as exc:
+        raise RuntimeError(f"CA bundle is missing or invalid: {selected}") from exc
+    if not explicit:
+        values["SSL_CERT_FILE"] = str(selected)
+    logger.info("TLS CA bundle ready source=%s", "override" if explicit else "bundled")
+    return selected
 
 #: Leaf key names that must never be honoured from a file, matched case-
 #: insensitively and by exact leaf name. Deliberately broad: a credential that

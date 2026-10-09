@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -58,6 +59,17 @@ def pyinstaller_signing_args(system: str | None = None) -> list[str]:
 
 def python_library_resign_args(system: str | None = None) -> list[str]:
     return ["codesign", "--force", "--sign", "-"] if (system or platform.system()).lower() == "darwin" else []
+
+
+def standalone_signing_args(system: str | None = None) -> list[str]:
+    """Sign a macOS sidecar without hardened runtime for standalone smoke tests.
+
+    PyInstaller ad-hoc signs with hardened runtime, which refuses to load an
+    extracted linker-signed libpython on some macOS/Python combinations. The
+    enclosing Desktop release signs the finished app with its release identity.
+    """
+    return (["codesign", "--force", "--sign", "-", "--options=0"]
+            if (system or platform.system()).lower() == "darwin" else [])
 
 
 def python_shared_library() -> Path | None:
@@ -107,6 +119,23 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 CONFIG_SOURCE_DIR_NAME = "config_online"
+
+
+def bundled_ca_args(agent_root: Path = ROOT) -> list[str]:
+    """Verify the pinned public CA bundle and include it in the frozen sidecar."""
+    resources = agent_root / "resources"
+    metadata = json.loads((resources / "ca-bundle.json").read_text(encoding="utf-8"))
+    bundle = resources / "ca-bundle.pem"
+    notice = resources / "ca-bundle.LICENSE"
+    if not bundle.is_file() or sha256(bundle) != metadata["sha256"]:
+        raise ValueError("CA bundle SHA-256 does not match its pinned metadata")
+    if not notice.is_file() or not notice.read_text(encoding="utf-8").strip():
+        raise ValueError("CA bundle license notice is missing")
+    return [
+        item
+        for path in (bundle, notice, resources / "ca-bundle.json")
+        for item in ("--add-data", f"{path}{os.pathsep}certs")
+    ]
 
 
 def _files_under(root: Path) -> dict[str, bytes]:
@@ -182,11 +211,15 @@ def build(target: str, output_dir: Path, manifest: Path) -> Path:
             "--specpath", str(workdir / "spec"), str(ROOT / "src" / "wt_media_agent" / "sidecar_main.py"),
         ]
         command[6:6] = pyinstaller_signing_args()
+        command[-1:-1] = bundled_ca_args()
         with unsigned_python_shared_library():
             subprocess.run(command, check=True)
         built = workdir / "dist" / name
         if not built.is_file():
             raise RuntimeError(f"PyInstaller did not produce {built}")
+        signing = standalone_signing_args()
+        if signing:
+            subprocess.run([*signing, str(built)], check=True)
         destination = output_dir / name
         shutil.copy2(built, destination)
     manifest.write_text(json.dumps({

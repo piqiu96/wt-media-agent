@@ -36,6 +36,7 @@ from wt_media_agent.clients.cloud import (
     CloudAgentClient,
     SessionInvalidError,
     TransferLease,
+    TransferUnavailableError,
 )
 from wt_media_agent.executors.material_download import OUTCOME_SUCCESS, Credential
 from wt_media_agent.executors.protocol import ExecutorFactory
@@ -94,6 +95,7 @@ class TransferRunner:
         # the next process start: Desktop re-binds and pushes a new one, and the
         # whole point of handing this loop a callable is that it notices.
         self._refused: Optional[str] = None
+        self._last_claim_failure: Optional[str] = None
         self._running = False
 
     def register_executor(self, task_type: str, factory: ExecutorFactory) -> None:
@@ -194,7 +196,9 @@ class TransferRunner:
             logger.debug("node credential still refused; not claiming")
             return None
         try:
-            return self.client.claim_transfer_task(credential)
+            lease = self.client.claim_transfer_task(credential)
+            self._last_claim_failure = None
+            return lease
         except SessionInvalidError as exc:
             # Stop claiming under *this* credential; do not stop the loop. An
             # earlier draft drained it here, on the grounds that nothing the loop
@@ -211,7 +215,23 @@ class TransferRunner:
             )
             return None
         except Exception as exc:
-            logger.debug("transfer claim failed (may be normal): %s", exc)
+            # Repeated polls under one outage are one incident. Keep the first
+            # useful diagnosis visible without copying arbitrary exception text,
+            # which could include a signed URL or credential.
+            if isinstance(exc, TransferUnavailableError):
+                detail = str(exc)
+                if detail == "Cloud TLS certificate verification failed":
+                    reason = detail
+                elif detail.startswith("the transfer endpoint answered HTTP "):
+                    status = detail.removeprefix("the transfer endpoint answered HTTP ")[:3]
+                    reason = f"HTTP {status}" if status.isdigit() else "HTTP error"
+                else:
+                    reason = "Cloud transport unavailable"
+            else:
+                reason = type(exc).__name__
+            if reason != self._last_claim_failure:
+                logger.warning("transfer claim unavailable: %s", reason)
+                self._last_claim_failure = reason
             return None
 
     # ---- The row this loop owns ----
