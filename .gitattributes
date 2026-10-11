@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Byte-pinned artifact: build_desktop_sidecar.py hashes it against
+# resources/ca-bundle.json, so checkouts must not rewrite line endings.
+resources/ca-bundle.pem -text
