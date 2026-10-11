@@ -18,7 +18,7 @@ environment = "production"
 # The source checkout retains a loopback default for local development. Tagged
 # release builds inject the Manifest's public HTTPS Cloud origin before freezing
 # the Agent and bundling this file; the bundled value is verified again later.
-base_url = "http://127.0.0.1:18080"
+base_url = "http://127.0.0.1:8188"
 timeout_seconds = 10.0
 
 [local_api]

@@ -168,7 +168,7 @@ class RunnerRegistryInjectionTests(unittest.TestCase):
             self.store,
             TaskRunnerConfig(
                 agent_id="agent-1",
-                base_url="http://127.0.0.1:18080",
+                base_url="http://127.0.0.1:8188",
                 db_path=":memory:",
             ),
             **kwargs,

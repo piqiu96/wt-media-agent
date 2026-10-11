@@ -43,7 +43,7 @@ class DefaultsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = load(config_dir=Path(tmp))
         self.assertEqual(cfg.environment, "development")
-        self.assertEqual(cfg.cloud_base_url, "http://127.0.0.1:18080")
+        self.assertEqual(cfg.cloud_base_url, "http://127.0.0.1:8188")
         self.assertEqual(cfg.cloud_timeout_seconds, 10.0)
         self.assertEqual(cfg.local_api_host, "127.0.0.1")
         self.assertEqual(cfg.local_api_port, 8765)
@@ -307,7 +307,7 @@ password = "{self.SECRET_VALUE}"
             with self.assertLogs("wt_media_agent.runtime.config", level="WARNING") as captured:
                 cfg = load(config_dir=Path(tmp))
         self.assertIn("cloud.base_uri", "\n".join(captured.output))
-        self.assertEqual(cfg.cloud_base_url, "http://127.0.0.1:18080")
+        self.assertEqual(cfg.cloud_base_url, "http://127.0.0.1:8188")
 
 
 class PathsIntegrationTest(unittest.TestCase):

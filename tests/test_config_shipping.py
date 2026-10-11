@@ -312,7 +312,7 @@ class ShippedConfigurationTest(unittest.TestCase):
                 "- `cloud.base_url` holds the loopback value -- the production address is undecided.\n"
             )
             (directory / "agent.toml").write_text(
-                '# Q-01 is still open. Resolve before release.\nbase_url = "http://127.0.0.1:18080"\n'
+                '# Q-01 is still open. Resolve before release.\nbase_url = "http://127.0.0.1:8188"\n'
             )
             (directory / "decided.toml").write_text(
                 '# Decided: Q-01 is closed, the production address stays loopback.\n'

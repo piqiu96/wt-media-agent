@@ -55,7 +55,7 @@ from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import apply_migrations
 
 
-CLOUD_URL = "http://127.0.0.1:18080"
+CLOUD_URL = "http://127.0.0.1:8188"
 
 
 class ScratchCloud:
@@ -275,7 +275,7 @@ class CloudReachabilityTest(unittest.TestCase):
         status = CloudReachability(base_url=CLOUD_URL, timeout=1.5, connect=connect).status()
 
         self.assertEqual(status, NORMAL)
-        self.assertEqual(connect.calls, [(("127.0.0.1", 18080), 1.5)])
+        self.assertEqual(connect.calls, [(("127.0.0.1", 8188), 1.5)])
         self.assertEqual([sock.closed for sock in connect.sockets], [True])
 
     def test_the_scheme_decides_the_default_port(self) -> None:
@@ -286,7 +286,7 @@ class CloudReachabilityTest(unittest.TestCase):
         self.assertEqual(connect.calls, [(("cloud.example", 443), 2.0)])
 
     def test_nothing_that_is_not_an_http_endpoint_is_probed(self) -> None:
-        for endpoint in ("", "   ", "not a url", "http://", "ftp://host:21", "localhost:18080"):
+        for endpoint in ("", "   ", "not a url", "http://", "ftp://host:21", "localhost:8188"):
             with self.subTest(endpoint=endpoint):
                 connect = RecordingConnect()
 
