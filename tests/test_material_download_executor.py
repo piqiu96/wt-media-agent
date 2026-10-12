@@ -537,6 +537,23 @@ class NamingTest(DownloadTest):
         self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
         self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/{GAME_NAME}-42.mp4")
 
+    def test_a_composite_output_names_from_what_its_lease_carries(self) -> None:
+        """CHG-20261013-085: an output download is named by the same rules.
+
+        Cloud resolves the output's display title (`成片-<output_id>`) and
+        sends no publish time, so the name lands on
+        `<日期>/<game or 未分类>-<output_id>-成片-<output_id>.mp4` -- this
+        pins the leanest lease the contract allows (no game, no publish time)
+        and the resolved title together.
+        """
+        outcome = self.run_download(
+            ServingOpener(),
+            lease=make_lease(asset_type="composite_output", asset_id=5, title="成片-5", game_name=""),
+        )
+
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        self.assertEqual(self.completion()["file_name"], f"{DATE_DIR}/未分类-5-成片-5.mp4")
+
     def test_a_title_keeps_its_hash_and_full_width_marks_on_disk(self) -> None:
         outcome = self.run_download(
             ServingOpener(), lease=make_lease(title="一把三千万！ #左梓轩小叮当")

@@ -38,6 +38,10 @@ from wt_media_agent.clients.cloud import (
     TransferLease,
     TransferUnavailableError,
 )
+from wt_media_agent.clients.cloud.transfer import (
+    COMPOSITE_OUTPUT_ASSET_TYPE,
+    MATERIAL_ASSET_TYPE,
+)
 from wt_media_agent.executors.material_download import OUTCOME_SUCCESS, Credential
 from wt_media_agent.executors.protocol import ExecutorFactory
 from wt_media_agent.runner.config import TaskRunnerConfig
@@ -59,6 +63,17 @@ logger = logging.getLogger(__name__)
 #: value also keeps a transfer row out of `TaskRunner`'s restart summary, which
 #: would otherwise promise to resume a row that loop never touches.
 TRANSFER_STATUS = "transferring"
+
+#: Which executor each leasable asset type runs on. Both download kinds share
+#: the one download executor (CHG-20261013-085): its naming and validation are
+#: already driven by the lease, so a second executor would be a copy with the
+#: same behaviour. A type missing here is one this Agent takes no work for --
+#: the claim's parse has the same rule, and this map is the loop's own answer
+#: to a lease it was handed by some other road.
+EXECUTORS_BY_ASSET_TYPE = {
+    MATERIAL_ASSET_TYPE: TASK_TYPE_MATERIAL_DOWNLOAD,
+    COMPOSITE_OUTPUT_ASSET_TYPE: TASK_TYPE_MATERIAL_DOWNLOAD,
+}
 
 
 class TransferRunner:
@@ -129,7 +144,7 @@ class TransferRunner:
         lease = self._claim()
         if lease is None:
             return
-        executor = self._executors.get(TASK_TYPE_MATERIAL_DOWNLOAD)
+        executor = self._executors.get(EXECUTORS_BY_ASSET_TYPE.get(lease.asset_type))
         if executor is None:
             # Not reported to Cloud, and that is a decision rather than an
             # omission: a refusal needs a name from the frozen vocabulary, and
@@ -137,7 +152,7 @@ class TransferRunner:
             # not. An Agent with no download executor never claims anything --
             # the loop is what claims -- so the lease here is Cloud's to expire.
             logger.error(
-                "no executor for transfer type %s", TASK_TYPE_MATERIAL_DOWNLOAD,
+                "no executor for transfer asset type %s", lease.asset_type,
                 extra={"task_id": lease.task_id, "error_code": "no_executor"},
             )
             return

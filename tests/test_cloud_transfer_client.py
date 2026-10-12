@@ -144,6 +144,20 @@ class ClaimTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.claim_transfer_task(CREDENTIAL)
 
+    def test_a_composite_output_lease_is_accepted_and_carries_its_type(self) -> None:
+        """CHG-20261013-085: a finished output rides the same lease as a material.
+
+        The output lease arrives without a game name or a publish time -- both
+        are optional and the executor already degrades on their absence -- so
+        the acceptance is asserted on the leanest body the contract allows.
+        """
+        client, _ = client_with((200, {"data": {"task": lease(asset_type="composite_output")}}))
+
+        claimed = client.claim_transfer_task(CREDENTIAL)
+
+        assert claimed is not None
+        self.assertEqual(claimed.asset_type, "composite_output")
+
     def test_a_refused_credential_is_a_session_failure(self) -> None:
         client, _ = client_with((401, {"message": "credential is not valid"}))
 

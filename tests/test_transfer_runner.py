@@ -421,6 +421,40 @@ class TransferRunnerTest(unittest.TestCase):
         self.assertEqual(self.cloud.completions, [])
         self.assertIn("transfer_not_wired", [getattr(r, "error_code", None) for r in logs.records])
 
+    # ---- dispatch by asset type (CHG-20261013-085) ----
+
+    def test_a_composite_output_lease_runs_on_the_download_executor(self) -> None:
+        """A finished output is the download executor's work, not a second one's.
+
+        The executor's naming and validation are already driven by the lease --
+        the output's title arrives resolved (`成片-<id>`) and its absent
+        publish time already degrades to an omitted segment -- so the dispatch
+        is the only decision the loop adds.
+        """
+        self.cloud.leases = [make_lease(asset_type="composite_output")]
+
+        self.runner()._poll_once()
+
+        self.assertEqual(len(self.seen), 1)
+        self.assertEqual(self.cloud.claims, [CREDENTIAL])
+
+    def test_a_lease_of_an_unroutable_asset_type_is_left_for_cloud(self) -> None:
+        """A type the dispatch map does not name runs nothing and reports nothing.
+
+        The parse gate refuses unknown types on the wire, so a lease like this
+        only exists if it bypassed the client -- the same fail-closed reasoning
+        as the no-executor branch: a refusal needs a name from the frozen
+        vocabulary, and none of them describes this state.
+        """
+        self.cloud.leases = [make_lease(asset_type="recipe")]
+
+        with self.assertLogs(LOGGER, level=logging.ERROR) as logs:
+            self.runner()._poll_once()
+
+        self.assertEqual(self.seen, [])
+        self.assertIn("no_executor", [getattr(r, "error_code", None) for r in logs.records])
+        self.assertIn("recipe", " ".join(r.getMessage() for r in logs.records))
+
 
 if __name__ == "__main__":
     unittest.main()

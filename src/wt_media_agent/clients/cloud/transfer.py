@@ -54,8 +54,12 @@ REQUIRED_LEASE_FIELDS = (
     "download_url_expires_at",
 )
 
-#: The only `asset_type` this Agent is given work for.
+#: The `asset_type` values this Agent is given work for (CHG-20261013-085:
+#: a composite output rides the same lease, the same executor and the same
+#: naming rules as a material -- only the asset differs).
 MATERIAL_ASSET_TYPE = "material"
+COMPOSITE_OUTPUT_ASSET_TYPE = "composite_output"
+LEASABLE_ASSET_TYPES = (MATERIAL_ASSET_TYPE, COMPOSITE_OUTPUT_ASSET_TYPE)
 
 #: `Completion.status`.
 TERMINAL_STATUSES = ("success", "failed", "cancelled")
@@ -111,12 +115,18 @@ class TransferLease:
     lease_seconds: int
     download_url: str
     download_url_expires_at: str
-    #: Optional: Cloud sends the game a material is filed under, or "" when the
-    #: material has no game and the executor files it under a fixed placeholder.
+    #: What the task downloads. The contract requires it and `parse_lease` has
+    #: already checked it against `LEASABLE_ASSET_TYPES`, so the default here
+    #: only serves the direct constructions in the runner's tests -- a caller
+    #: that goes through a claim never sees it defaulted.
+    asset_type: str = MATERIAL_ASSET_TYPE
+    #: Optional: Cloud sends the game the asset is filed under, or "" when it
+    #: has no game and the executor files it under a fixed placeholder.
     game_name: str = ""
-    #: Optional: when the material was published, as a calendar date. Cloud sends
-    #: it so the executor can append its `YYYYMMDD` segment to the file name; a
-    #: material without a publish time leaves it None and the segment is omitted.
+    #: Optional: when the asset was published, as a calendar date. Cloud sends
+    #: it so the executor can append its `YYYYMMDD` segment to the file name; an
+    #: asset without a publish time leaves it None and the segment is omitted
+    #: (a composite output never has one).
     published_at: date | None = None
     max_attempts: int = 1
     attempt_count: int = 0
@@ -143,13 +153,14 @@ def parse_lease(payload: object) -> TransferLease:
     missing = [name for name in REQUIRED_LEASE_FIELDS if payload.get(name) is None]
     if missing:
         raise ValueError(f"the transfer lease is missing {', '.join(missing)}")
-    if payload["asset_type"] != MATERIAL_ASSET_TYPE:
+    if payload["asset_type"] not in LEASABLE_ASSET_TYPES:
         raise ValueError(
             f"this Agent takes no {payload['asset_type']!r} transfers"
         )
     return TransferLease(
         task_id=str(payload["task_id"]),
         asset_id=int(payload["asset_id"]),
+        asset_type=str(payload["asset_type"]),
         title=str(payload["title"]),
         total_bytes=int(payload["total_bytes"]),
         expected_sha256=str(payload["expected_sha256"]),
