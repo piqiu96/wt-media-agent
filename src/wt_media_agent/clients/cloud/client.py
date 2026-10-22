@@ -42,8 +42,7 @@ class AgentIdentity:
     capabilities: tuple[str, ...] = ()
 
 
-#: What this client used to hard-code. Kept as the default so that a caller
-#: who does not configure a timeout keeps the previous behaviour.
+#: Default request timeout. A caller that does not configure one gets this.
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
 
 
