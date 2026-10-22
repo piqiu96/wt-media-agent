@@ -1,10 +1,9 @@
-"""ADR-0016 dependency boundaries, checked with the standard `ast` module (T-05).
+"""ADR-0016 dependency boundaries, checked with the standard `ast` module.
 
-The point of this file is that the boundary stops being a convention. Before it,
+The point of this file is that each boundary is enforced, not merely stated:
 "executors reach the outside world only through clients/services" and "only
-`runtime/config.py` reads the environment" were true statements that nothing
-enforced: a new `os.getenv` in an executor would have looked exactly like the
-five that were removed in T-04.
+`runtime/config.py` reads the environment" fail as violations, not as review
+comments.
 
 Each rule below is a pure function from `{relative path: source}` to a list of
 violation strings. `BoundaryRuleControls` runs the same functions against
@@ -75,15 +74,15 @@ KNOWN_LAYERS = frozenset(
     }
 )
 
-#: Declared empty. `adapters/` was emptied when M3 dropped discovery and is the
-#: only one left: `modes/` and `generated/` no longer exist — the architecture
-#: baseline §5.2 never kept either of them, so the directories were the side that
-#: was out of step; `platforms/` was revoked by ADR-0016 §5 and has never existed.
+#: Packages that must stay empty. `adapters/` is the only one: `modes/` and
+#: `generated/` are not part of architecture baseline §5.2, and `platforms/` is
+#: excluded by ADR-0016 §5. A package listed here may hold nothing but a
+#: docstring.
 PLACEHOLDER_PACKAGES = frozenset({"adapters"})
 
 #: Modules that sit at the package root instead of in a layer: the package face,
-#: the two re-export shims (`tests/test_runner_session.py` imports their old
-#: paths and must not change) and the three process entries.
+#: the two re-export shims that keep existing package-root imports working, and
+#: the three process entries.
 ROOT_MODULES = frozenset(
     {
         "__init__",
@@ -166,24 +165,22 @@ FROZEN_CONSOLE_SCRIPTS = {
     "wt-media-agent-storage-migrate": "wt_media_agent.storage.migration:main",
 }
 
-#: R11 (CHG-057 T-09): the one module allowed to initialize configuration and
-#: logging. Every other module receives what it needs.
+#: R11: the one module allowed to initialize configuration and logging. Every
+#: other module receives what it needs.
 LOGGING_INITIALIZER = f"{PACKAGE}.runtime.logging"
 LOGGING_INITIALIZER_SYMBOLS = ("configure_from", "configure_logging")
 LOGGING_INITIALIZER_ALLOWED = f"{PACKAGE}/bootstrap/app.py"
 
-#: R10: the layer-to-layer edges as observed at T-05. Any new pair fails.
+#: R10: the allowed layer-to-layer edges. Any new pair fails.
 FROZEN_LAYER_EDGES = frozenset(
     {
         ("<package>", "runtime"),
         ("bootstrap", "clients"),
-        # CHG-061 T-04's assembly. ADR-0016 §1 already places `bootstrap` above
-        # `executors`; the edge did not exist because nothing here had ever named
-        # a concrete executor. The download executor is the one the registry
-        # cannot build for itself -- it is assembled from the credential this
-        # process is bound with, the operator's save directory and the transfer
-        # loop's record writer, none of which the registry has or should have --
-        # so the factory closure is built here and handed in.
+        # `bootstrap` sits above `executors` in ADR-0016 §1. The registry cannot
+        # build the download executor for itself -- it is assembled from the
+        # credential this process is bound with, the operator's save directory
+        # and the transfer loop's record writer, none of which the registry has
+        # or should have -- so the factory closure is built here and handed in.
         ("bootstrap", "executors"),
         ("bootstrap", "local_api"),
         ("bootstrap", "runner"),
@@ -196,12 +193,11 @@ FROZEN_LAYER_EDGES = frozenset(
         ("cloud_main", "bootstrap"),
         ("executors", "clients"),
         ("executors", "services"),
-        # CHG-061 T-04. The download executor writes its bytes through
-        # `storage/download_sink.py`, which is one of the three ways ADR-0016 §3
-        # says an executor may reach the world ("executor 访问外部与存储必须经
-        # clients / services / storage"). Added in the same commit as the import
-        # that needs it: this table is a ratchet in both directions, so an edge
-        # arriving without being declared here is a failure, and so is one
+        # The download executor writes its bytes through
+        # `storage/download_sink.py`, one of the three ways ADR-0016 §3 allows an
+        # executor to reach the world ("executor 访问外部与存储必须经 clients /
+        # services / storage"). This table is a ratchet in both directions: an
+        # edge arriving without being declared here is a failure, and so is one
         # declared here that nothing uses.
         ("executors", "storage"),
         ("local_api", "bootstrap"),
@@ -518,9 +514,8 @@ def r5_executor_seams(files: dict[str, str]) -> list[str]:
         for lineno, name, receiver in calls_in(source):
             # `self._helper()` is the executor's own business; a private method
             # on anything else is a layer reaching into another layer's
-            # internals, which is what T-05 removed from this file's callers.
-            # `_post` is skipped here and caught by the check below, so that one
-            # method never produces two lines for the same call.
+            # internals. `_post` is skipped here and caught by the check below,
+            # so that one method never produces two lines for the same call.
             if name.startswith("_") and name != "_post" and receiver not in ("self", "cls", ""):
                 violations.append(
                     f"R5 {relpath}:{lineno}: executor calls {receiver}.{name}(), a private "
@@ -618,19 +613,16 @@ def r10_layer_edges(files: dict[str, str]) -> list[str]:
 def r11_single_logging_initializer(files: dict[str, str]) -> list[str]:
     """Only `bootstrap/app.py` reaches for the logging initializer.
 
-    CHG-057 裁定二 orders the startup as "main 入口 → 加载配置 → 初始化 Logger →
-    创建 Runtime → 创建 Components → 启动 Server" and forbids "server 重复初始化
-    Config、component 初始化 Logger". Before T-09 `local_api/server.py` imported
-    `configure_from` and called it a second time on the same config, one line
-    after `build_components()` had already done it -- so the second call was
-    invisible *and* redundant, which is the pair of properties that let a
-    duplicate initializer survive.
+    The startup order is "main 入口 → 加载配置 → 初始化 Logger → 创建 Runtime →
+    创建 Components → 启动 Server", and the server must not initialize Config a
+    second time nor a component initialize logging. A second call on the same
+    config is both invisible *and* redundant, which is the pair of properties
+    that lets a duplicate initializer survive.
 
     The rule fires on the *import*, not on the call, so both spellings are
     caught: `from ...logging import configure_from` binds the initializer, and
     `from ... import logging as rt` binds the module and reaches it through
-    that. Matching only one spelling is the blind spot that made T-08's import
-    check incapable of failing until a mutation exposed it.
+    that. Matching only one spelling would let the other through.
 
     It is deliberately narrower than "nobody but bootstrap may import this
     module": `runtime/logging.py` also holds pure helpers, and
@@ -887,7 +879,7 @@ class BoundaryRuleControls(unittest.TestCase):
         self.assertTrue(any("runtimes" in v for v in r1_unknown_modules(files)))
 
     def test_r11_control_for_the_symbol_spelling(self):
-        """The spelling `local_api/server.py` actually used before T-09."""
+        """The symbol spelling: `from ... import configure_from`."""
         files = self.plant(f"{PACKAGE}/local_api/server.py", f"\nfrom {LOGGING_INITIALIZER} import configure_from\n")
         self.assertTrue(any("local_api/server.py" in v for v in r11_single_logging_initializer(files)))
 
@@ -895,7 +887,7 @@ class BoundaryRuleControls(unittest.TestCase):
         """`from ... import logging as rt` + `rt.configure_from(...)`.
 
         Without this control the rule could match only the dotted path it was
-        written as and still look green -- the same blind spot T-08 hit.
+        written as and still look green.
         """
         files = self.plant(
             f"{PACKAGE}/local_api/server.py",
@@ -909,8 +901,7 @@ class BoundaryRuleControls(unittest.TestCase):
 
         The import is stripped from *every* file, not just the allowed one:
         leaving the real tree's own violation in place would make this control
-        red for the wrong reason while it was being written, and it would stay
-        entangled with the tree afterwards.
+        red for the wrong reason and entangle it with the tree.
         """
         files = {
             relpath: source.replace(f"from {LOGGING_INITIALIZER} import configure_from\n", "")
