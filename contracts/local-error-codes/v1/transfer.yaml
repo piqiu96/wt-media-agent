@@ -5,12 +5,12 @@ revision: "2026.10.23.1"
 # of them is an HTTP answer.
 #
 # `errors` is what the local API returns, and each code carries the status it is
-# returned with -- the same shape `v1/bitbrowser.yaml` uses. Every code this
-# change's routes can answer with is listed here, which is checked by
+# returned with -- the same shape `v1/bitbrowser.yaml` uses. The codes this file
+# owns are the save-directory and Agent Token refusals, which is checked by
 # `tests/test_local_api_server.py::ContractCodeTests` in both directions: a code
-# the module returns and this file does not name, and a name here that the module
-# never returns, are both failures. The comparison's scope is the set of name
-# prefixes that guard carries, so a refusal named outside them escapes it.
+# under those prefixes that the module returns and this file does not name, and a
+# name here that the module never returns, are both failures. Refusals from the
+# BitBrowser and Cloud-facing routes are declared in `v1/bitbrowser.yaml`.
 errors:
   save_directory_invalid: {http_status: 400}
   # Deliberately absent from `local-agent-api/v1/local-agent.openapi.yaml`, which

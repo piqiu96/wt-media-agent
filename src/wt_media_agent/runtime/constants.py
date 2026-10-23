@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Task status values (aligned with Cloud task_schemas v2026.07.15.1).
+# Task status values (aligned with Cloud task_schemas v2026.10.23.1).
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_LEASED = "leased"
 TASK_STATUS_RUNNING = "running"

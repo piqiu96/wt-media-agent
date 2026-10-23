@@ -4,7 +4,25 @@ info:
   # Bumped by CHG-20260923-057 T-08: /api/v1/health added, /healthz untouched.
   # Bumped by CHG-20260924-061 T-04: /api/v1/save-directory added.
   # Bumped by CHG-20261002-074: `scan` parameter added to /api/v1/status.
-  version: 2026.10.03.1
+  # Bumped by CHG-20261023-101: Agent Token, BitBrowser bind, sensitive preflight and
+  # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
+  version: 2026.10.23.1
+  description: |
+    The loopback API the Desktop drives on this machine. Every route requires the
+    local runtime token (`Authorization: Bearer <runtime token>`) when one is
+    configured; an unauthenticated request answers `401 {"error": "unauthorized"}`.
+
+    Routes that act for the signed-in user (`/api/v1/agent-token`,
+    `/api/v1/bit-account/bind`, `/api/v1/sensitive-tasks/{task_id}/preflight`,
+    `/api/v1/sensitive-permits/{permit_id}/finish`) additionally need the Agent
+    Token that the Desktop obtained from Cloud and handed to
+    `POST /api/v1/agent-token`. That token lives in memory only: this API never
+    echoes it back, never writes it to disk, and answers `400 agent_token_required`
+    when none has been provided. Every other route is local-only and never talks to
+    Cloud.
+
+    Errors use `{error: {code, message?, retryable?, recovery_action?}}`; codes are
+    listed in `contracts/local-error-codes/`.
 servers:
   - url: http://127.0.0.1:8765
 paths:
@@ -73,7 +91,11 @@ paths:
           description: Current observable Agent state.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/AgentStatus'}
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/AgentStatus'}
   /api/v1/events:
     get:
       operationId: localAgentEvents
@@ -83,9 +105,37 @@ paths:
           content:
             text/event-stream:
               schema: {type: string}
+  /api/v1/agent-token:
+    post:
+      operationId: setAgentToken
+      description: |
+        The Desktop hands over the Agent Token it exchanged from its Cloud
+        Desktop session. Write-only: the answer says whether the Agent holds a
+        token and when it expires, never the token itself. Replacing it does not
+        interrupt a running task.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AgentTokenRequest'}
+      responses:
+        '200':
+          description: Stored; the facts are read back from the stored token.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/AgentTokenFacts'}
+        '400': {description: 'The token string is missing (`agent_token_required`).'}
+        '503': {description: 'This build has no token store (`agent_token_unavailable`).'}
   /api/v1/bit-browser/profile-scans:
     post:
       operationId: scanBitBrowserProfiles
+      description: |
+        A fresh real read of BitBrowser. `observed_at` is when that read happened;
+        Cloud refuses facts older than its freshness window.
       responses:
         '200':
           description: Full secret-free Profile snapshot with one verified normalized BitBrowser main account.
@@ -115,6 +165,206 @@ paths:
                         type: array
                         items: {$ref: '#/components/schemas/BitProfileGroup'}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
+  /api/v1/bit-browser/profile-create:
+    post:
+      operationId: createBitBrowserProfile
+      description: |
+        Creates one Profile in BitBrowser from the caller's body and answers its id.
+        The body is the BitBrowser creation payload (`name`, `groupId`, proxy
+        fields, ...) except credentials, which are never echoed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfileCreateRequest'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: {type: string, description: The new BitBrowser profile id.}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+  /api/v1/bit-browser/profile-open:
+    post:
+      operationId: openBitBrowserProfile
+      responses:
+        '200':
+          description: The Profile was opened.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status]
+                    properties:
+                      status: {type: string, enum: [opened]}
+        '400': {description: '`id` is missing (`profile_id_required`).'}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfileIdRequest'}
+  /api/v1/bit-browser/profile-close:
+    post:
+      operationId: closeBitBrowserProfile
+      responses:
+        '200':
+          description: The Profile was closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status]
+                    properties:
+                      status: {type: string, enum: [closed]}
+        '400': {description: '`id` is missing (`profile_id_required`).'}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfileIdRequest'}
+  /api/v1/bit-browser/profile-update:
+    post:
+      operationId: updateBitBrowserProfile
+      description: Updates one Profile from the caller's body (`id` plus the fields to change).
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status]
+                    properties:
+                      status: {type: string, enum: [updated]}
+        '400': {description: '`id` is missing (`profile_id_required`).'}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfileUpdateRequest'}
+  /api/v1/bit-browser/profile-delete:
+    post:
+      operationId: deleteBitBrowserProfile
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status]
+                    properties:
+                      status: {type: string, enum: [deleted]}
+        '400': {description: '`id` is missing (`profile_id_required`).'}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProfileIdRequest'}
+  /api/v1/bit-account/bind:
+    post:
+      operationId: bindBitAccount
+      description: |
+        First bind or rebind of the BitBrowser main account. The main account is
+        read from the running BitBrowser by the Agent and sent to Cloud as
+        observed facts; the caller's body only says whether a change is
+        confirmed (`rebind: true`). There is deliberately no way to type a
+        `main_user_id` into this API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BitAccountBindRequest'}
+      responses:
+        '200':
+          description: Cloud accepted the binding; the masked view is passed through.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/BitAccountView'}
+        '400': {description: 'No Agent Token has been provided (`agent_token_required`).'}
+        '401': {description: Cloud refused the Agent Token.}
+        '409': {description: 'Cloud refused the binding (BIT_MAIN_USER_MISMATCH, BIT_BROWSER_OFFLINE, ...).'}
+        '502': {description: Cloud unreachable, or BitBrowser is not running.}
+        '503': {description: No Cloud client, no token store, or the BitBrowser identity could not be read.}
+  /api/v1/sensitive-tasks/{task_id}/preflight:
+    post:
+      operationId: preflightSensitiveTask
+      description: |
+        Reads BitBrowser now (status, main account, whether the Profile is
+        visible) plus the save directory, then asks Cloud to admit the operation.
+        Cloud's decision and failure codes are passed through unchanged.
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SensitivePreflightRequest'}
+      responses:
+        '200':
+          description: Cloud's preflight outcome.
+        '400': {description: '`profile_id` missing, or no Agent Token provided.'}
+        '401': {description: Cloud refused the Agent Token.}
+        '409': {description: Cloud refused admission.}
+        '502': {description: Cloud unreachable, or BitBrowser is not running.}
+        '503': {description: No Cloud client, no token store, or the BitBrowser identity could not be read.}
+  /api/v1/sensitive-permits/{permit_id}/finish:
+    post:
+      operationId: finishSensitivePermit
+      description: |
+        Releases a held permit. A local operation that failed still releases it and
+        marks `result_uncertain`, otherwise Cloud keeps the window occupied.
+      parameters:
+        - name: permit_id
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SensitivePermitFinishRequest'}
+      responses:
+        '204': {description: Released or moved to review-required; empty body.}
+        '400': {description: 'Unknown outcome, or no Agent Token provided.'}
+        '401': {description: Cloud refused the Agent Token.}
+        '409': {description: The permit is no longer held or belongs to another user.}
+        '502': {description: Cloud unreachable.}
   /api/v1/account-check:
     post:
       operationId: checkPlatformAccountInProfile
@@ -135,6 +385,37 @@ paths:
                 properties:
                   data: {$ref: '#/components/schemas/AccountCheckResult'}
         '400': {description: Required profile or platform input is invalid.}
+        '409': {description: BitBrowser identity is not verifiable.}
+        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+  /api/v1/cookie-read:
+    post:
+      operationId: readProfileCookies
+      description: |
+        Reads the cookies of one BitBrowser Profile. The cookie list is sensitive:
+        the Agent returns it to the local caller, and it must never be logged or
+        sent to Cloud as an ordinary task payload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CookieReadRequest'}
+      responses:
+        '200':
+          description: The cookies read from the Profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [cookies]
+                    properties:
+                      cookies:
+                        type: array
+                        items: {type: object}
+        '400': {description: '`profile_id` is missing (`cookie_read_input_invalid`).'}
         '409': {description: BitBrowser identity is not verifiable.}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
   /api/v1/proxy-check:
@@ -270,7 +551,16 @@ components:
         agent_id: {type: string}
         status: {type: string, enum: [idle, running, draining, offline]}
         current_task_id: {type: string, nullable: true}
+        current_task_progress: {type: integer, nullable: true}
+        current_task_status: {type: string, nullable: true}
         pending_result_count: {type: integer, minimum: 0}
+        bitbrowser_status: {type: string, enum: [running, stopped, unreachable]}
+        main_user_id:
+          type: string
+          description: Read from the running BitBrowser; present only when a scan succeeded.
+        bit_profile_ids:
+          type: array
+          items: {type: string}
     DependencyStatus:
       type: object
       required: [status]
@@ -312,9 +602,13 @@ components:
       additionalProperties: false
     ProfileSnapshot:
       type: object
-      required: [main_user_id, profiles]
+      required: [main_user_id, profiles, observed_at]
       properties:
         main_user_id: {type: string, description: Normalized from BitBrowser mainUserId.}
+        observed_at:
+          type: string
+          format: date-time
+          description: When this read happened; Cloud rejects a fact older than its freshness window.
         profiles:
           type: array
           minItems: 1
@@ -340,6 +634,73 @@ components:
         id: {type: string}
         name: {type: string}
       additionalProperties: false
+    ProfileCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        groupId: {type: string, description: BitBrowser group id; `group_id` is accepted as an alias.}
+      additionalProperties: true
+    ProfileIdRequest:
+      type: object
+      required: [id]
+      properties:
+        id: {type: string, description: BitBrowser profile id.}
+      additionalProperties: false
+    ProfileUpdateRequest:
+      type: object
+      required: [id]
+      properties:
+        id: {type: string, description: BitBrowser profile id.}
+      additionalProperties: true
+    AgentTokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          writeOnly: true
+          description: Secret. Held in memory by the Agent; never persisted, logged, or echoed.
+        expires_at: {type: integer, format: int64, description: Unix seconds; omitted or non-integer is stored as unknown.}
+      additionalProperties: false
+    AgentTokenFacts:
+      type: object
+      required: [has_agent_token]
+      properties:
+        has_agent_token: {type: boolean}
+        expires_at: {type: integer, format: int64, nullable: true}
+      additionalProperties: false
+    BitAccountBindRequest:
+      type: object
+      properties:
+        rebind:
+          type: boolean
+          default: false
+          description: >
+            The user's explicit confirmation to change the bound main account. Without
+            it, a different observed main account is refused and nothing is migrated.
+      additionalProperties: false
+    BitAccountView:
+      type: object
+      required: [bound]
+      properties:
+        bound: {type: boolean}
+        main_user_id_masked: {type: string, description: Full main_user_id never leaves Cloud.}
+        bound_at: {type: string, format: date-time}
+        last_verified_at: {type: string, format: date-time}
+      additionalProperties: false
+    SensitivePreflightRequest:
+      type: object
+      required: [profile_id]
+      properties:
+        profile_id: {type: string, description: The BitBrowser Profile this sensitive operation targets.}
+      additionalProperties: false
+    SensitivePermitFinishRequest:
+      type: object
+      required: [outcome]
+      properties:
+        outcome: {type: string, enum: [completed, result_uncertain]}
+      additionalProperties: false
     AccountCheckRequest:
       type: object
       required: [profile_id, platform]
@@ -359,6 +720,16 @@ components:
           type: string
           enum: [normal, not_logged_in, verification_needed, expired, restricted, account_mismatch, environment_error]
         message: {type: string}
+        check_items:
+          type: array
+          items: {type: object}
+          description: Per-item evidence for the verdict.
+      additionalProperties: false
+    CookieReadRequest:
+      type: object
+      required: [profile_id]
+      properties:
+        profile_id: {type: string, description: BitBrowser profile id.}
       additionalProperties: false
     ProxyCheckRequest:
       type: object

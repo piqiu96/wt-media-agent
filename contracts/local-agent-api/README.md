@@ -10,19 +10,22 @@ Paths the formal definition holds, by the change that added them:
   `POST /api/v1/proxy-mutation`
 - CHG-20260923-057: `GET /api/v1/health` (aggregate health; `/healthz` stays frozen)
 - CHG-20260924-061: `GET /api/v1/save-directory`, `POST /api/v1/save-directory`
+- CHG-20261023-101: `POST /api/v1/agent-token`, `POST /api/v1/bit-account/bind`,
+  `POST /api/v1/sensitive-tasks/{task_id}/preflight`,
+  `POST /api/v1/sensitive-permits/{permit_id}/finish`, and the Profile and cookie routes
+  that had been served without a definition: `POST /api/v1/bit-browser/profile-create`,
+  `POST /api/v1/bit-browser/profile-open`, `POST /api/v1/bit-browser/profile-close`,
+  `POST /api/v1/bit-browser/profile-update`, `POST /api/v1/bit-browser/profile-delete`,
+  `POST /api/v1/cookie-read`
 
-Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.03.1`. The
+Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.23.1`. The
 revision is that file's own `info.version`, and the file is the only place the
 number is written down. The list above is checked against the file's `paths:` and
 their methods by `tests/test_contract_docs.py`, so an endpoint added to one and
 not the other -- or listed here with the wrong method -- fails the suite instead
 of drifting.
 
-The list above is the paths this definition *holds*, and the file is the only
-place that list comes from. It is not a claim that the Agent serves nothing else:
-seven paths the process answers today -- `/api/v1/bind`,
-`/api/v1/bit-browser/profile-{create,open,close,update,delete}` and
-`/api/v1/cookie-read` -- were implemented without a definition being written down
-for them, and they are registered as an open gap rather than described here,
-because a definition invented after the fact would be a description of the
-implementation rather than an agreed interface.
+The old bind route (`/api/v1/bind`) is gone: a machine is no longer bound to a
+device identity. The Desktop proves the machine by handing over the Agent Token
+its Desktop session exchanged, and BitBrowser's main account is read from
+BitBrowser by the Agent rather than sent in by a caller.

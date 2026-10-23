@@ -8,7 +8,9 @@ from typing import Optional
 
 API_NAME = "cloud-agent"
 EXPECTED_MAJOR_VERSION = "v1"
-REQUIRED_CONTRACT_REVISION = "2026.07.15.1"  # task_schemas locked to revision 2026.07.15.1 (M1-R1)
+# Task claim/report and the Agent Token routes only exist in this revision; anything
+# older has no way to authenticate the Agent, so it is refused instead of half-working.
+REQUIRED_CONTRACT_REVISION = "2026.10.23.1"
 
 
 def is_cloud_agent_compatible(metadata: Mapping[str, object]) -> bool:
