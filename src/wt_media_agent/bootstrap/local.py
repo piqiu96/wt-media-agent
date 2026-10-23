@@ -27,6 +27,7 @@ def run() -> int:
         checkpoint_store=components.store,
         save_directory_store=components.save_directories,
         agent_token=components.agent_token,
+        cloud_agent=components.cloud,
         state=components.state,
         auth_token=config.runtime_token,
         cloud_base_url=config.cloud_base_url,

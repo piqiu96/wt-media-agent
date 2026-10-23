@@ -33,6 +33,23 @@ class RecordingTransport:
         return self.answer
 
 
+class RecordingTransferTransport:
+    """返回 HTTP 状态的那个传输面；finish 的成功应答是 204，没有 body。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Mapping[str, object], Mapping[str, str]]] = []
+
+    def __call__(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, object],
+        headers: Mapping[str, str],
+    ) -> tuple[int, Mapping[str, object]]:
+        self.calls.append((method, path, payload, headers))
+        return 204, {}
+
+
 class ClaimTest(unittest.TestCase):
     def test_claim_carries_only_the_lease_and_the_bearer_token(self) -> None:
         transport = RecordingTransport()
@@ -205,7 +222,10 @@ class PreflightAndBindingTest(unittest.TestCase):
 
     def test_sensitive_preflight_sends_facts_and_renew_finish_do_not_send_a_credential(self) -> None:
         transport = RecordingTransport({"data": {"outcome": "granted", "permit_id": "permit-1"}})
-        client = CloudAgentClient("http://cloud.test", transport=transport)
+        finish_transport = RecordingTransferTransport()
+        client = CloudAgentClient(
+            "http://cloud.test", transport=transport, transfer_transport=finish_transport
+        )
 
         client.preflight_sensitive_task(TOKEN, "task-1", {"bitbrowser_status": "running"})
         client.renew_sensitive_permit(TOKEN, "permit-1", 60)
@@ -215,9 +235,9 @@ class PreflightAndBindingTest(unittest.TestCase):
         self.assertEqual(transport.calls[0][2], {"facts": {"bitbrowser_status": "running"}})
         self.assertEqual(transport.calls[1][1], "/api/v1/local-agent/sensitive-permits/permit-1/renew")
         self.assertEqual(transport.calls[1][2], {"lease_seconds": 60})
-        self.assertEqual(transport.calls[2][1], "/api/v1/local-agent/sensitive-permits/permit-1/finish")
-        self.assertEqual(transport.calls[2][2], {"outcome": "completed"})
-        for _, _, _, headers in transport.calls:
+        self.assertEqual(finish_transport.calls[0][1], "/api/v1/local-agent/sensitive-permits/permit-1/finish")
+        self.assertEqual(finish_transport.calls[0][2], {"outcome": "completed"})
+        for _, _, _, headers in transport.calls + finish_transport.calls:
             self.assertEqual(headers, {"authorization": f"Bearer {TOKEN}"})
 
 

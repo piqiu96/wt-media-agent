@@ -203,16 +203,17 @@ class CloudAgentClient:
         )
         return _expect_data(response)
 
-    def finish_sensitive_permit(
-        self, token: str, permit_id: str, outcome: str
-    ) -> Mapping[str, object]:
-        response = self._transport(
+    def finish_sensitive_permit(self, token: str, permit_id: str, outcome: str) -> None:
+        """交还许可。Cloud 成功时返回 204，没有 body 可解析。"""
+        status, body = self._transfer_transport(
             "POST",
             f"/api/v1/local-agent/sensitive-permits/{permit_id}/finish",
             {"outcome": outcome},
             _bearer(token),
         )
-        return _expect_data(response)
+        failure = failure_from(body, status)
+        if failure is not None:
+            raise failure
 
     # ---- 文件传输 ----
     #

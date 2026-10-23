@@ -10,6 +10,7 @@ import secrets
 import signal
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional, Protocol
@@ -28,9 +29,17 @@ from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.download_sink import DownloadSink
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
 from wt_media_agent.clients.bitbrowser import (
+    BitBrowserError,
     BitBrowserIdentityError,
     BitBrowserResponseError,
     ProfileSnapshot,
+)
+from wt_media_agent.clients.cloud import CloudAgentClient
+from wt_media_agent.clients.cloud.errors import (
+    AgentAuthError,
+    CloudError,
+    CloudUnavailableError,
+    StaleAttemptError,
 )
 from wt_media_agent.clients import platform_identity
 from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
@@ -81,6 +90,7 @@ class LocalApiServer:
         checkpoint_store: Optional[CheckpointStore] = None,
         save_directories: Optional[SaveDirectoryStore] = None,
         agent_token: Optional[AgentToken] = None,
+        cloud_agent: Optional[CloudAgentClient] = None,
         auth_token: str = "",
         cloud_base_url: str = "",
     ) -> None:
@@ -100,6 +110,9 @@ class LocalApiServer:
         # Desktop 通过本机路由写入 Token，任务循环读取同一个对象。没装配时
         # 如实回答不可用，而不是丢弃写入。
         self.agent_token = agent_token
+        # 绑定与敏感预检以 Token 用户的身份访问 Cloud。事实（BitBrowser 主账号、
+        # 观察时间、Profile 是否可见）必须来自这里实读，不能由调用方转述。
+        self.cloud_agent = cloud_agent
         self.auth_token = auth_token or ""
         # The configured Cloud endpoint, handed in rather than read here (the
         # configuration layer is the only reader of `config/` and the
@@ -196,7 +209,8 @@ class LocalApiServer:
         try:
             snapshot = self.bitbrowser.scan_profiles()
             self._bitbrowser_scan.record(snapshot)
-            return 200, snapshot.to_dict()
+            # Cloud 用 observed_at 判断扫描事实是否新鲜；它就是这次实读的时刻。
+            return 200, {**snapshot.to_dict(), "observed_at": _utc_now_iso()}
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
         except BitBrowserResponseError:
@@ -293,6 +307,121 @@ class LocalApiServer:
                 "expires_at": store.expires_at(),
             }
         }
+
+    # ---- 需要 Agent Token 的 Cloud 操作 ----
+
+    def _agent_cloud(
+        self,
+    ) -> tuple[
+        Optional[CloudAgentClient],
+        Optional[str],
+        Optional[tuple[int, dict[str, object]]],
+    ]:
+        """这些路由缺 Cloud 客户端或 Token 就不能代表用户，如实回答。"""
+        if self.cloud_agent is None:
+            return None, None, (503, {"error": {"code": "cloud_unavailable"}})
+        store = self.agent_token
+        if store is None:
+            return None, None, (503, {"error": {"code": "agent_token_unavailable"}})
+        token = store.get()
+        if not token:
+            return None, None, (400, {"error": {"code": "agent_token_required"}})
+        return self.cloud_agent, token, None
+
+    def _scan_for_cloud(self) -> tuple[Optional[ProfileSnapshot], Optional[tuple[int, dict[str, object]]]]:
+        """实读一次 BitBrowser；失败按离线回答，不把旧快照当事实。"""
+        try:
+            return self.bitbrowser.scan_profiles(), None
+        except BitBrowserIdentityError:
+            return None, (503, {"error": {"code": "bitbrowser_identity_unverifiable"}})
+        except BitBrowserError:
+            return None, (
+                503,
+                {
+                    "error": {
+                        "code": "bit_browser_offline",
+                        "message": "BitBrowser 未运行或不可达",
+                        "retryable": True,
+                        "recovery_action": "start_bitbrowser",
+                    }
+                },
+            )
+
+    def bit_account_bind_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/bit-account/bind`：主账号取本机实读，不取调用方输入。
+
+        调用方只表达是否确认换绑；`main_user_id` 来自 BitBrowser 的实时应答。
+        """
+        client, token, refusal = self._agent_cloud()
+        if refusal is not None:
+            return refusal
+        snapshot, refusal = self._scan_for_cloud()
+        if refusal is not None:
+            return refusal
+        main_user_id = snapshot.main_user_id.strip()
+        if not main_user_id:
+            return 503, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        try:
+            data = client.bind_bit_account(
+                token,
+                main_user_id=main_user_id,
+                observed_at=_utc_now_iso(),
+                rebind=body.get("rebind") is True,
+            )
+        except (CloudError, CloudUnavailableError) as exc:
+            return _cloud_failure(exc)
+        return 200, {"data": data}
+
+    def sensitive_preflight_response(
+        self, task_id: str, body: dict[str, object]
+    ) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/sensitive-tasks/<id>/preflight`：先实读，再请 Cloud 判定。"""
+        client, token, refusal = self._agent_cloud()
+        if refusal is not None:
+            return refusal
+        profile_id = str(body.get("profile_id", "")).strip()
+        if not profile_id:
+            return 400, {"error": {"code": "invalid_request"}}
+        snapshot, refusal = self._scan_for_cloud()
+        if refusal is not None:
+            return refusal
+        files_ready = False
+        if self.save_directories is not None:
+            files_ready = bool(_save_directory_facts(self.save_directories)["writable"])
+        facts = {
+            "bitbrowser_status": "running",
+            "main_user_id": snapshot.main_user_id,
+            "observed_at": _utc_now_iso(),
+            "profile_visible": any(
+                profile.bit_profile_id == profile_id for profile in snapshot.profiles
+            ),
+            "files_ready": files_ready,
+        }
+        try:
+            data = client.preflight_sensitive_task(token, task_id, facts)
+        except (CloudError, CloudUnavailableError) as exc:
+            return _cloud_failure(exc)
+        return 200, {"data": data}
+
+    def sensitive_permit_finish_response(
+        self, permit_id: str, body: dict[str, object]
+    ) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/sensitive-permits/<id>/finish`：交还许可。
+
+        本地操作失败时同样要交还，并标记 `result_uncertain`，否则 Cloud 会一直
+        占着这个窗口。
+        """
+        client, token, refusal = self._agent_cloud()
+        if refusal is not None:
+            return refusal
+        outcome = str(body.get("outcome", "")).strip()
+        if outcome not in ("completed", "result_uncertain"):
+            return 400, {"error": {"code": "invalid_request"}}
+        try:
+            client.finish_sensitive_permit(token, permit_id, outcome)
+        except (CloudError, CloudUnavailableError) as exc:
+            return _cloud_failure(exc)
+        return 204, {}
 
     def _no_save_directory_store(self) -> tuple[int, dict[str, object]]:
         """What a server with no local storage answers.
@@ -520,6 +649,43 @@ class LocalApiServer:
         return 200, {"data": {"cookies": cookies}}
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _path_id(path: str, prefix: str, suffix: str) -> Optional[str]:
+    """取出 `/prefix/<id>/suffix` 里的 id；形状不符时返回 None。"""
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    middle = path[len(prefix) : len(path) - len(suffix)]
+    return middle or None
+
+
+def _cloud_failure(exc: Exception) -> tuple[int, dict[str, object]]:
+    """把 Cloud 的拒绝转成本机应答，码、可否重试和下一步都以 Cloud 为准。"""
+    if isinstance(exc, CloudUnavailableError):
+        return 502, {
+            "error": {
+                "code": "cloud_unavailable",
+                "message": "Cloud 不可达",
+                "retryable": True,
+                "recovery_action": "",
+            }
+        }
+    assert isinstance(exc, CloudError)
+    return (
+        401 if isinstance(exc, AgentAuthError) else 409,
+        {
+            "error": {
+                "code": exc.code or "cloud_request_failed",
+                "message": exc.message,
+                "retryable": exc.retryable,
+                "recovery_action": exc.recovery_action,
+            }
+        },
+    )
+
+
 def _save_directory_facts(store: SaveDirectoryStore) -> dict[str, object]:
     """The stored choice plus the facts read now.
 
@@ -604,7 +770,21 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             if not self._check_auth():
                 self._write_json(401, {"error": "unauthorized"})
                 return
-            if self.path == "/api/v1/bit-browser/profile-scans":
+            route = urlparse.urlsplit(self.path).path
+            task_id = _path_id(route, "/api/v1/sensitive-tasks/", "/preflight")
+            permit_id = _path_id(route, "/api/v1/sensitive-permits/", "/finish")
+            if task_id is not None:
+                status, payload = api.sensitive_preflight_response(task_id, self._read_body())
+                self._write_json(status, payload)
+            elif permit_id is not None:
+                status, payload = api.sensitive_permit_finish_response(
+                    permit_id, self._read_body()
+                )
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-account/bind":
+                status, payload = api.bit_account_bind_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-scans":
                 status, payload = api.profile_scan_response()
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-groups":
@@ -715,7 +895,10 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             return
 
         def _write_json(self, status: int, payload: dict[str, object]) -> None:
-            body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            if status == 204:
+                body = b""
+            else:
+                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))
@@ -767,6 +950,7 @@ def serve(
     checkpoint_store: Optional[CheckpointStore] = None,
     save_directory_store: Optional[SaveDirectoryStore] = None,
     agent_token: Optional[AgentToken] = None,
+    cloud_agent: Optional[CloudAgentClient] = None,
     state: LocalAgentState,
     auth_token: str = "",
     cloud_base_url: str = "",
@@ -777,6 +961,7 @@ def serve(
         checkpoint_store=checkpoint_store,
         save_directories=save_directory_store,
         agent_token=agent_token,
+        cloud_agent=cloud_agent,
         auth_token=auth_token,
         cloud_base_url=cloud_base_url,
     )
@@ -852,6 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_store=components.store,
         save_directory_store=components.save_directories,
         agent_token=components.agent_token,
+        cloud_agent=components.cloud,
         state=components.state,
         auth_token=args.auth_token or config.runtime_token,
         cloud_base_url=config.cloud_base_url,
