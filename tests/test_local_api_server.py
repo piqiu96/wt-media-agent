@@ -359,11 +359,16 @@ def _contract_operations() -> set[tuple[str, str]]:
 
 
 def _served_operations() -> set[tuple[str, str]]:
-    """Every `(METHOD, path)` the handler's `if self.path ==` chains answer.
+    """Every `(METHOD, path)` the handler answers.
 
     Read out of the AST rather than by calling the routes: one of them is an SSE
     stream that never returns, and a check that cannot include it would report a
     contract route as missing for the wrong reason.
+
+    Two shapes count as a branch: an exact `self.path == "/literal"` comparison,
+    and a `_path_id(route, "/prefix/", "/suffix")` lookup, which is how routes
+    with an id in the middle are matched. The latter is recorded with a
+    `{param}` placeholder so it can be compared against the contract template.
     """
     tree = ast.parse(
         (
@@ -379,6 +384,19 @@ def _served_operations() -> set[tuple[str, str]]:
                 continue
             http_method = method.name[len("do_"):]
             for node in ast.walk(method):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_path_id"
+                    and len(node.args) == 3
+                    and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[2], ast.Constant)
+                    and isinstance(node.args[1].value, str)
+                    and isinstance(node.args[2].value, str)
+                ):
+                    served.add(
+                        (http_method, f"{node.args[1].value}{{param}}{node.args[2].value}")
+                    )
                 if not isinstance(node, ast.Compare) or len(node.ops) != 1:
                     continue
                 if not isinstance(node.ops[0], ast.Eq) or len(node.comparators) != 1:
@@ -413,7 +431,11 @@ class ContractRouteTests(unittest.TestCase):
         self.assertGreaterEqual(
             len(promised), 8, f"the contract was read as {sorted(promised)}"
         )
-        self.assertEqual(promised - _served_operations(), set())
+        normalized = {
+            (method, re.sub(r"\{[^}]+\}", "{param}", path))
+            for method, path in promised
+        }
+        self.assertEqual(normalized - _served_operations(), set())
 
     def test_the_reader_can_see_a_path_that_is_not_there(self) -> None:
         """A positive control, because a mis-parsed contract reads as `set()`.
