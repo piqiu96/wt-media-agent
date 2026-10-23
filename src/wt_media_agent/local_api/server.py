@@ -1,4 +1,4 @@
-"""Local Agent HTTP/SSE API with task status, events, and node binding."""
+"""Local Agent HTTP/SSE API：状态、事件、本机操作，以及 Agent Token 配置。"""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ from wt_media_agent.runtime.environment import (
     RuntimeEnvironmentCollector,
 )
 from wt_media_agent.runtime.logging import begin_operation, end_operation
-from wt_media_agent.runtime.node_credential import NodeCredential
+from wt_media_agent.runtime.agent_token import AgentToken
 
 #: Spelled out rather than `__name__`. `scripts/verify-health.sh` and
 #: `bin/control.sh` both run this module with `-m`, where `__name__`
@@ -80,7 +80,7 @@ class LocalApiServer:
         bitbrowser: ProfileScanner,
         checkpoint_store: Optional[CheckpointStore] = None,
         save_directories: Optional[SaveDirectoryStore] = None,
-        node_credential: Optional[NodeCredential] = None,
+        agent_token: Optional[AgentToken] = None,
         auth_token: str = "",
         cloud_base_url: str = "",
     ) -> None:
@@ -97,11 +97,9 @@ class LocalApiServer:
         # `save_directory_response` -- so a server wired without one says so
         # instead of reporting a machine that has chosen no directory.
         self.save_directories = save_directories
-        # The same object the transfer loop reads: this server is what records
-        # the credential Cloud issued, and that loop is what spends it. Absent is
-        # answered rather than ignored, exactly as an absent save-directory store
-        # is -- see `_no_node_credential_store`.
-        self.node_credential = node_credential
+        # Desktop 通过本机路由写入 Token，任务循环读取同一个对象。没装配时
+        # 如实回答不可用，而不是丢弃写入。
+        self.agent_token = agent_token
         self.auth_token = auth_token or ""
         # The configured Cloud endpoint, handed in rather than read here (the
         # configuration layer is the only reader of `config/` and the
@@ -271,56 +269,30 @@ class LocalApiServer:
         store.set(str(directory))
         return 200, {"data": _save_directory_facts(store)}
 
-    # ---- bind ----
+    # ---- Agent Token ----
 
-    def record_binding(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
-        """`POST /api/v1/bind`: the Cloud identity this Agent is to work under.
+    def record_agent_token(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/agent-token`：Desktop 交来 Cloud 签发的 Agent Token。
 
-        Two facts arrive together and are recorded together: the node id that
-        `/api/v1/status` reports, and -- since CHG-061 T-04 -- the node credential
-        Cloud issued for it. One call because they are one event: Desktop has
-        just registered this node with Cloud. A route that took the id from one
-        call and the credential from another could be left holding half of each.
-
-        The credential is **recorded and never echoed**. The answer says whether
-        this process holds one, and `has_node_credential` is read back from what
-        is held rather than from the request -- otherwise it would agree just as
-        well with a write that was dropped, which is the one failure a caller
-        cannot see for itself.
-
-        A request that carries no credential is not refused and changes nothing.
-        That is the local-only bind Desktop has always been able to make, and a
-        call with nothing to say about Cloud must not be able to unbind a running
-        download loop.
+        Token 只进内存，应答只说是否持有、何时过期，不回显 Token 本身。
+        `has_agent_token` 从已保存的状态读回，写入被丢弃时不会谎报成功。
         """
-        credential = body.get("node_credential")
-        if isinstance(credential, str) and credential:
-            store = self.node_credential
-            if store is None:
-                return self._no_node_credential_store()
-            store.set(credential)
-
-        node_id = str(body.get("node_id", "local-agent-dev"))
-        self.state.node_id = node_id
+        raw = body.get("token")
+        if not isinstance(raw, str) or not raw.strip():
+            return 400, {"error": {"code": "agent_token_required"}}
+        store = self.agent_token
+        if store is None:
+            return 503, {"error": {"code": "agent_token_unavailable"}}
+        expires_at = body.get("expires_at")
+        if isinstance(expires_at, bool) or not isinstance(expires_at, int):
+            expires_at = None
+        store.set(raw.strip(), expires_at)
         return 200, {
-            "node_id": node_id,
-            "session_token": secrets.token_hex(32),
-            "status": "bound",
-            "has_node_credential": bool(self.node_credential and self.node_credential.get()),
+            "data": {
+                "has_agent_token": store.has_token(),
+                "expires_at": store.expires_at(),
+            }
         }
-
-    def _no_node_credential_store(self) -> tuple[int, dict[str, object]]:
-        """What a server that cannot hold a credential answers.
-
-        The same shape as `_no_save_directory_store`, and for the same reason: a
-        credential that arrives where there is no store is a write that is
-        dropped, and an answer read back from the request would report a binding
-        this process does not have. Measured, not imagined -- when this route was
-        first wired into the sidecar, `serve` was called without the
-        save-directory store and that route silently answered "no directory
-        chosen" for a machine that had one (fixed in the same commit).
-        """
-        return 503, {"error": {"code": "node_credential_unavailable"}}
 
     def _no_save_directory_store(self) -> tuple[int, dict[str, object]]:
         """What a server with no local storage answers.
@@ -671,8 +643,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             elif self.path == "/api/v1/save-directory":
                 status, payload = api.set_save_directory_response(self._read_body())
                 self._write_json(status, payload)
-            elif self.path == "/api/v1/bind":
-                self._handle_bind()
+            elif self.path == "/api/v1/agent-token":
+                status, payload = api.record_agent_token(self._read_body())
+                self._write_json(status, payload)
             else:
                 self._write_json(404, {"error": "not_found"})
 
@@ -706,28 +679,6 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                     self.wfile.flush()
                 except Exception:
                     pass
-
-        def _handle_bind(self) -> None:
-            try:
-                length = int(self.headers.get("content-length", 0))
-                body = self.rfile.read(length) if length else b"{}"
-                payload = json.loads(body)
-            except (ValueError, json.JSONDecodeError):
-                self._write_json(400, {"error": "invalid_json"})
-                return
-
-            binding_token = payload.get("binding_token", "")
-            if not binding_token or not isinstance(binding_token, str):
-                self._write_json(400, {"error": "binding_token_required"})
-                return
-
-            # What is recorded, and what the answer may say about it, is the
-            # API's business and lives with the other routes' answers. The two
-            # refusals above stay here, unchanged: they are the shape this route
-            # has always answered with, and the vocabulary that names refusals by
-            # code has never named them.
-            status, answer = api.record_binding(payload)
-            self._write_json(status, answer)
 
         def _sse_write(self, event: str, data: str) -> None:
             try:
@@ -815,7 +766,7 @@ def serve(
     bitbrowser: ProfileScanner,
     checkpoint_store: Optional[CheckpointStore] = None,
     save_directory_store: Optional[SaveDirectoryStore] = None,
-    node_credential: Optional[NodeCredential] = None,
+    agent_token: Optional[AgentToken] = None,
     state: LocalAgentState,
     auth_token: str = "",
     cloud_base_url: str = "",
@@ -825,7 +776,7 @@ def serve(
         bitbrowser=bitbrowser,
         checkpoint_store=checkpoint_store,
         save_directories=save_directory_store,
-        node_credential=node_credential,
+        agent_token=agent_token,
         auth_token=auth_token,
         cloud_base_url=cloud_base_url,
     )
@@ -900,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
         bitbrowser=components.bitbrowser,
         checkpoint_store=components.store,
         save_directory_store=components.save_directories,
-        node_credential=components.node_credential,
+        agent_token=components.agent_token,
         state=components.state,
         auth_token=args.auth_token or config.runtime_token,
         cloud_base_url=config.cloud_base_url,

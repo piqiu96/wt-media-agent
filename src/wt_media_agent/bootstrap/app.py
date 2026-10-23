@@ -11,7 +11,7 @@ below is handed what it needs rather than reaching for it:
 4. the BitBrowser client -- the only construction site in `src/`
 5. the Cloud client
 6. storage: schema, then the checkpoint store and the save-directory store
-7. the Cloud identity, empty until Desktop binds this process
+7. the Agent Token, empty until Desktop hands one over
 8. the configuration both loops share
 9. the transfer loop, so the download factory below can close over its `record`
 10. executor factories, bound to the client from step 4
@@ -38,6 +38,7 @@ from wt_media_agent.runner.config import TaskRunnerConfig
 from wt_media_agent.runner.registry import default_executor_factories
 from wt_media_agent.runner.runner import TaskRunner
 from wt_media_agent.runner.transfer import TransferRunner
+from wt_media_agent.runtime.agent_token import AgentToken
 from wt_media_agent.runtime.config import AgentConfig, configure_frozen_ca_bundle, load_config
 from wt_media_agent.runtime.constants import (
     DEFAULT_LEASE_SECONDS,
@@ -45,7 +46,6 @@ from wt_media_agent.runtime.constants import (
     TASK_TYPE_MATERIAL_DOWNLOAD,
 )
 from wt_media_agent.runtime.logging import configure_from
-from wt_media_agent.runtime.node_credential import NodeCredential
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import DEFAULT_DB_NAME, apply_migrations
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
@@ -61,7 +61,7 @@ class Components:
     cloud: CloudAgentClient
     store: CheckpointStore
     save_directories: SaveDirectoryStore
-    node_credential: NodeCredential
+    agent_token: AgentToken
     runner: TaskRunner
     transfers: TransferRunner
 
@@ -143,10 +143,11 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # nothing wrote to until now.
     save_directories = SaveDirectoryStore(db_path)
 
-    # 7. The Cloud identity this process works under. Cloud issues the node
-    #    credential and Desktop hands it here on the bind call, so this starts
-    #    empty and is filled in while the loops below are already running.
-    node_credential = NodeCredential()
+    # 7. The Cloud identity this process works under. Desktop exchanges its
+    #    desktop session for an Agent Token and hands it here over the local
+    #    API, so this starts empty and is filled in while the loops below are
+    #    already running.
+    agent_token = AgentToken()
 
     # 8. Both loops' shared configuration. One value rather than two because
     #    every field in it is a fact about this process, not about a loop:
@@ -164,7 +165,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
     #    closes over `record` -- the only thing that knows how to write a resume
     #    record. It is handed its executors below, once the registry exists.
     transfers = TransferRunner(
-        cloud, store, loop_config, credential=node_credential.get
+        cloud, store, loop_config, token=agent_token.get
     )
 
     # 10. Executor factories. `bitbrowser` from step 4 is bound by closure, so
@@ -172,7 +173,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
     #     them can build its own.
     #
     #     The download executor's other three facts arrive the same way: the
-    #     credential as a callable (Cloud replaces it, and the executor reports
+    #     token as a callable (Desktop replaces it, and the executor reports
     #     under whichever is current), the save directory as a callable (the
     #     operator may change it mid-download), and the record writer as the
     #     transfer loop's own `record`.
@@ -180,7 +181,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
         return MaterialDownloadExecutor(
             client,
             agent_id,
-            credential=node_credential.get,
+            token=agent_token.get,
             save_directory=save_directories.get,
             record=transfers.record,
         )
@@ -198,7 +199,9 @@ def build_components(config: AgentConfig | None = None) -> Components:
 
     # 12. The runner. It receives its registry as an argument; it has no default,
     #     so a runner that was not wired here would fail closed on `no_executor`.
-    runner = TaskRunner(cloud, store, loop_config, executors=executors)
+    runner = TaskRunner(
+        cloud, store, loop_config, token=agent_token.get, executors=executors
+    )
 
     # 13. Observable state for the local API surface.
     state = LocalAgentState(agent_id=config.agent_id)
@@ -210,7 +213,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
         cloud=cloud,
         store=store,
         save_directories=save_directories,
-        node_credential=node_credential,
+        agent_token=agent_token,
         runner=runner,
         transfers=transfers,
     )

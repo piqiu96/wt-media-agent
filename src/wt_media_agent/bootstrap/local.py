@@ -26,7 +26,7 @@ def run() -> int:
         bitbrowser=components.bitbrowser,
         checkpoint_store=components.store,
         save_directory_store=components.save_directories,
-        node_credential=components.node_credential,
+        agent_token=components.agent_token,
         state=components.state,
         auth_token=config.runtime_token,
         cloud_base_url=config.cloud_base_url,

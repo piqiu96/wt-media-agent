@@ -70,13 +70,6 @@ NETWORK_OK_COUNTS = {
     # the point of those cases is what a real socket answers, and a patched
     # `urlopen` would be a test of the patch.
     "test_save_directory.py": 1,
-    # CHG-061 T-04: the same, for `POST /api/v1/bind`. It is one marker for three
-    # cases because the file posts through one helper -- the status the route
-    # answers with is half of what is being asserted there (the credential that
-    # must not be echoed back, the 503 the Desktop branches on), and asserting it
-    # against a patched `urlopen` would be asserting against the test's own
-    # replacement.
-    "test_node_credential.py": 1,
 }
 
 #: This file carries the marker as a *string* -- the constant above, the

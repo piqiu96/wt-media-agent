@@ -164,7 +164,9 @@ class CheckpointColumnTest(unittest.TestCase):
         build wrote is still there and readable through the current store.
         """
         previous = tuple(
-            item for item in migration.MIGRATIONS if item.version != "0003_transfer_resume"
+            item
+            for item in migration.MIGRATIONS
+            if item.version not in {"0003_transfer_resume", "0004_task_recovery_outbox"}
         )
         real = migration.MIGRATIONS
         migration.MIGRATIONS = previous
@@ -189,7 +191,10 @@ class CheckpointColumnTest(unittest.TestCase):
 
         applied = migration.apply_migrations(self.db_path)
 
-        self.assertEqual([item.version for item in applied], ["0003_transfer_resume"])
+        self.assertEqual(
+            [item.version for item in applied],
+            ["0003_transfer_resume", "0004_task_recovery_outbox"],
+        )
         stored = CheckpointStore(self.db_path).get_checkpoint("old-1")
         assert stored is not None
         self.assertEqual(stored.progress, 40)

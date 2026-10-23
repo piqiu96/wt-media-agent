@@ -25,8 +25,8 @@ class FakeClient:
     def __init__(self):
         self.reports = []
 
-    def report_task(self, task_id, agent_id, status, progress, message=""):
-        self.reports.append((task_id, status, progress, message))
+    def report_task(self, task_id, agent_id, status, progress, message="", result=None):
+        self.reports.append((task_id, status, progress, message, result))
         return {"status": status, "progress": progress}
 
 

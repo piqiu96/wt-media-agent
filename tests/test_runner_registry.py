@@ -28,6 +28,7 @@ from wt_media_agent import runtime
 from wt_media_agent.runner import registry as registry_module
 from wt_media_agent.runner.config import TaskRunnerConfig
 from wt_media_agent.runner.registry import TransferNotWired, default_executor_factories
+from wt_media_agent.runner.reporter import DurableTaskReporter
 from wt_media_agent.runner.runner import TaskRunner
 
 # Task types whose executor drives a BitBrowser Profile. The other two are
@@ -161,8 +162,13 @@ class RunnerRegistryInjectionTests(unittest.TestCase):
         self.client.claim_task.return_value = {
             "task_id": "task-1",
             "task_type": "cookie_read_task",
+            "attempt_id": "attempt-1",
         }
         self.store = MagicMock()
+        # outbox 与恢复都先读本地：没有待补报、没有非终态行时这一轮才会去 claim。
+        self.store.get_undelivered_results.return_value = []
+        self.store.get_open_checkpoints.return_value = []
+        self.store.get_checkpoint.return_value = None
         return TaskRunner(
             self.client,
             self.store,
@@ -171,17 +177,22 @@ class RunnerRegistryInjectionTests(unittest.TestCase):
                 base_url="http://127.0.0.1:8188",
                 db_path=":memory:",
             ),
+            token=lambda: "agent-token",
             **kwargs,
         )
 
-    def test_an_unwired_runner_reports_no_executor_instead_of_succeeding(self):
+    def test_an_unwired_runner_records_no_executor_instead_of_succeeding(self):
         runner = self.build_runner()
 
         runner._poll_once()
 
-        self.client.report_task.assert_called_once_with(
-            "task-1", "agent-1", "failed", 0, "no_executor"
-        )
+        # 终态先落本地 outbox，再由 outbox 上报；这个用例里 store 是替身，
+        # 所以读 finish_task 的参数，而不是 Cloud 的 report_task。
+        self.store.finish_task.assert_called_once()
+        kwargs = self.store.finish_task.call_args.kwargs
+        self.assertEqual(kwargs["status"], "failed")
+        self.assertEqual(kwargs["error_code"], "no_executor")
+        self.assertEqual(kwargs["task_id"], "task-1")
         self.store.remove_checkpoint.assert_not_called()
 
     def test_the_default_argument_is_not_the_built_in_registry(self):
@@ -195,21 +206,25 @@ class RunnerRegistryInjectionTests(unittest.TestCase):
         runner._poll_once()
 
         self.assertNotIn(
-            "succeeded", [call.args[2] for call in self.client.report_task.call_args_list]
+            "succeeded",
+            [call.kwargs.get("status") for call in self.store.finish_task.call_args_list],
         )
 
-    def test_an_injected_registry_receives_the_runner_client_and_agent_id(self):
+    def test_an_injected_registry_receives_the_reporter_and_agent_id(self):
+        """执行器拿到的是上报通道；Cloud 客户端与 checkpoint 由 Runner 持有。"""
         seen: list[tuple[object, str]] = []
 
-        def factory(client, agent_id):
-            seen.append((client, agent_id))
+        def factory(reporter, agent_id):
+            seen.append((reporter, agent_id))
             return MagicMock()
 
         runner = self.build_runner(executors={"cookie_read_task": factory})
 
         runner._poll_once()
 
-        self.assertEqual(seen, [(self.client, "agent-1")])
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0][0], DurableTaskReporter)
+        self.assertEqual(seen[0][1], "agent-1")
 
     def test_register_executor_still_overrides_an_entry(self):
         """The pre-existing public seam keeps working."""
@@ -219,7 +234,8 @@ class RunnerRegistryInjectionTests(unittest.TestCase):
         runner.register_executor("cookie_read_task", sentinel)
         runner._poll_once()
 
-        sentinel.assert_called_once_with(self.client, "agent-1")
+        sentinel.assert_called_once()
+        self.assertEqual(sentinel.call_args.args[1], "agent-1")
 
 
 if __name__ == "__main__":

@@ -19,15 +19,16 @@ and the clock is a constructor argument.
 
 **The four Cloud calls.** A download is a lease that must be renewed
 (`heartbeat`), a progress figure that must be reported (`progress`), and one
-terminal report when it ends (`complete`). The credential is those calls' whole
-identity and this module never puts it anywhere else -- not in a message, not in
-a log line, not in the record it hands the runner. It arrives as a callable
-(`Credential`) and is read at each report rather than once at construction,
-because Cloud can replace it while a download is running.
+terminal report when it ends (`complete`). The Agent Token and the lease's
+`attempt_id` are those calls' whole identity and this module never puts the
+token anywhere else -- not in a message, not in a log line, not in the record it
+hands the runner. It arrives as a callable (`Credential`) and is read at each
+report rather than once at construction, because Desktop can hand over a new one
+while a download is running.
 
 **Two facts are deliberately never written down or logged**: the save directory
 (a local absolute path, and CHG-061 §8 keeps those out of everything this Agent
-records or reports) and the address (a short-lived credential, named in
+records or reports) and the address (a short-lived signed URL, named in
 `contracts/local-error-codes/v1/transfer.yaml`'s `secret_policy.forbidden_fields`).
 Every message this module composes is a fixed string about a code, a count or a
 file name, so there is no path and no URL for one to carry.
@@ -172,19 +173,10 @@ UNCLASSIFIED_GAME = "未分类"
 #: process, so the only thing that knows the task is the call that has one.
 Recorder = Callable[[str, TransferResume], None]
 
-#: How this module, and the loop that drives it, ask for the node credential.
-#:
-#: A callable and not a string for the same reason `save_directory` is one:
-#: Cloud can replace the credential while a download is running, and a value
-#: read once at assembly would keep a loop reporting under a credential that has
-#: since been rotated. Declared here rather than in `runner/` because both sides
-#: type against it and neither may import the other (`runner -> executors` is the
-#: direction ADR-0016 §1 gives).
-#:
-#: `None` means this process is not bound to Cloud yet. The loop is what decides
-#: not to claim in that state; by the time this module is asked to run a lease it
-#: has a credential, so an empty answer here is a fault in this process rather
-#: than a download outcome.
+#: How the Agent Token is obtained: called, not read, because Desktop replaces
+#: it mid-download. Defined here rather than in `runner/` because the only
+#: allowed import direction is `runner -> executors`. `None` means this process
+#: has no token yet, and the loop decides not to claim in that state.
 Credential = Callable[[], Optional[str]]
 
 
@@ -253,7 +245,7 @@ class MaterialDownloadExecutor:
         client: CloudAgentClient,
         agent_id: str,
         *,
-        credential: Credential,
+        token: Credential,
         save_directory: Callable[[], Optional[str]],
         record: Recorder,
         opener: Optional[Opener] = None,
@@ -270,10 +262,10 @@ class MaterialDownloadExecutor:
     ) -> None:
         self.client = client
         self.agent_id = agent_id
-        # Called, not read: the credential Cloud issued for this node is
-        # replaced when Desktop re-binds, and every report below must go out
-        # under the one that is current at that moment.
-        self._credential = credential
+        # Called, not read: Desktop hands over a new token when it logs in
+        # again, and every report below must go out under the one that is
+        # current at that moment.
+        self._token = token
         # Called once per attempt, not once per executor: the operator may change
         # the directory while a download is running, and the resume record
         # deliberately holds no path so that the change costs them nothing.
@@ -291,23 +283,23 @@ class MaterialDownloadExecutor:
         self._min_shard_bytes = min_shard_bytes
         self._shard_poll_seconds = shard_poll_seconds
 
-    def _node_credential(self) -> str:
-        """The credential to report under, or a fault if this process has none.
+    def _agent_token(self) -> str:
+        """The token to report under, or a fault if this process has none.
 
-        An empty answer is not a download outcome: with no credential there is no
-        way to renew the lease or to report anything at all, and the loop that
+        An empty answer is not a download outcome: with no token there is no way
+        to renew the lease or to report anything at all, and the loop that
         dispatches this executor does not claim without one. So a lease reaching
-        this point with no credential is a fault in the process, and it is said
-        loudly (the runner logs it as `executor_error` and keeps the row) rather
-        than dressed up as one of the eight download reasons.
+        this point with no token is a fault in the process, and it is said loudly
+        (the runner logs it as `executor_error` and keeps the row) rather than
+        dressed up as one of the eight download reasons.
         """
-        credential = self._credential()
-        if not credential:
+        token = self._token()
+        if not token:
             raise ValueError(
-                "no node credential: this Agent is not bound to Cloud, so a "
+                "no agent token: this Agent has not been signed in, so a "
                 "lease cannot be reported on"
             )
-        return credential
+        return token
 
     # ---- the one entry point ----
 
@@ -319,9 +311,9 @@ class MaterialDownloadExecutor:
         "this executor is broken" about a download whose cause is in the world
         (an expired address, a full disk, a lease somebody else took). The two
         exceptions are the ones that are not about this download at all:
-        `SessionInvalidError` (the node credential is refused, so nothing this
-        loop does next can work) and `ValueError` (the caller handed over
-        something that is not a lease, which is a fault in this process).
+        `AgentAuthError` (the Agent Token is refused, so nothing this loop does
+        next can work) and `ValueError` (the caller handed over something that is
+        not a lease, which is a fault in this process).
         """
         lease = _lease_of(task)
         resume = _resume_of(task)
@@ -329,7 +321,7 @@ class MaterialDownloadExecutor:
         # first heartbeat: a full download that streams correctly and then has
         # nowhere to be reported would be thrown away for a reason this process
         # knew at the start.
-        self._node_credential()
+        self._agent_token()
         try:
             sink, name = self._prepare(lease, resume)
         except DownloadFault as fault:
@@ -452,9 +444,9 @@ class MaterialDownloadExecutor:
         decision three times: which of the world's failures this download may
         retry. It is not a `try` around the retry loop's own decision -- a fault
         raised inside the `except` that decides would leave the loop rather than
-        go round it. `SessionInvalidError` is deliberately not in the list: a
-        refused node credential is not something a retry can outlast, and it is
-        the runner's to act on.
+        go round it. `AgentAuthError` is deliberately not in the list: a refused
+        token is not something a retry can outlast, and it is the runner's to
+        act on.
         """
         try:
             return self._transfer(lease, sink, name, resume)
@@ -521,13 +513,14 @@ class MaterialDownloadExecutor:
         return _Progress(
             client=self.client,
             # The method, not its answer: this reporter outlives one report, and
-            # the credential it reports under is whichever is current when the
-            # report is sent. Reading it here would still pass the check below --
-            # it is the *later* reports that would go out under a credential
-            # Cloud has already replaced.
-            credential=self._node_credential,
+            # the token it reports under is whichever is current when the report
+            # is sent. Reading it here would still pass the check below -- it is
+            # the *later* reports that would go out under a token Cloud has
+            # already replaced.
+            token=self._agent_token,
             record=self._record,
             task_id=lease.task_id,
+            attempt_id=lease.attempt_id,
             name=name,
             total_bytes=lease.total_bytes,
             already_reported=resume.bytes_done if resume is not None else 0,
@@ -846,8 +839,9 @@ class MaterialDownloadExecutor:
         )
         try:
             self.client.complete_transfer_task(
-                self._node_credential(),
+                self._agent_token(),
                 lease.task_id,
+                lease.attempt_id,
                 status="success",
                 completed_bytes=written,
                 sha256=digest,
@@ -899,8 +893,9 @@ class MaterialDownloadExecutor:
         )
         try:
             self.client.complete_transfer_task(
-                self._node_credential(),
+                self._agent_token(),
                 lease.task_id,
+                lease.attempt_id,
                 status="failed",
                 completed_bytes=completed,
                 error_code=fault.code,
@@ -976,9 +971,9 @@ def _classify_transfer_error(exc: BaseException) -> Optional[DownloadFault]:
 
     One function because a download and its shards must not have two taxonomies:
     a shard that hits a dead address has to be reported as the same thing a
-    single-stream attempt would report. `SessionInvalidError` is not in the list,
-    deliberately -- a refused node credential is not something either of them can
-    outlast, and it is the runner's to act on.
+    single-stream attempt would report. `AgentAuthError` is not in the list,
+    deliberately -- a refused token is not something either of them can outlast,
+    and it is the runner's to act on.
     """
     if isinstance(exc, DownloadFault):
         return exc
@@ -1055,9 +1050,10 @@ class _Progress:
         self,
         *,
         client: CloudAgentClient,
-        credential: Credential,
+        token: Credential,
         record: Recorder,
         task_id: str,
+        attempt_id: str,
         name: str,
         total_bytes: int,
         already_reported: int,
@@ -1068,12 +1064,13 @@ class _Progress:
     ) -> None:
         self._client = client
         # The callable, not a value: this reporter lives for as long as one
-        # attempt, and Desktop can re-bind the node in the middle of one -- so a
-        # credential read here would be the one every later report went out
-        # under, including the reports that arrive after Cloud has replaced it.
-        self._credential = credential
+        # attempt, and Desktop can log in again in the middle of one -- so a
+        # token read here would be the one every later report went out under,
+        # including the reports that arrive after Cloud has replaced it.
+        self._token = token
         self._record = record
         self._task_id = task_id
+        self._attempt_id = attempt_id
         self._name = name
         self._floor = already_reported
         self._reported = already_reported
@@ -1114,7 +1111,7 @@ class _Progress:
 
     def _send_progress(self, written: int, bytes_per_second: int) -> None:
         self._client.report_transfer_progress(
-            self._credential(), self._task_id, written, bytes_per_second
+            self._token(), self._task_id, self._attempt_id, written, bytes_per_second
         )
         self._reported = written
         # The record is written where Cloud is told, and not more often: it exists
@@ -1136,7 +1133,7 @@ class _Progress:
         if (now - self._heartbeat_at) < self._heartbeat_every:
             return
         self._client.heartbeat_transfer_task(
-            self._credential(), self._task_id, max(written, self._floor)
+            self._token(), self._task_id, self._attempt_id, max(written, self._floor)
         )
         self._heartbeat_at = now
 

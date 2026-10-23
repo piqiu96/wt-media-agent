@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from wt_media_agent.clients.cloud import SessionInvalidError, TransferLease, TransferTerminal, TransferUnavailableError
+from wt_media_agent.clients.cloud import AgentAuthError, TransferLease, TransferTerminal, TransferUnavailableError
 from wt_media_agent.executors.material_download import OUTCOME_SUCCESS
 from wt_media_agent.executors.protocol import ExecutorFactory
 from wt_media_agent.runner.config import TaskRunnerConfig
@@ -33,7 +33,8 @@ from wt_media_agent.storage.transfer_resume import TransferResume
 
 TASK_ID = "transfer-1"
 AGENT_ID = "agent-1"
-CREDENTIAL = "node-credential-SENTINEL"
+TOKEN = "agent-token-SENTINEL"
+ATTEMPT_ID = "attempt-1"
 FILE_NAME = "春日-42.mp4"
 LOGGER = "wt_media_agent.runner.transfer"
 
@@ -48,6 +49,7 @@ SURVIVING_OUTCOMES = ("failed", "lease_lost", "rejected", "unreported")
 def make_lease(**overrides: object) -> TransferLease:
     fields: dict[str, object] = {
         "task_id": TASK_ID,
+        "attempt_id": ATTEMPT_ID,
         "asset_id": 42,
         "title": "春日",
         "total_bytes": 4096,
@@ -77,13 +79,15 @@ class FakeTransferCloud:
         self.claims: list[str] = []
         self.completions: list[tuple[str, dict]] = []
 
-    def claim_transfer_task(self, credential: str):
-        self.claims.append(credential)
+    def claim_transfer_task(self, token: str):
+        self.claims.append(token)
         if self.raises is not None:
             raise self.raises
         return self.leases.pop(0) if self.leases else None
 
-    def complete_transfer_task(self, credential: str, task_id: str, **fields: object):
+    def complete_transfer_task(
+        self, token: str, task_id: str, attempt_id: str, **fields: object
+    ):
         self.completions.append((task_id, fields))
         return TransferTerminal(
             task_id=task_id,
@@ -104,7 +108,7 @@ class TransferRunnerTest(unittest.TestCase):
         self.cloud = FakeTransferCloud()
         # What the runner's `credential` callable answers; `None` is an Agent that
         # Desktop has not bound yet, which is the state this process starts in.
-        self.credential: str | None = CREDENTIAL
+        self.token: str | None = TOKEN
         self.seen: list[tuple[object, str, dict]] = []
 
     def executor(self, outcome: dict) -> ExecutorFactory:
@@ -139,7 +143,7 @@ class TransferRunnerTest(unittest.TestCase):
                 db_path=":memory:",
                 poll_interval=0.0,
             ),
-            credential=lambda: self.credential,
+            token=lambda: self.token,
             executors={TASK_TYPE_MATERIAL_DOWNLOAD: self.executor({"status": OUTCOME_SUCCESS})}
             if executors is None
             else executors,
@@ -172,7 +176,7 @@ class TransferRunnerTest(unittest.TestCase):
         self.assertIs(client, self.cloud)
         self.assertEqual(agent_id, AGENT_ID)
         self.assertEqual(task, {"lease": lease, "resume": TransferResume(FILE_NAME, 4096)})
-        self.assertEqual(self.cloud.claims, [CREDENTIAL])
+        self.assertEqual(self.cloud.claims, [TOKEN])
 
     def test_a_task_with_no_record_is_handed_over_without_one(self) -> None:
         """The positive control for the pair above: `resume` is a fact, not a constant."""
@@ -186,7 +190,7 @@ class TransferRunnerTest(unittest.TestCase):
         self.runner()._poll_once()
 
         self.assertEqual(self.seen, [])
-        self.assertEqual(self.cloud.claims, [CREDENTIAL])
+        self.assertEqual(self.cloud.claims, [TOKEN])
 
     # ---- what happens to the row afterwards ----
 
@@ -291,7 +295,7 @@ class TransferRunnerTest(unittest.TestCase):
         process. The loop keeps its schedule, because Desktop binds it *after*
         starting it.
         """
-        self.credential = None
+        self.token = None
         self.cloud.leases = [make_lease()]
 
         self.runner()._poll_once()
@@ -311,7 +315,9 @@ class TransferRunnerTest(unittest.TestCase):
         `start()` sets it -- an assertion that it is true would otherwise hold
         for a runner that had never started.
         """
-        self.cloud.raises = SessionInvalidError("Cloud refused this node's credential (HTTP 401)")
+        self.cloud.raises = AgentAuthError(
+            "AUTH_AGENT_TOKEN_INVALID", "Cloud refused this agent token (HTTP 401)"
+        )
         runner = self.runner()
         runner._running = True
 
@@ -327,12 +333,12 @@ class TransferRunnerTest(unittest.TestCase):
         # process start.
         self.cloud.raises = None
         self.cloud.leases = [make_lease()]
-        self.credential = "a-credential-Cloud-issued-later"
+        self.token = "a-credential-Cloud-issued-later"
 
         runner._poll_once()
 
         self.assertEqual(
-            self.cloud.claims, [CREDENTIAL, "a-credential-Cloud-issued-later"]
+            self.cloud.claims, [TOKEN, "a-credential-Cloud-issued-later"]
         )
         self.assertEqual(len(self.seen), 1)
 
@@ -399,8 +405,8 @@ class TransferRunnerTest(unittest.TestCase):
             class Reporting:
                 def execute(self, task):
                     client.complete_transfer_task(
-                        CREDENTIAL, task["lease"].task_id, status="failed",
-                        error_code="download_stalled",
+                        TOKEN, task["lease"].task_id, task["lease"].attempt_id,
+                        status="failed", error_code="download_stalled",
                     )
                     return {"status": "failed"}
 
@@ -436,7 +442,7 @@ class TransferRunnerTest(unittest.TestCase):
         self.runner()._poll_once()
 
         self.assertEqual(len(self.seen), 1)
-        self.assertEqual(self.cloud.claims, [CREDENTIAL])
+        self.assertEqual(self.cloud.claims, [TOKEN])
 
     def test_a_lease_of_an_unroutable_asset_type_is_left_for_cloud(self) -> None:
         """A type the dispatch map does not name runs nothing and reports nothing.

@@ -1,21 +1,30 @@
-"""Executor protocol types.
+"""执行器协议类型。
 
-Declared in `executors/` rather than `runner/` so that executors and the
-registry can type themselves against these names without importing `runner/`:
-ADR-0016 orders the descent `runner -> executors`, so `executors -> runner`
-would point the wrong way.
+放在 `executors/` 而不是 `runner/`：执行器和注册表都要用这些名字，而
+ADR-0016 只允许 `runner -> executors` 这一个方向。
 
-These are type-only declarations. `TaskRunner` still detects a usable executor
-with `hasattr(instance, "execute")`, exactly as before -- no runtime check was
-introduced here.
+执行器拿到的是上报通道而不是 Cloud 客户端；终态如何落盘、何时上报由
+Runner 决定。
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Callable, Protocol
+from typing import Callable, Optional, Protocol
 
-from wt_media_agent.clients.cloud import CloudAgentClient
+
+class TaskReporter(Protocol):
+    """执行器可见的上报接口。"""
+
+    def report_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        status: str,
+        progress: int,
+        message: str = "",
+        result: Optional[Mapping[str, object]] = None,
+    ) -> Mapping[str, object]: ...
 
 
 class Executor(Protocol):
@@ -24,4 +33,4 @@ class Executor(Protocol):
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]: ...
 
 
-ExecutorFactory = Callable[[CloudAgentClient, str], Executor]
+ExecutorFactory = Callable[[TaskReporter, str], Executor]

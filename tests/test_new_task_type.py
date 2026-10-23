@@ -35,6 +35,7 @@ from support import UnusedBitBrowser
 from wt_media_agent import runtime
 from wt_media_agent.runner import TaskRunner, TaskRunnerConfig
 from wt_media_agent.runner.registry import default_executor_factories
+from wt_media_agent.runner.reporter import DurableTaskReporter
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import apply_migrations
 
@@ -96,13 +97,15 @@ class RecordingCloud:
         self.task = task
         self.reports: list[tuple[str, int, str]] = []
 
-    def claim_task(self, agent_id: str, lease_seconds: int):
+    def claim_task(self, token: str, lease_seconds: int):
         task, self.task = self.task, None
         return task
 
-    def report_task(self, task_id, agent_id, status, progress, message):
+    def report_task(
+        self, token, task_id, attempt_id, *, status, progress=0, message="", **kwargs
+    ):
         self.reports.append((status, progress, message))
-        return {"ok": True}
+        return {"task_id": task_id, "status": status}
 
 
 def declared_task_types() -> set[str]:
@@ -124,7 +127,12 @@ class NewTaskTypeTests(unittest.TestCase):
 
         self.store = CheckpointStore(db_path)
         self.cloud = RecordingCloud(
-            {"task_id": "demo-1", "task_type": DEMO_TASK_TYPE, "payload": "hello"}
+            {
+                "task_id": "demo-1",
+                "task_type": DEMO_TASK_TYPE,
+                "attempt_id": "attempt-1",
+                "payload": "hello",
+            }
         )
         runner = TaskRunner(
             self.cloud,
@@ -134,6 +142,7 @@ class NewTaskTypeTests(unittest.TestCase):
                 base_url="http://127.0.0.1:8188",
                 db_path=str(db_path),
             ),
+            token=lambda: "v1.payload.signature",
         )
 
         self.service = DemoServiceClient("https://service.example.test/v1")
@@ -197,7 +206,11 @@ class NewTaskTypeTests(unittest.TestCase):
 
         runner._poll_once()
 
-        self.assertEqual(self.factory_args, [(self.cloud, "agent-7f3c")])
+        self.assertEqual(len(self.factory_args), 1)
+        reporter, agent_id = self.factory_args[0]
+        self.assertIsInstance(reporter, DurableTaskReporter)
+        self.assertIs(reporter.client, self.cloud)
+        self.assertEqual(agent_id, "agent-7f3c")
 
     def test_the_new_type_cannot_run_until_it_is_registered(self):
         """The other side of the same claim.
@@ -210,7 +223,9 @@ class NewTaskTypeTests(unittest.TestCase):
 
         runner._poll_once()
 
-        self.assertEqual(self.cloud.reports, [("failed", 0, "no_executor")])
+        self.assertEqual(
+            self.cloud.reports, [("failed", 0, "no executor for this task type")]
+        )
         self.assertEqual(self.service.calls, [], "an unregistered type must reach nothing")
         self.assertEqual(self.factory_args, [])
 
