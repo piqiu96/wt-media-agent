@@ -391,7 +391,9 @@ def _expect_data(response: Mapping[str, object]) -> Mapping[str, object]:
     _raise_on_failure(response)
     data = response.get("data")
     if not isinstance(data, Mapping):
-        raise ValueError("cloud response missing data object")
+        # 网关/代理的错误应答没有 Cloud 信封（也就没有 errcode 可判断），
+        # 按“应答不可信”归到传输失败，进度上报才能只记日志而不打断执行。
+        raise CloudUnavailableError("cloud response missing data object")
     return data
 
 

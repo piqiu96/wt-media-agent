@@ -9,6 +9,7 @@ from urllib import request as urlrequest
 from wt_media_agent.clients.cloud import (
     AgentAuthError,
     CloudAgentClient,
+    CloudUnavailableError,
     NoPendingTaskError,
     StaleAttemptError,
 )
@@ -242,12 +243,14 @@ class PreflightAndBindingTest(unittest.TestCase):
 
 
 class FailureTest(unittest.TestCase):
-    def test_missing_data_is_rejected(self) -> None:
+    def test_missing_data_is_a_transport_failure(self) -> None:
+        # 网关错误应答没有 Cloud 信封，进度上报要能归类为传输失败并继续执行，
+        # 不能以 ValueError 逃到 Runner 被记成 executor_error。
         client = CloudAgentClient(
             "http://cloud.test", transport=lambda method, path, payload, headers: {}
         )
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(CloudUnavailableError):
             client.report_task(TOKEN, "task-1", ATTEMPT_ID, status="running")
 
     def test_an_auth_error_names_its_code(self) -> None:

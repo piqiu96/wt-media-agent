@@ -21,11 +21,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from wt_media_agent.clients.cloud import (
     AgentAuthError,
+    CloudAgentClient,
     CloudUnavailableError,
     StaleAttemptError,
 )
 from wt_media_agent.runner import TaskRunner, TaskRunnerConfig
 from wt_media_agent.runner import runner as runner_module
+from wt_media_agent.runner.reporter import DurableTaskReporter, OutboxDelivery
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import apply_migrations
 
@@ -267,6 +269,40 @@ class RunnerOutboxTestCase(unittest.TestCase):
         self.assertEqual(cloud.calls.count("report"), 1, "被取代的结果不再重试")
         self.assertEqual(self.store.get_undelivered_results(), [])
         self.assertIsNone(self.store.get_checkpoint("task-1"))
+
+    def test_a_gateway_error_on_a_progress_report_does_not_fail_the_task(self) -> None:
+        # 代理/网关的 502 应答没有 Cloud 信封。进度上报必须只记日志，
+        # 否则一次网络抖动会把正常执行记成 executor_error 终态。
+        client = CloudAgentClient(
+            "http://cloud.test",
+            transport=lambda method, path, payload, headers: {"error": "gateway"},
+        )
+        outbox = OutboxDelivery(client, self.store, lambda: TOKEN)
+        self.store.start_task(
+            task_id="task-1",
+            task_type="demo_task",
+            agent_id="agent-1",
+            attempt_id="attempt-1",
+            payload_json=json.dumps(TASK),
+            execution_timeout_seconds=300,
+            external_side_effect=False,
+        )
+        reporter = DurableTaskReporter(
+            client,
+            self.store,
+            outbox,
+            task_id="task-1",
+            attempt_id="attempt-1",
+            agent_id="agent-1",
+        )
+
+        reporter.report_task("task-1", "agent-1", "running", 0, "started")
+        reporter.finish(status="succeeded", progress=100)
+
+        pending = self.store.get_undelivered_results()
+        self.assertEqual([row.status for row in pending], ["succeeded"])
+        checkpoint = self.store.get_checkpoint("task-1")
+        self.assertEqual(checkpoint.final_status, "succeeded")
 
     # ---- 重启后的非终态行 ----
 
