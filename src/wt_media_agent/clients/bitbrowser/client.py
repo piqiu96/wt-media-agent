@@ -11,6 +11,7 @@ from urllib import request as urlrequest
 from wt_media_agent.clients.bitbrowser.errors import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
+    BitBrowserUnavailableError,
 )
 from wt_media_agent.clients.bitbrowser.timeouts import (
     DEFAULT_OPERATION_TIMEOUT,
@@ -170,6 +171,8 @@ class BitBrowserClient:
         """Close a browser profile."""
         try:
             self._check_success(self._post_with_timeout("/browser/close", {"id": profile_id}, self._mutation_timeout()))
+        except BitBrowserUnavailableError:
+            raise
         except BitBrowserResponseError:
             pass  # Close may fail if already closed
 
@@ -353,7 +356,11 @@ def _post_json(url: str, payload: dict[str, object], timeout: float) -> dict[str
     try:
         with urlrequest.urlopen(request, timeout=timeout) as response:
             decoded = json.loads(response.read().decode("utf-8"))
-    except (urlerror.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except urlerror.HTTPError as error:
+        raise BitBrowserResponseError(f"BitBrowser Local API request failed: {error}") from error
+    except (urlerror.URLError, TimeoutError) as error:
+        raise BitBrowserUnavailableError(f"BitBrowser Local API request failed: {error}") from error
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BitBrowserResponseError(f"BitBrowser Local API request failed: {error}") from error
     if not isinstance(decoded, dict):
         raise BitBrowserResponseError("BitBrowser response is not an object")

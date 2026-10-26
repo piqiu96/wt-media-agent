@@ -11,5 +11,9 @@ class BitBrowserResponseError(BitBrowserError):
     """The Local API was unavailable or returned an invalid response."""
 
 
+class BitBrowserUnavailableError(BitBrowserResponseError):
+    """The BitBrowser Local API could not be reached."""
+
+
 class BitBrowserIdentityError(BitBrowserError):
     """Profile ownership could not be verified safely."""

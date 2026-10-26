@@ -32,6 +32,7 @@ from wt_media_agent.clients.bitbrowser import (
     BitBrowserError,
     BitBrowserIdentityError,
     BitBrowserResponseError,
+    BitBrowserUnavailableError,
     ProfileSnapshot,
 )
 from wt_media_agent.clients.cloud import CloudAgentClient
@@ -213,6 +214,8 @@ class LocalApiServer:
             return 200, {**snapshot.to_dict(), "observed_at": _utc_now_iso()}
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError:
             return 502, {"error": {"code": "bitbrowser_response_error"}}
 
@@ -229,6 +232,9 @@ class LocalApiServer:
                 _duration_ms(started_at),
             )
             return 201, {"data": {"id": profile_id}}
+        except BitBrowserUnavailableError as e:
+            logger.warning("local_api.profile_create.offline name=%s group_id=%s error=%s", profile_name, group_id, e)
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             logger.warning(
                 "local_api.profile_create.failure name=%s group_id=%s duration_ms=%d error=%s",
@@ -242,6 +248,8 @@ class LocalApiServer:
     def profile_groups_response(self) -> tuple[int, dict[str, object]]:
         try:
             return 200, {"data": {"groups": _safe_groups(self.bitbrowser.group_list())}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -449,6 +457,9 @@ class LocalApiServer:
                 _duration_ms(started_at),
             )
             return 200, {"data": {"status": "opened"}}
+        except BitBrowserUnavailableError as e:
+            logger.warning("local_api.profile_open.offline profile_id=%s error=%s", profile_id, e)
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             logger.warning(
                 "local_api.profile_open.failure profile_id=%s duration_ms=%d error=%s",
@@ -473,6 +484,9 @@ class LocalApiServer:
                 _duration_ms(started_at),
             )
             return 200, {"data": {"status": "closed"}}
+        except BitBrowserUnavailableError as e:
+            logger.warning("local_api.profile_close.offline profile_id=%s error=%s", profile_id, e)
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             logger.warning(
                 "local_api.profile_close.failure profile_id=%s duration_ms=%d error=%s",
@@ -489,6 +503,8 @@ class LocalApiServer:
         try:
             self.bitbrowser.update_profile(profile_id, body)
             return 200, {"data": {"status": "updated"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -499,6 +515,8 @@ class LocalApiServer:
         try:
             self.bitbrowser.delete_profile(profile_id)
             return 200, {"data": {"status": "deleted"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -558,6 +576,8 @@ class LocalApiServer:
                 snapshot = self.bitbrowser.scan_profiles()
             except BitBrowserIdentityError:
                 return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+            except BitBrowserUnavailableError:
+                return _bitbrowser_offline_response()
             except BitBrowserResponseError:
                 return 502, {"error": {"code": "bitbrowser_response_error"}}
             found = next((item for item in snapshot.profiles if item.bit_profile_id == profile_id), None)
@@ -585,6 +605,8 @@ class LocalApiServer:
             snapshot = self.bitbrowser.scan_profiles()
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError:
             return 502, {"error": {"code": "bitbrowser_response_error"}}
         found = next((item for item in snapshot.profiles if item.bit_profile_id == profile_id), None)
@@ -611,6 +633,8 @@ class LocalApiServer:
             cookies = browser_cookies.read_account_cookies(self.bitbrowser, profile_id, devtools)
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -644,9 +668,20 @@ class LocalApiServer:
             cookies = self.bitbrowser.read_cookies(profile_id)
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
         return 200, {"data": {"cookies": cookies}}
+
+
+def _bitbrowser_offline_response() -> tuple[int, dict[str, object]]:
+    return 503, {"error": {
+        "code": "bit_browser_offline",
+        "message": "比特浏览器未运行或无法连接",
+        "retryable": True,
+        "recovery_action": "start_bitbrowser",
+    }}
 
 
 def _utc_now_iso() -> str:

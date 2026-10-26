@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
+from urllib.error import URLError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,6 +12,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.local_api.server import LocalApiServer
+from wt_media_agent.clients.bitbrowser import BitBrowserClient
+from wt_media_agent.clients.bitbrowser.client import _post_json
 
 
 class ProfileOperationClient:
@@ -56,6 +60,31 @@ class LenientOpenClient(ProfileOperationClient):
 
 
 class LocalProfileOperationTests(unittest.TestCase):
+    def test_bitbrowser_not_running_has_actionable_error_for_profile_actions(self) -> None:
+        server = LocalApiServer(
+            LocalAgentState(),
+            bitbrowser=BitBrowserClient("http://127.0.0.1:54345", transport=_post_json, timeout=0.1),
+        )
+        actions = (
+            server.profile_scan_response,
+            server.profile_groups_response,
+            lambda: server.profile_create_response({"name": "窗口", "groupId": "group-1"}),
+            lambda: server.profile_open_response({"id": "profile-1"}),
+            lambda: server.profile_close_response({"id": "profile-1"}),
+        )
+
+        with patch(
+            "wt_media_agent.clients.bitbrowser.client.urlrequest.urlopen",
+            side_effect=URLError(ConnectionRefusedError("connection refused")),
+        ):
+            for action in actions:
+                with self.subTest(action=action):
+                    status, payload = action()
+                    self.assertEqual(status, 503)
+                    self.assertEqual(payload["error"]["code"], "bit_browser_offline")
+                    self.assertEqual(payload["error"]["recovery_action"], "start_bitbrowser")
+                    self.assertNotIn("connection refused", str(payload).lower())
+
     def test_profile_groups_returns_safe_group_list(self) -> None:
         server = LocalApiServer(LocalAgentState(), bitbrowser=ProfileOperationClient())
 
