@@ -1,22 +1,29 @@
-"""Cloud-Agent API client used by Agent runtime slices."""
+"""Cloud-Agent API 客户端。
+
+所有 Agent 路由都以 `Authorization: Bearer <Agent Token>` 认证，身份由 Token
+的 `sub` 决定；请求体里不再有 `agent_id`/`node_id`。已领取任务的后续调用必须
+带 `attempt_id`，Cloud 用它拒绝被新 attempt 取代的旧结果。
+"""
 
 from __future__ import annotations
 
 import json
 import ssl
-from dataclasses import dataclass
 from typing import Callable, Mapping, Optional
 from urllib import error as urlerror
 from urllib import request
 
-from wt_media_agent.clients.cloud.contract import (
-    EXPECTED_MAJOR_VERSION,
-    REQUIRED_CONTRACT_REVISION,
+from wt_media_agent.clients.cloud.errors import (
+    AgentAuthError,
+    CloudUnavailableError,
+    NoPendingTaskError,
+    failure_from,
 )
 from wt_media_agent.clients.cloud.transfer import (
     TransferIntegrityRejectedError,
     TransferLease,
     TransferLeaseLostError,
+    TransferTerminal,
     TransferTransport,
     TransferUnavailableError,
     completion_body,
@@ -25,25 +32,13 @@ from wt_media_agent.clients.cloud.transfer import (
 )
 
 
-Transport = Callable[
-    [str, str, Mapping[str, object], Mapping[str, str]], Mapping[str, object]
-]
+Transport = Callable[[str, str, Mapping[str, object], Mapping[str, str]], Mapping[str, object]]
 
-
-class SessionInvalidError(RuntimeError):
-    """Cloud invalidated the user session bound to this Local Agent."""
-
-
-@dataclass(frozen=True)
-class AgentIdentity:
-    agent_id: str
-    mode: str
-    version: str = "0.1.0"
-    capabilities: tuple[str, ...] = ()
-
-
-#: Default request timeout. A caller that does not configure one gets this.
+#: 默认请求超时。
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
+
+#: 未携带 Token 时仍可调用的路由只有空实现；调用方负责判断 Token 是否存在。
+_TOKEN_HEADER = "authorization"
 
 
 class CloudAgentClient:
@@ -58,213 +53,221 @@ class CloudAgentClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._transport = transport or self._http_transport
-        # A second transport rather than a wider one: the transfer endpoints put
-        # their meaning in the status line and answer `200` with no body at all,
-        # while every method above them answers with a body in the cases that
-        # matter. See `clients/cloud/transfer.py`.
+        # 传输面的含义在 HTTP 状态上，且 heartbeat/progress 成功时没有 body，
+        # 所以单独用一个返回状态码的 transport。
         self._transfer_transport = transfer_transport or self._http_transfer_transport
 
-    def register(self, identity: AgentIdentity) -> Mapping[str, object]:
-        payload = {
-            "agent_id": identity.agent_id,
-            "mode": identity.mode,
-            "version": identity.version,
-            "contract_major_version": EXPECTED_MAJOR_VERSION,
-            "contract_revision": REQUIRED_CONTRACT_REVISION,
-            "capabilities": list(identity.capabilities),
-        }
-        response = self._transport("POST", "/api/v1/cloud-agent/agents/register", payload, {})
-        return _expect_data(response)
+    # ---- 普通任务 ----
 
-    def heartbeat(self, agent_id: str, status: str = "online") -> Mapping[str, object]:
-        response = self._transport(
-            "POST",
-            f"/api/v1/cloud-agent/agents/{agent_id}/heartbeat",
-            {"status": status},
-            {},
-        )
-        return _expect_data(response)
-
-    def claim_task(self, agent_id: str, lease_seconds: int = 60) -> Mapping[str, object]:
+    def claim_task(self, token: str, lease_seconds: int = 60) -> Optional[Mapping[str, object]]:
+        """领取一个任务；没有可领取任务时返回 None。"""
         response = self._transport(
             "POST",
             "/api/v1/cloud-agent/tasks/claim",
-            {"agent_id": agent_id, "lease_seconds": lease_seconds},
-            {},
+            {"lease_seconds": int(lease_seconds)},
+            _bearer(token),
         )
-        return _expect_data(response)
+        try:
+            data = _expect_data(response)
+        except NoPendingTaskError:
+            return None
+        if not data.get("task_id"):
+            return None
+        return data
 
     def report_task(
         self,
+        token: str,
         task_id: str,
-        agent_id: str,
+        attempt_id: str,
+        *,
         status: str,
-        progress: int,
+        progress: int = 0,
         message: str = "",
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        retryable: Optional[bool] = None,
+        recovery_action: Optional[str] = None,
         result: Optional[Mapping[str, object]] = None,
     ) -> Mapping[str, object]:
+        payload: dict[str, object] = {
+            "attempt_id": attempt_id,
+            "status": status,
+            "progress": int(progress),
+            "message": message,
+        }
+        if error_code is not None:
+            payload["error_code"] = error_code
+        if error_message is not None:
+            payload["error_message"] = error_message
+        if retryable is not None:
+            payload["retryable"] = retryable
+        if recovery_action is not None:
+            payload["recovery_action"] = recovery_action
+        if result is not None:
+            payload["result"] = dict(result)
         response = self._transport(
             "POST",
             f"/api/v1/cloud-agent/tasks/{task_id}/report",
-            {
-                "agent_id": agent_id,
-                "status": status,
-                "progress": progress,
-                "message": message,
-                **({"result": dict(result)} if result is not None else {}),
-            },
-            {},
+            payload,
+            _bearer(token),
         )
         return _expect_data(response)
 
-    def register_local(
+    def report_activity(
         self,
-        binding_token: str,
-        identity: AgentIdentity,
+        token: str,
+        task_id: str,
+        attempt_id: str,
         *,
-        device_id: str,
-    ) -> Mapping[str, object]:
-        if identity.mode != "local":
-            raise ValueError("local registration requires local Agent mode")
-        payload = {
-            "binding_token": binding_token,
-            "agent_id": identity.agent_id,
-            "device_id": device_id,
-            "agent_version": identity.version,
-            "contract_major_version": EXPECTED_MAJOR_VERSION,
-            "contract_revision": REQUIRED_CONTRACT_REVISION,
-        }
+        message: str = "",
+        stage: str = "",
+    ) -> None:
+        """刷新 last_report_at。Cloud 成功时返回 `data: null`。"""
+        payload: dict[str, object] = {"attempt_id": attempt_id}
+        if message:
+            payload["message"] = message
+        if stage:
+            payload["stage"] = stage
         response = self._transport(
-            "POST", "/api/v1/local-agent/nodes/register", payload, {}
+            "POST",
+            f"/api/v1/cloud-agent/tasks/{task_id}/activity",
+            payload,
+            _bearer(token),
+        )
+        _raise_on_failure(response)
+        return None
+
+    # ---- 准入与绑定 ----
+
+    def execution_preflight(
+        self,
+        token: str,
+        *,
+        action: str,
+        task_id: Optional[str] = None,
+        attempt_id: Optional[str] = None,
+        profile_id: Optional[str] = None,
+        media_account_id: Optional[str] = None,
+        facts: Optional[Mapping[str, object]] = None,
+    ) -> Mapping[str, object]:
+        payload: dict[str, object] = {
+            "action": action,
+            "task_id": task_id or "",
+            "attempt_id": attempt_id or "",
+            "profile_id": profile_id or "",
+            "media_account_id": media_account_id or "",
+        }
+        if facts is not None:
+            payload["facts"] = dict(facts)
+        response = self._transport(
+            "POST", "/api/v1/local-agent/execution-preflight", payload, _bearer(token)
         )
         return _expect_data(response)
 
-    def report_runtime(
+    def bind_bit_account(
         self,
-        node_id: str,
-        node_credential: str,
-        report: Mapping[str, object],
+        token: str,
+        *,
+        main_user_id: str,
+        observed_at: str,
+        rebind: bool = False,
     ) -> Mapping[str, object]:
         response = self._transport(
             "POST",
-            f"/api/v1/local-agent/nodes/{node_id}/runtime-report",
-            report,
-            {"authorization": f"Bearer {node_credential}"},
+            "/api/v1/local-agent/bit-account/bind",
+            {"main_user_id": main_user_id, "observed_at": observed_at, "rebind": rebind},
+            _bearer(token),
         )
         return _expect_data(response)
 
     def preflight_sensitive_task(
-        self,
-        node_id: str,
-        node_credential: str,
-        task_id: str,
+        self, token: str, task_id: str, facts: Mapping[str, object]
     ) -> Mapping[str, object]:
         response = self._transport(
             "POST",
             f"/api/v1/local-agent/sensitive-tasks/{task_id}/preflight",
-            {"node_id": node_id},
-            {"authorization": f"Bearer {node_credential}"},
-        )
-        return _expect_data(response)
-
-    def finish_sensitive_permit(
-        self,
-        node_id: str,
-        node_credential: str,
-        permit_id: str,
-        permit_credential: str,
-        outcome: str,
-    ) -> Mapping[str, object]:
-        response = self._transport(
-            "POST",
-            f"/api/v1/local-agent/sensitive-permits/{permit_id}/finish",
-            {"outcome": outcome, "node_id": node_id},
-            {
-                "authorization": f"Bearer {node_credential}",
-                "x-profile-permit": permit_credential,
-            },
+            {"facts": dict(facts)},
+            _bearer(token),
         )
         return _expect_data(response)
 
     def renew_sensitive_permit(
-        self,
-        node_id: str,
-        node_credential: str,
-        permit_id: str,
-        permit_credential: str,
-        lease_seconds: int = 60,
+        self, token: str, permit_id: str, lease_seconds: int = 60
     ) -> Mapping[str, object]:
         response = self._transport(
             "POST",
             f"/api/v1/local-agent/sensitive-permits/{permit_id}/renew",
-            {"node_id": node_id, "lease_seconds": lease_seconds},
-            {
-                "authorization": f"Bearer {node_credential}",
-                "x-profile-permit": permit_credential,
-            },
+            {"lease_seconds": int(lease_seconds)},
+            _bearer(token),
         )
         return _expect_data(response)
 
-    # ---- file-transfer tasks ----
-    #
-    # The node credential is the whole identity on these four calls: `claim`
-    # carries no request body and no path parameter, so Cloud can only know who
-    # is asking from the bearer header. That is also why none of these methods
-    # builds a message out of the credential.
-
-    def claim_transfer_task(self, node_credential: str) -> Optional[TransferLease]:
-        """Lease one pending transfer for this node, or `None` if there is none.
-
-        A `null` task is an ordinary answer -- it means nothing is waiting -- and
-        not a failure, so it is returned rather than raised.
-        """
+    def finish_sensitive_permit(self, token: str, permit_id: str, outcome: str) -> None:
+        """交还许可。Cloud 成功时返回 204，没有 body 可解析。"""
         status, body = self._transfer_transport(
             "POST",
-            "/api/v1/cloud-agent/file-transfer-tasks/claim",
-            {},
-            _node_bearer(node_credential),
+            f"/api/v1/local-agent/sensitive-permits/{permit_id}/finish",
+            {"outcome": outcome},
+            _bearer(token),
+        )
+        failure = failure_from(body, status)
+        if failure is not None:
+            raise failure
+
+    # ---- 文件传输 ----
+    #
+    # 四个调用的身份都在 Bearer Token 上；已领取后还必须带 claim 返回的
+    # attempt_id，Cloud 以它判断 lease 是否仍归这次执行。
+
+    def claim_transfer_task(self, token: str) -> Optional[TransferLease]:
+        """领取一个待下载任务；没有时返回 None。"""
+        status, body = self._transfer_transport(
+            "POST", "/api/v1/cloud-agent/file-transfer-tasks/claim", {}, _bearer(token)
         )
         _raise_for_transfer_status(status, body)
-        task = _expect_data(body).get("task")
+        task = (_expect_data(body) or {}).get("task")
         if task is None:
             return None
         return parse_lease(task)
 
     def heartbeat_transfer_task(
-        self, node_credential: str, task_id: str, completed_bytes: int
+        self, token: str, task_id: str, attempt_id: str, completed_bytes: int
     ) -> None:
-        """Renew the lease. This, and not `progress`, is what keeps it alive."""
+        """续租；真正保活的是它，不是 progress。"""
         status, body = self._transfer_transport(
             "POST",
             f"/api/v1/cloud-agent/file-transfer-tasks/{task_id}/heartbeat",
-            {"completed_bytes": int(completed_bytes)},
-            _node_bearer(node_credential),
+            {"attempt_id": attempt_id, "completed_bytes": int(completed_bytes)},
+            _bearer(token),
         )
         _raise_for_transfer_status(status, body)
 
     def report_transfer_progress(
         self,
-        node_credential: str,
+        token: str,
         task_id: str,
+        attempt_id: str,
         completed_bytes: int,
         bytes_per_second: int,
     ) -> None:
-        """Record progress. The response carries no body to read."""
         status, body = self._transfer_transport(
             "POST",
             f"/api/v1/cloud-agent/file-transfer-tasks/{task_id}/progress",
             {
+                "attempt_id": attempt_id,
                 "completed_bytes": int(completed_bytes),
                 "bytes_per_second": int(bytes_per_second),
             },
-            _node_bearer(node_credential),
+            _bearer(token),
         )
         _raise_for_transfer_status(status, body)
 
     def complete_transfer_task(
         self,
-        node_credential: str,
+        token: str,
         task_id: str,
+        attempt_id: str,
         *,
         status: str,
         completed_bytes: Optional[int] = None,
@@ -273,7 +276,7 @@ class CloudAgentClient:
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> TransferTerminal:
-        """Record the terminal outcome, and return what Cloud stored for it."""
+        """写入终态，并返回 Cloud 实际保存的结果。"""
         payload = completion_body(
             status=status,
             completed_bytes=completed_bytes,
@@ -282,14 +285,17 @@ class CloudAgentClient:
             error_code=error_code,
             error_message=error_message,
         )
+        payload["attempt_id"] = attempt_id
         http_status, body = self._transfer_transport(
             "POST",
             f"/api/v1/cloud-agent/file-transfer-tasks/{task_id}/complete",
             payload,
-            _node_bearer(node_credential),
+            _bearer(token),
         )
         _raise_for_transfer_status(http_status, body)
         return parse_terminal(_expect_data(body))
+
+    # ---- HTTP ----
 
     def _http_transport(
         self,
@@ -298,22 +304,8 @@ class CloudAgentClient:
         payload: Mapping[str, object],
         headers: Mapping[str, str],
     ) -> Mapping[str, object]:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        req = request.Request(
-            f"{self.base_url}{path}",
-            data=body,
-            method=method,
-            headers={"content-type": "application/json", **headers},
-        )
-        try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read().decode("utf-8")
-        except urlerror.HTTPError as exc:
-            raw = exc.read().decode("utf-8")
-        decoded = json.loads(raw)
-        if not isinstance(decoded, Mapping):
-            raise ValueError("cloud response must be a JSON object")
-        return decoded
+        raw = self._send(method, path, payload, headers)
+        return _decode_envelope(raw)
 
     def _http_transfer_transport(
         self,
@@ -322,14 +314,7 @@ class CloudAgentClient:
         payload: Mapping[str, object],
         headers: Mapping[str, str],
     ) -> tuple[int, Mapping[str, object]]:
-        """Like `_http_transport`, but the status is part of the answer.
-
-        Two differences from the transport above. The status is returned rather
-        than collapsed into "a body", because on this surface the status is the
-        whole message -- `heartbeat` and `progress` answer `200` with no content
-        and `409` with the refusal, and both reach here as no useful body. And an
-        empty body is therefore ordinary: it means the call succeeded.
-        """
+        """返回 HTTP 状态与解码后的 body；成功但无内容时 body 为空对象。"""
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         req = request.Request(
             f"{self.base_url}{path}",
@@ -344,56 +329,90 @@ class CloudAgentClient:
         except urlerror.HTTPError as exc:
             status = int(exc.code)
             raw = exc.read().decode("utf-8")
-        except (urlerror.URLError, TimeoutError) as exc:
-            # Otherwise a dead link escapes as `OSError` and is filed as a
-            # terminal executor error; here it is a lease not yet confirmed.
-            if isinstance(getattr(exc, "reason", None), ssl.SSLCertVerificationError):
-                raise TransferUnavailableError("Cloud TLS certificate verification failed") from exc
-            raise TransferUnavailableError("cloud could not be reached") from exc
-        # A `200` from heartbeat or progress has no content at all, so an empty
-        # body is a success and not something to parse.
-        decoded = json.loads(raw) if raw.strip() else {}
-        if not isinstance(decoded, Mapping):
-            raise ValueError("cloud response must be a JSON object")
-        return status, decoded
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            # 传输面的调用方按 `TransferUnavailableError` 决定是否重试，所以这里
+            # 不抛普通传输层的错误；异常原文可能带地址，消息只用固定句子。
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                raise TransferUnavailableError(
+                    "Cloud TLS certificate verification failed"
+                ) from exc
+            raise TransferUnavailableError(
+                "the transfer endpoint could not be reached"
+            ) from exc
+        if not raw.strip():
+            return status, {}
+        return status, _decode_envelope(raw)
 
-
-def _node_bearer(node_credential: str) -> dict[str, str]:
-    """The only place the node credential is put on the wire."""
-    return {"authorization": f"Bearer {node_credential}"}
-
-
-def _raise_for_transfer_status(status: int, body: Mapping[str, object]) -> None:
-    """Turn a transfer refusal into the type its caller has to act on.
-
-    The status decides, not the body: the frozen contract pins `409` and `422`
-    and defines no body for either, so a client that read the meaning out of the
-    body would be relying on something no contract states. Cloud's own `message`
-    is carried along because it is the operator's only description of the
-    refusal, and this module never adds the credential to it.
-    """
-    if 200 <= status < 300:
-        return
-    message = body.get("message")
-    detail = str(message) if isinstance(message, str) and message else ""
-    suffix = f": {detail}" if detail else ""
-    if status == 401:
-        raise SessionInvalidError(
-            f"Cloud refused this node's credential (HTTP 401){suffix}"
+    def _send(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, object],
+        headers: Mapping[str, str],
+    ) -> str:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        req = request.Request(
+            f"{self.base_url}{path}",
+            data=body,
+            method=method,
+            headers={"content-type": "application/json", **headers},
         )
-    if status == 409:
-        raise TransferLeaseLostError(f"the transfer lease is gone (HTTP 409){suffix}")
-    if status == 422:
-        raise TransferIntegrityRejectedError(
-            f"Cloud rejected the completed transfer (HTTP 422){suffix}"
-        )
-    raise TransferUnavailableError(f"the transfer endpoint answered HTTP {status}{suffix}")
+        try:
+            with request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.read().decode("utf-8")
+        except urlerror.HTTPError as exc:
+            return exc.read().decode("utf-8")
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            raise CloudUnavailableError("cloud could not be reached") from exc
+
+
+def _decode_envelope(raw: str) -> Mapping[str, object]:
+    try:
+        decoded = json.loads(raw)
+    except ValueError as exc:
+        raise CloudUnavailableError("cloud answered something that is not its envelope") from exc
+    if not isinstance(decoded, Mapping):
+        raise CloudUnavailableError("cloud response must be a JSON object")
+    return decoded
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {_TOKEN_HEADER: f"Bearer {token}"}
+
+
+def _raise_on_failure(response: Mapping[str, object], status: Optional[int] = None) -> None:
+    failure = failure_from(response, status)
+    if failure is not None:
+        raise failure
 
 
 def _expect_data(response: Mapping[str, object]) -> Mapping[str, object]:
-    if response.get("errcode") == 11001:
-        raise SessionInvalidError(str(response.get("message") or "Cloud session is invalid"))
+    _raise_on_failure(response)
     data = response.get("data")
     if not isinstance(data, Mapping):
-        raise ValueError("cloud response missing data object")
+        # 网关/代理的错误应答没有 Cloud 信封（也就没有 errcode 可判断），
+        # 按“应答不可信”归到传输失败，进度上报才能只记日志而不打断执行。
+        raise CloudUnavailableError("cloud response missing data object")
     return data
+
+
+def _raise_for_transfer_status(status: int, body: Mapping[str, object]) -> None:
+    """按状态把传输拒绝转成调用方能处理的具体类型。
+
+    Cloud 的错误码优先（409 `STALE_ATTEMPT`、401 的新码）；没有码时按状态归类，
+    因为 contract 对 409/422 不要求 body。
+    """
+    failure = failure_from(body, status)
+    if failure is None:
+        return
+    message = str(body.get("message") or failure)
+    if isinstance(failure, AgentAuthError):
+        raise failure
+    if status == 409:
+        raise TransferLeaseLostError(f"the transfer lease is gone (HTTP 409): {message}")
+    if status == 422:
+        raise TransferIntegrityRejectedError(
+            f"Cloud rejected the completed transfer (HTTP 422): {message}"
+        )
+    raise TransferUnavailableError(f"the transfer endpoint answered HTTP {status}") from failure

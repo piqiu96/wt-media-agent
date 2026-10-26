@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from wt_media_agent.clients import platform_urls
-from wt_media_agent.clients.bitbrowser import PROXY_PROBE_URL
 from wt_media_agent.executors.account_check import AccountCheckExecutor
 
 
@@ -30,26 +29,27 @@ class FakeCloud:
     def __init__(self):
         self.reports = []
 
-    def report_task(self, task_id, agent_id, status, progress, message="", data=None):
-        self.reports.append((task_id, status, progress, message))
+    def report_task(self, task_id, agent_id, status, progress, message="", result=None):
+        self.reports.append((task_id, status, progress, message, result))
         return {"status": status, "progress": progress}
 
 
 class FakeBitBrowser:
     """Public-surface stand-in: it answers `open_url` and nothing private."""
 
-    def __init__(self, cookies, fail_on: str | None = None):
+    def __init__(self, cookies):
         self.cookies = cookies
-        self.fail_on = fail_on
         self.opened_urls: list[tuple[str, str]] = []
         self.closed: list[str] = []
 
     def open_profile(self, profile_id: str) -> None:
         pass
 
+    def open_profile_with_devtools(self, profile_id: str) -> str:
+        """No DevTools endpoint in the fake, so cookies come from the saved set."""
+        return ""
+
     def open_url(self, profile_id: str, url: str) -> None:
-        if self.fail_on is not None and url == self.fail_on:
-            raise RuntimeError("navigation refused")
         self.opened_urls.append((profile_id, url))
 
     def read_cookies(self, profile_id: str):
@@ -73,7 +73,7 @@ class AccountCheckNavigationTests(unittest.TestCase):
 
         self.assertEqual(
             [url for _, url in bitbrowser.opened_urls],
-            [platform_urls.LOGIN_URLS["bilibili"], PROXY_PROBE_URL],
+            [platform_urls.LOGIN_URLS["bilibili"]],
         )
 
     def test_the_navigation_target_is_the_one_the_clients_layer_declares(self):
@@ -100,14 +100,16 @@ class AccountCheckNavigationTests(unittest.TestCase):
         self.assertEqual(client.reports, [])
         self.assertEqual(bitbrowser.opened_urls, [])
 
-    def test_a_failed_proxy_probe_does_not_fail_the_check(self):
-        """The probe is best-effort; only the navigation to the platform matters."""
-        client, bitbrowser, executor = build(fail_on=PROXY_PROBE_URL)
+    def test_a_logged_in_profile_reports_the_cloud_login_status(self):
+        """Cloud 的 projectResult 只认 logged_in；本地 check_result 另行保留。"""
+        client, bitbrowser, executor = build(platform="bilibili")
 
-        result = executor.execute({"task_id": "task-1", "profile_id": "p1", "platform": "bilibili"})
+        executor.execute({"task_id": "task-1", "profile_id": "p1", "platform": "bilibili"})
 
-        self.assertEqual(result["status"], "succeeded")
-        self.assertEqual([url for _, url in bitbrowser.opened_urls], [platform_urls.LOGIN_URLS["bilibili"]])
+        result = client.reports[-1][-1]
+        self.assertEqual(result["login_status"], "logged_in")
+        self.assertEqual(result["check_result"], "normal")
+        self.assertEqual(result["account_id"], "")
 
     def test_no_cookies_means_not_logged_in_and_no_probe(self):
         client, bitbrowser, executor = build(cookies=())
@@ -116,6 +118,9 @@ class AccountCheckNavigationTests(unittest.TestCase):
 
         self.assertEqual([url for _, url in bitbrowser.opened_urls], [platform_urls.LOGIN_URLS["bilibili"]])
         self.assertEqual(bitbrowser.closed, ["p1"])
+        result = client.reports[-1][-1]
+        self.assertEqual(result["login_status"], "not_logged_in")
+        self.assertEqual(result["check_result"], "not_logged_in")
 
 
 class PlatformTableTests(unittest.TestCase):

@@ -28,6 +28,7 @@ from support import UnusedBitBrowser
 from wt_media_agent.local_api import server as server_module
 from wt_media_agent.local_api.server import LocalApiServer, make_handler
 from wt_media_agent.local_api.state import LocalAgentState
+from wt_media_agent.runtime.agent_token import AgentToken
 from wt_media_agent.clients.bitbrowser import BitBrowserIdentityError, BitProfile, ProfileSnapshot
 
 
@@ -140,23 +141,12 @@ class LocalApiServerTests(unittest.TestCase):
         server = LocalApiServer(LocalAgentState(), bitbrowser=IdentityErrorClient())
 
         status = server.status()
-        self.assertEqual(status["node_id"], "")
         self.assertEqual(status["agent_id"], "local-agent-dev")
         self.assertEqual(status["status"], "idle")
         self.assertEqual(status["current_task_id"], None)
         self.assertEqual(status["pending_result_count"], 0)
         self.assertEqual(status["bitbrowser_status"], "identity_unverifiable")
         self.assertNotIn("main_user_id", status)
-
-    def test_local_bind_projects_node_id_into_status(self) -> None:
-        # `status()` collects environment facts through the browser client, so
-        # this one needs a client that answers rather than one that refuses.
-        server = LocalApiServer(LocalAgentState(), bitbrowser=IdentityErrorClient())
-
-        handler_api = server
-        handler_api.state.node_id = "node-1"
-
-        self.assertEqual(server.status()["node_id"], "node-1")
 
     def test_local_api_sse_snapshot(self) -> None:
         server = LocalApiServer(LocalAgentState(), bitbrowser=UnusedBitBrowser())
@@ -165,6 +155,41 @@ class LocalApiServerTests(unittest.TestCase):
 
         self.assertIn("event: status", event)
         self.assertIn('"status":"idle"', event)
+
+
+class AgentTokenRouteTests(unittest.TestCase):
+    """`POST /api/v1/agent-token`: Desktop hands the sidecar its Agent Token."""
+
+    def test_the_route_reads_back_what_it_stored_without_echoing_the_token(self) -> None:
+        token = AgentToken()
+
+        status, payload = LocalApiServer(
+            LocalAgentState(), bitbrowser=UnusedBitBrowser(), agent_token=token
+        ).record_agent_token({"token": "v1.payload.signature", "expires_at": 1_800_000_000})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["data"], {"has_agent_token": True, "expires_at": 1_800_000_000})
+        self.assertNotIn("v1.payload.signature", json.dumps(payload))
+
+    def test_an_empty_token_is_a_caller_error(self) -> None:
+        token = AgentToken()
+        server = LocalApiServer(
+            LocalAgentState(), bitbrowser=UnusedBitBrowser(), agent_token=token
+        )
+
+        status, payload = server.record_agent_token({"token": "  "})
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "agent_token_required")
+        self.assertFalse(token.has_token())
+
+    def test_a_server_without_a_token_store_says_so(self) -> None:
+        status, payload = LocalApiServer(
+            LocalAgentState(), bitbrowser=UnusedBitBrowser()
+        ).record_agent_token({"token": "v1.payload.signature"})
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["error"]["code"], "agent_token_unavailable")
 
 
 class StatusScanParameterTests(unittest.TestCase):
@@ -334,11 +359,16 @@ def _contract_operations() -> set[tuple[str, str]]:
 
 
 def _served_operations() -> set[tuple[str, str]]:
-    """Every `(METHOD, path)` the handler's `if self.path ==` chains answer.
+    """Every `(METHOD, path)` the handler answers.
 
     Read out of the AST rather than by calling the routes: one of them is an SSE
     stream that never returns, and a check that cannot include it would report a
     contract route as missing for the wrong reason.
+
+    Two shapes count as a branch: an exact `self.path == "/literal"` comparison,
+    and a `_path_id(route, "/prefix/", "/suffix")` lookup, which is how routes
+    with an id in the middle are matched. The latter is recorded with a
+    `{param}` placeholder so it can be compared against the contract template.
     """
     tree = ast.parse(
         (
@@ -354,6 +384,19 @@ def _served_operations() -> set[tuple[str, str]]:
                 continue
             http_method = method.name[len("do_"):]
             for node in ast.walk(method):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_path_id"
+                    and len(node.args) == 3
+                    and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[2], ast.Constant)
+                    and isinstance(node.args[1].value, str)
+                    and isinstance(node.args[2].value, str)
+                ):
+                    served.add(
+                        (http_method, f"{node.args[1].value}{{param}}{node.args[2].value}")
+                    )
                 if not isinstance(node, ast.Compare) or len(node.ops) != 1:
                     continue
                 if not isinstance(node.ops[0], ast.Eq) or len(node.comparators) != 1:
@@ -388,7 +431,11 @@ class ContractRouteTests(unittest.TestCase):
         self.assertGreaterEqual(
             len(promised), 8, f"the contract was read as {sorted(promised)}"
         )
-        self.assertEqual(promised - _served_operations(), set())
+        normalized = {
+            (method, re.sub(r"\{[^}]+\}", "{param}", path))
+            for method, path in promised
+        }
+        self.assertEqual(normalized - _served_operations(), set())
 
     def test_the_reader_can_see_a_path_that_is_not_there(self) -> None:
         """A positive control, because a mis-parsed contract reads as `set()`.
@@ -421,7 +468,7 @@ EXECUTOR_ERRORS_KEY = "executor_errors:"
 #: is widened only when a route the same change adds needs it -- never to silence
 #: a name that appeared elsewhere (the nine M2-era ones are registered in
 #: `delivery/active/CHG-20260924-061/checkpoint.md` instead).
-TRANSFER_CODE_PREFIXES = ("save_directory_", "node_credential_")
+TRANSFER_CODE_PREFIXES = ("save_directory_", "agent_token_")
 
 
 def _refusal_of(node: ast.AST) -> tuple[str, int] | None:
@@ -511,9 +558,10 @@ class ContractCodeTests(unittest.TestCase):
         served = _served_refusals()
         self.assertEqual(served["save_directory_invalid"], 400)
         self.assertEqual(served["save_directory_unavailable"], 503)
-        self.assertEqual(served["node_credential_unavailable"], 503)
+        self.assertEqual(served["agent_token_required"], 400)
+        self.assertEqual(served["agent_token_unavailable"], 503)
         self.assertEqual(_declared_errors()["save_directory_invalid"], 400)
-        self.assertEqual(_declared_errors()["node_credential_unavailable"], 503)
+        self.assertEqual(_declared_errors()["agent_token_unavailable"], 503)
 
 
 if __name__ == "__main__":

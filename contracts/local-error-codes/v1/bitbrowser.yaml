@@ -1,9 +1,19 @@
 schema_version: 1
-revision: "2026.07.14.6"
+revision: "2026.10.23.1"
 errors:
   not_found: {http_status: 404}
   bitbrowser_identity_unverifiable: {http_status: 409}
   bitbrowser_response_error: {http_status: 502}
+  # The local read of BitBrowser failed before or while asking Cloud (the app is not
+  # running, or stopped answering); the Agent answers as offline rather than reusing
+  # an older observation.
+  bit_browser_offline: {http_status: 503}
+  # Cloud could not be reached. The same code travels with the Cloud verdict when it
+  # was reached and refused.
+  cloud_unavailable: {http_status: 502}
+  invalid_request: {http_status: 400}
 secret_policy:
-  forbidden_fields: [cookie, password, proxyUserName, proxyPassword]
+  # `agent_token` is the Cloud-issued bearer the Desktop handed over; the local API
+  # never echoes it, and no log line carries it.
+  forbidden_fields: [cookie, password, proxyUserName, proxyPassword, agent_token]
   raw_upstream_messages_exposed: false

@@ -11,12 +11,11 @@ from collections.abc import Mapping
 from typing import Optional
 
 from wt_media_agent.clients.bitbrowser import BitBrowserClient
-from wt_media_agent.clients.cloud import CloudAgentClient
 from wt_media_agent.executors.account_check import AccountCheckExecutor
 from wt_media_agent.executors.cookie import CookieReadExecutor, CookieWriteExecutor
 from wt_media_agent.executors.noop import NoopExecutor
 from wt_media_agent.executors.profile import factory as profile_executor_factory
-from wt_media_agent.executors.protocol import ExecutorFactory
+from wt_media_agent.executors.protocol import ExecutorFactory, TaskReporter
 from wt_media_agent.executors.proxy import ProxyCheckExecutor
 from wt_media_agent.executors.proxy_mutation import ProxyMutationExecutor
 from wt_media_agent.runtime.constants import (
@@ -49,8 +48,8 @@ class UnwiredTransfer:
     as one that did.
     """
 
-    def __init__(self, client: CloudAgentClient, agent_id: str) -> None:
-        self.client = client
+    def __init__(self, reporter: TaskReporter, agent_id: str) -> None:
+        self.reporter = reporter
         self.agent_id = agent_id
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
@@ -71,7 +70,7 @@ def default_executor_factories(
     client" an assertable property instead of a convention.
 
     `transfer` is optional because a download needs three things no other
-    executor does: a node credential, a save directory that exists only on a
+    executor does: the Agent Token, a save directory that exists only on a
     machine somebody configured, and a row to record its resume state on. All
     three are the process's to supply, so the factory for
     `material_download_task` is built where they live -- `bootstrap` -- and

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from wt_media_agent.clients.cloud import CloudAgentClient
+from wt_media_agent.executors.protocol import TaskReporter
 from wt_media_agent.clients.bitbrowser import BitBrowserClient
 
 
@@ -12,9 +12,9 @@ class CookieReadExecutor:
     """Read cookies from a BitBrowser Profile and report back."""
 
     def __init__(
-        self, client: CloudAgentClient, agent_id: str, bitbrowser: BitBrowserClient
+        self, reporter: TaskReporter, agent_id: str, bitbrowser: BitBrowserClient
     ) -> None:
-        self.client = client
+        self.reporter = reporter
         self.agent_id = agent_id
         self.bitbrowser = bitbrowser
 
@@ -28,13 +28,13 @@ class CookieReadExecutor:
         if not profile_id:
             raise ValueError("cookie_read_task requires profile_id or browser_profile_id")
 
-        self.client.report_task(str(task_id), self.agent_id, "running", 10, "正在打开 Profile")
+        self.reporter.report_task(str(task_id), self.agent_id, "running", 10, "正在打开 Profile")
         self.bitbrowser.open_profile(profile_id)
 
-        self.client.report_task(str(task_id), self.agent_id, "running", 50, "正在读取 Cookie")
+        self.reporter.report_task(str(task_id), self.agent_id, "running", 50, "正在读取 Cookie")
         cookies = self.bitbrowser.read_cookies(profile_id)
 
-        self.client.report_task(str(task_id), self.agent_id, "running", 80, "正在关闭 Profile")
+        self.reporter.report_task(str(task_id), self.agent_id, "running", 80, "正在关闭 Profile")
         self.bitbrowser.close_profile(profile_id)
 
         result = {
@@ -43,8 +43,7 @@ class CookieReadExecutor:
         }
         if account_id:
             result["account_id"] = account_id
-        return _report_with_result(
-            self.client,
+        return self.reporter.report_task(
             str(task_id), self.agent_id, "succeeded", 100,
             f"读取到 {len(cookies)} 条 Cookie",
             result,
@@ -55,9 +54,9 @@ class CookieWriteExecutor:
     """Write cookies to a BitBrowser Profile and verify."""
 
     def __init__(
-        self, client: CloudAgentClient, agent_id: str, bitbrowser: BitBrowserClient
+        self, reporter: TaskReporter, agent_id: str, bitbrowser: BitBrowserClient
     ) -> None:
-        self.client = client
+        self.reporter = reporter
         self.agent_id = agent_id
         self.bitbrowser = bitbrowser
 
@@ -74,13 +73,13 @@ class CookieWriteExecutor:
         if not isinstance(cookies, list) or not cookies:
             raise ValueError("cookie_write_task requires a non-empty cookies list")
 
-        self.client.report_task(str(task_id), self.agent_id, "running", 10, "正在打开 Profile")
+        self.reporter.report_task(str(task_id), self.agent_id, "running", 10, "正在打开 Profile")
         self.bitbrowser.open_profile(profile_id)
 
-        self.client.report_task(str(task_id), self.agent_id, "running", 50, f"正在写入 {len(cookies)} 条 Cookie")
+        self.reporter.report_task(str(task_id), self.agent_id, "running", 50, f"正在写入 {len(cookies)} 条 Cookie")
         self.bitbrowser.save_cookies(profile_id, cookies)
 
-        self.client.report_task(str(task_id), self.agent_id, "running", 80, "正在验证写入")
+        self.reporter.report_task(str(task_id), self.agent_id, "running", 80, "正在验证写入")
         read_back = self.bitbrowser.read_cookies(profile_id)
 
         self.bitbrowser.close_profile(profile_id)
@@ -92,29 +91,8 @@ class CookieWriteExecutor:
         }
         if account_id:
             result["account_id"] = account_id
-        return _report_with_result(
-            self.client,
+        return self.reporter.report_task(
             str(task_id), self.agent_id, "succeeded", 100,
             f"已写入 {len(cookies)} 条 Cookie，验证到 {len(read_back)} 条",
             result,
         )
-
-
-def _report_with_result(
-    client: CloudAgentClient,
-    task_id: str,
-    agent_id: str,
-    status: str,
-    progress: int,
-    message: str,
-    result: Mapping[str, object],
-) -> Mapping[str, object]:
-    """Report structured metadata while retaining compatibility with test doubles."""
-    try:
-        return client.report_task(
-            task_id, agent_id, status, progress, message, result=result
-        )
-    except TypeError as exc:
-        if "result" not in str(exc):
-            raise
-        return client.report_task(task_id, agent_id, status, progress, message)

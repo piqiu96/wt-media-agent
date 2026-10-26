@@ -89,6 +89,94 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    # 终态必须先落盘再上报，所以 checkpoint 记录完整的任务上下文与终态，
+    # offline_results 保存上报所需的全部字段（含 result 与错误元数据）。
+    Migration(
+        version="0004_task_recovery_outbox",
+        name="task_recovery_outbox",
+        statements=(
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN attempt_id TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN task_payload_json TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN last_stage TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN checkpoint_json TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN final_status TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN final_result_json TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN error_message TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN report_pending INTEGER NOT NULL DEFAULT 0
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN last_report_at TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN started_at TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN finished_at TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN execution_timeout_seconds INTEGER NOT NULL DEFAULT 300
+            """,
+            """
+            ALTER TABLE task_checkpoints
+                ADD COLUMN external_side_effect INTEGER NOT NULL DEFAULT 0
+            """,
+            """
+            ALTER TABLE offline_results
+                ADD COLUMN attempt_id TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE offline_results
+                ADD COLUMN result_json TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE offline_results
+                ADD COLUMN error_message TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE offline_results
+                ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0
+            """,
+            """
+            ALTER TABLE offline_results
+                ADD COLUMN recovery_action TEXT DEFAULT NULL
+            """,
+            """
+            ALTER TABLE offline_results
+                ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0
+            """,
+            """
+            ALTER TABLE offline_results
+                ADD COLUMN delivered_at TEXT DEFAULT NULL
+            """,
+        ),
+    ),
 )
 
 

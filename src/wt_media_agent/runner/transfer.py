@@ -1,18 +1,18 @@
 """The loop that runs file transfers, beside `TaskRunner` rather than inside it.
 
 A download is not a task this Agent claims from `/tasks/claim`. It arrives on
-its own surface, its identity is a node credential rather than an agent session,
-and what it holds is a lease that must be renewed while bytes move. `TaskRunner`
-has none of those things and is tested without them, so a download runs in its
-own loop with its own poll. The two share the registry's task-type to executor
-inventory and nothing else (the user's ruling of 2026-09-27).
+its own surface and what it holds is a lease that must be renewed while bytes
+move. `TaskRunner` has none of those things and is tested without them, so a
+download runs in its own loop with its own poll. The two share the registry's
+task-type to executor inventory and nothing else.
 
 **When it is allowed to claim at all.** Every one of the four transfer calls is
-identified by the node credential and by nothing else, and this loop is started
-before anything has bound this process to Cloud: Desktop starts the Agent, then
-binds it. So the credential arrives as a callable (`Credential`) rather than a
-value, an unbound process claims nothing, and a credential Cloud refuses is not
-retried until it is replaced -- see `_claim`.
+identified by the Agent Token and by nothing else, and this loop is started
+before Desktop has handed this process a token: Desktop logs in, exchanges the
+session for an Agent Token, then passes it to the sidecar. So the token arrives
+as a callable (`Credential`) rather than a value, an unbound process claims
+nothing, and a token Cloud refuses is not retried until it is replaced -- see
+`_claim`.
 
 **Where the durable state lives.** A transfer's record is a `TransferResume` --
 a name and a byte count -- and it goes on the task's row in the checkpoint table,
@@ -33,8 +33,8 @@ from collections.abc import Mapping
 from typing import Optional
 
 from wt_media_agent.clients.cloud import (
+    AgentAuthError,
     CloudAgentClient,
-    SessionInvalidError,
     TransferLease,
     TransferUnavailableError,
 )
@@ -85,7 +85,7 @@ class TransferRunner:
         store: CheckpointStore,
         config: TaskRunnerConfig,
         *,
-        credential: Credential,
+        token: Credential,
         executors: Mapping[str, ExecutorFactory] | None = None,
     ) -> None:
         self.client = client
@@ -96,18 +96,18 @@ class TransferRunner:
         # -- the lease's own length comes down with it.
         self.config = config
         # The whole identity of the four transfer calls: how to ask for it, not
-        # the credential itself, because Cloud issues it once and Desktop hands
-        # it over after this loop is already running -- and replaces it whenever
-        # the Desktop re-binds. Never composed into a message here.
-        self._credential = credential
+        # the token itself, because Desktop hands it over after this loop is
+        # already running -- and replaces it whenever it re-logs in. Never
+        # composed into a message here.
+        self._token = token
         # Empty by default, on purpose and for `TaskRunner`'s reason: a loop
         # nobody wired up must fail closed rather than reach Cloud through a
         # registry it built behind the caller's back.
         self._executors: dict[str, ExecutorFactory] = dict(executors or {})
-        # The credential value Cloud last refused, if any. Kept so that a
-        # refusal does not turn into a poll-per-second stream of the same 401,
-        # while a *replaced* credential is tried at the next poll rather than at
-        # the next process start: Desktop re-binds and pushes a new one, and the
+        # The token value Cloud last refused, if any. Kept so that a refusal
+        # does not turn into a poll-per-second stream of the same 401, while a
+        # *replaced* token is tried at the next poll rather than at the next
+        # process start: Desktop logs in again and pushes a new one, and the
         # whole point of handing this loop a callable is that it notices.
         self._refused: Optional[str] = None
         self._last_claim_failure: Optional[str] = None
@@ -160,18 +160,18 @@ class TransferRunner:
         task = {"lease": lease, "resume": self.resume_of(lease.task_id)}
         try:
             result = executor(self.client, self.config.agent_id).execute(task)
-        except SessionInvalidError as exc:
-            # A download reports under the same credential the claim used, so
-            # this says the credential stopped being accepted mid-transfer: the
-            # lease cannot be renewed and the ending cannot be reported. The row
+        except AgentAuthError as exc:
+            # A download reports under the same token the claim used, so this
+            # says the token stopped being accepted mid-transfer: the lease
+            # cannot be renewed and the ending cannot be reported. The row
             # stays, and so does the loop -- the next claim is what discovers the
-            # refusal for itself and stops claiming until the credential is
-            # replaced (this branch cannot reliably say *which* value was
-            # refused, and guessing would suppress a credential that had just
-            # been replaced under it).
+            # refusal for itself and stops claiming until the token is replaced
+            # (this branch cannot reliably say *which* value was refused, and
+            # guessing would suppress a token that had just been replaced under
+            # it).
             logger.error(
-                "transfer %s is uncertain after session invalidation: %s", lease.task_id, exc,
-                extra={"task_id": lease.task_id, "error_code": "session_invalidated_result_uncertain"},
+                "transfer %s is uncertain after agent token refusal: %s", lease.task_id, exc,
+                extra={"task_id": lease.task_id, "error_code": "agent_token_refused_result_uncertain"},
             )
             return
         except TransferNotWired as exc:
@@ -194,37 +194,35 @@ class TransferRunner:
             self.store.remove_checkpoint(lease.task_id)
 
     def _claim(self) -> Optional[TransferLease]:
-        credential = self._credential()
-        if not credential:
-            # An unbound Agent has nothing to claim with. The four transfer calls
-            # are identified by the credential alone -- `claim` carries neither a
-            # path parameter nor a body -- so there is no anonymous claim to fall
-            # back on, and asking would only produce the 401 this process already
-            # knows it would get. Not an error and not a reason to stop: Desktop
-            # starts this Agent and binds it afterwards, and until it does the
-            # loop just keeps its schedule.
-            logger.debug("no node credential yet; nothing to claim")
+        token = self._token()
+        if not token:
+            # An Agent without a token has nothing to claim with. The four
+            # transfer calls are identified by the token alone -- `claim` carries
+            # neither a path parameter nor a body -- so there is no anonymous
+            # claim to fall back on, and asking would only produce the 401 this
+            # process already knows it would get. Not an error and not a reason
+            # to stop: Desktop logs in and pushes a token afterwards, and until
+            # it does the loop just keeps its schedule.
+            logger.debug("no agent token yet; nothing to claim")
             return None
-        if credential == self._refused:
+        if token == self._refused:
             # Already refused, and nothing has changed since. Asking again would
             # be the same 401 once per poll interval.
-            logger.debug("node credential still refused; not claiming")
+            logger.debug("agent token still refused; not claiming")
             return None
         try:
-            lease = self.client.claim_transfer_task(credential)
+            lease = self.client.claim_transfer_task(token)
             self._last_claim_failure = None
             return lease
-        except SessionInvalidError as exc:
-            # Stop claiming under *this* credential; do not stop the loop. An
-            # earlier draft drained it here, on the grounds that nothing the loop
-            # does next can work -- which was true of a credential fixed at
-            # assembly and is false of one Desktop replaces: the next bind hands
-            # over a working credential, and a drained loop would sit dead until
-            # somebody restarted the Agent. It is still an error, because the
-            # ordinary cause is that the node is not bound as it thinks.
-            self._refused = credential
+        except AgentAuthError as exc:
+            # Stop claiming under *this* token; do not stop the loop. The next
+            # login hands over a working token, and a drained loop would sit dead
+            # until somebody restarted the Agent. It is still an error, because
+            # the ordinary cause is that the task runtime is not logged in as it
+            # thinks.
+            self._refused = token
             logger.error(
-                "Cloud refused this node's credential (HTTP 401); "
+                "Cloud refused this agent token (HTTP 401); "
                 "not claiming until it is replaced: %s",
                 exc,
             )

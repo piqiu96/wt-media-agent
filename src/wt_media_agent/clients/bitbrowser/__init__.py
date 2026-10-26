@@ -19,6 +19,7 @@ from wt_media_agent.clients.bitbrowser.errors import (
     BitBrowserError,
     BitBrowserIdentityError,
     BitBrowserResponseError,
+    BitBrowserUnavailableError,
 )
 from wt_media_agent.clients.bitbrowser.factory import bitbrowser_from_config
 
@@ -28,6 +29,7 @@ __all__ = [
     "BitBrowserError",
     "BitBrowserIdentityError",
     "BitBrowserResponseError",
+    "BitBrowserUnavailableError",
     "BitProfile",
     "ProfileSnapshot",
     "Transport",

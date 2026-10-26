@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from support import LoggingStateTestCase, isolated_paths
 
-from wt_media_agent.clients.cloud.client import SessionInvalidError
+from wt_media_agent.clients.cloud import AgentAuthError, StaleAttemptError
 from wt_media_agent.runtime.config import load_config
 from wt_media_agent.runtime.logging import (
     AGENT_LOG_NAME,
@@ -39,42 +39,81 @@ from wt_media_agent.storage.migration import apply_migrations
 
 RUNNER_LOGGER = "wt_media_agent.runner.runner"
 
-TASK = {"task_id": "t-1", "task_type": "demo_echo_task", "payload": "hello"}
+TOKEN = "v1.payload.signature"
+TASK = {
+    "task_id": "t-1",
+    "task_type": "demo_echo_task",
+    "attempt_id": "attempt-1",
+    "payload": "hello",
+}
 
 
 class Cloud:
     """Claims one task, then serves as the report sink."""
 
-    def __init__(self, *, task=None, raise_on_claim=None) -> None:
+    def __init__(self, *, task=None, raise_on_claim=None, stale_progress=False) -> None:
         self.task = task
         self.raise_on_claim = raise_on_claim
-        self.reports: list[tuple[str, int, str]] = []
+        self.stale_progress = stale_progress
+        self.reports: list[dict[str, object]] = []
 
-    def claim_task(self, agent_id: str, lease_seconds: int):
+    def claim_task(self, token: str, lease_seconds: int):
         if self.raise_on_claim is not None:
             raise self.raise_on_claim
         task, self.task = self.task, None
         return task
 
-    def report_task(self, task_id, agent_id, status, progress, message):
-        self.reports.append((status, progress, message))
-        return {"ok": True}
+    def report_task(
+        self,
+        token: str,
+        task_id: str,
+        attempt_id: str,
+        *,
+        status: str,
+        progress: int = 0,
+        message: str = "",
+        error_code=None,
+        error_message=None,
+        retryable=None,
+        recovery_action=None,
+        result=None,
+    ) -> Mapping[str, object]:
+        if status == "running" and self.stale_progress:
+            raise StaleAttemptError("STALE_ATTEMPT", "attempt superseded")
+        self.reports.append(
+            {
+                "task_id": task_id,
+                "attempt_id": attempt_id,
+                "status": status,
+                "progress": progress,
+                "message": message,
+                "error_code": error_code,
+                "error_message": error_message,
+                "retryable": retryable,
+                "recovery_action": recovery_action,
+                "result": result,
+            }
+        )
+        return {"task_id": task_id, "status": status}
 
 
 class FailingExecutor:
-    def __init__(self, client, agent_id) -> None:
+    def __init__(self, reporter, agent_id) -> None:
         pass
 
     def execute(self, task: Mapping[str, object]) -> None:
         raise RuntimeError("the executor blew up")
 
 
-class InvalidatingExecutor:
-    def __init__(self, client, agent_id) -> None:
-        pass
+class StaleReportingExecutor:
+    """Reports progress, which is the call that learns the attempt is gone."""
+
+    def __init__(self, reporter, agent_id) -> None:
+        self.reporter = reporter
+        self.agent_id = agent_id
 
     def execute(self, task: Mapping[str, object]) -> None:
-        raise SessionInvalidError("session revoked mid-task")
+        self.reporter.report_task(task["task_id"], self.agent_id, "running", 10)
 
 
 class RunnerFieldsTestCase(LoggingStateTestCase):
@@ -110,11 +149,12 @@ class RunnerFieldsTestCase(LoggingStateTestCase):
                 base_url="http://127.0.0.1:8188",
                 db_path=str(db_path),
             ),
+            token=lambda: TOKEN,
         )
         if register == "failing":
             runner.register_executor(TASK["task_type"], FailingExecutor)
-        elif register == "invalidating":
-            runner.register_executor(TASK["task_type"], InvalidatingExecutor)
+        elif register == "stale":
+            runner.register_executor(TASK["task_type"], StaleReportingExecutor)
         return runner
 
     def error_log(self) -> str:
@@ -122,7 +162,8 @@ class RunnerFieldsTestCase(LoggingStateTestCase):
         return path.read_text() if path.is_file() else ""
 
     def test_a_failed_task_reaches_the_error_log_with_its_code_and_task_id(self):
-        runner = self.build(cloud=Cloud(task=dict(TASK)))
+        cloud = Cloud(task=dict(TASK))
+        runner = self.build(cloud=cloud)
 
         runner._poll_once()
 
@@ -130,24 +171,33 @@ class RunnerFieldsTestCase(LoggingStateTestCase):
         self.assertIn("error_code=executor_error", written)
         self.assertIn("task_id=t-1", written)
         self.assertIn("the executor blew up", written)
-        # The log line and the durable record tell one story: the checkpoint
-        # was written with the code the line names. (A generic executor failure
-        # is *not* reported to Cloud here -- `_save_failed` only checkpoints it,
-        # and queues an offline result once retries are exhausted.)
-        checkpoint = self.store.get_checkpoint("t-1")
-        self.assertEqual(checkpoint.checkpoint_status, "failed")
-        self.assertEqual(checkpoint.error_code, "executor_error")
-        self.assertIn("the executor blew up", checkpoint.message)
-        self.assertEqual(runner.client.reports, [])
+        # The log line and the durable record tell one story: the terminal was
+        # written locally, then the outbox delivered that same record.
+        self.assertEqual(len(cloud.reports), 1)
+        report = cloud.reports[0]
+        self.assertEqual(report["attempt_id"], "attempt-1")
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["error_code"], "executor_error")
+        self.assertIn("the executor blew up", str(report["error_message"]))
+        self.assertIs(report["retryable"], True)
+        self.assertEqual(report["recovery_action"], "retry")
+        self.assertEqual(self.store.get_undelivered_results(), [])
 
-    def test_an_invalidated_session_is_reported_as_its_own_code(self):
-        runner = self.build(cloud=Cloud(task=dict(TASK)), register="invalidating")
+    def test_a_superseded_attempt_is_logged_with_its_own_code_and_dropped(self):
+        runner = self.build(
+            cloud=Cloud(task=dict(TASK), stale_progress=True), register="stale"
+        )
 
-        runner._poll_once()
+        with self.assertLogs(RUNNER_LOGGER, level="WARNING") as captured:
+            runner._poll_once()
 
-        written = self.error_log()
-        self.assertIn("error_code=session_invalidated_result_uncertain", written)
-        self.assertIn("task_id=t-1", written)
+        records = [
+            r for r in captured.records if "was superseded" in r.getMessage()
+        ]
+        self.assertEqual(len(records), 1, "positive control: the warning was emitted")
+        self.assertEqual(records[0].error_code, "stale_attempt")
+        self.assertEqual(records[0].task_id, "t-1")
+        self.assertIsNone(self.store.get_checkpoint("t-1"))
 
     def test_a_missing_executor_is_a_warning_with_a_code_and_stays_out_of_error_log(self):
         """Two-way: the field is on the record, and the record is not an ERROR.
@@ -175,18 +225,24 @@ class RunnerFieldsTestCase(LoggingStateTestCase):
         self.assertNotIn("no_executor", written)
 
     def test_a_failure_with_no_task_in_scope_still_renders(self):
-        """The runner's session-invalidated claim path has no task and no code.
+        """A refused Agent Token happens before any task exists.
 
-        That is the shape most records still have today, so it must not raise --
-        and it renders as "no code", which is a fact about the event rather than
-        a missing field.
+        That is the shape most records still have, so it must not raise -- and
+        it renders as "no code", which is a fact about the event rather than a
+        missing field.
         """
-        runner = self.build(cloud=Cloud(raise_on_claim=SessionInvalidError("revoked")))
+        runner = self.build(
+            cloud=Cloud(
+                raise_on_claim=AgentAuthError(
+                    "AUTH_DESKTOP_REPLACED", "你的账号已在另一台电脑登录"
+                )
+            )
+        )
 
         runner._poll_once()
 
         written = self.error_log()
-        self.assertIn("agent session invalidated", written)
+        self.assertIn("Agent Token not accepted", written)
         self.assertIn("error_code=none", written)
         self.assertNotIn("task_id=", written)
 

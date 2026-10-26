@@ -1,102 +1,133 @@
-"""Account check executor — verifies login status for a platform account."""
+"""账号检测执行器：打开 Profile，读取真实登录态并上报。"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-
-from wt_media_agent.clients.cloud import CloudAgentClient
-from wt_media_agent.clients.bitbrowser import PROXY_PROBE_URL, BitBrowserClient
+from wt_media_agent.clients import platform_identity
+from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
+from wt_media_agent.clients.bilibili import identity as bilibili_identity
+from wt_media_agent.clients.bitbrowser import BitBrowserClient
 from wt_media_agent.clients.platform_urls import login_url
-
-
-CHECK_RESULTS = {
-    "normal": "登录正常",
-    "not_logged_in": "未登录",
-    "account_mismatch": "账号不匹配",
-    "verification_needed": "需要验证",
-    "profile_invalid": "Profile 不可用",
-    "proxy_error": "代理异常",
-    "account_restricted": "账号受限",
-    "check_failed": "检查失败",
-}
+from wt_media_agent.executors.protocol import TaskReporter
+from wt_media_agent.services.browser import cookies as browser_cookies
 
 
 class AccountCheckExecutor:
-    """Open a BitBrowser Profile, navigate to the target platform, and verify login state."""
+    """打开 BitBrowser Profile，识别平台账号并给出可投影的登录态。"""
 
     def __init__(
-        self, client: CloudAgentClient, agent_id: str, bitbrowser: BitBrowserClient
+        self, reporter: TaskReporter, agent_id: str, bitbrowser: BitBrowserClient
     ) -> None:
-        self.client = client
+        self.reporter = reporter
         self.agent_id = agent_id
         self.bitbrowser = bitbrowser
 
     def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
         task_id = str(task.get("task_id", ""))
         payload = task.get("payload") if isinstance(task.get("payload"), Mapping) else task
-        profile_id = str(payload.get("profile_id", "") or payload.get("browser_profile_id", ""))
-        platform = str(payload.get("platform", ""))
-        expected_account_id = str(payload.get("platform_account_id", ""))
+        profile_id = str(
+            payload.get("profile_id", "") or payload.get("browser_profile_id", "")
+        ).strip()
+        platform = str(payload.get("platform", "")).strip().lower()
+        account_id = str(payload.get("account_id", "")).strip()
+        expected_platform_account_id = str(
+            payload.get("platform_account_id", "")
+            or payload.get("expected_platform_account_id", "")
+        ).strip()
 
         if not task_id:
             raise ValueError("account_check_task requires task_id")
         if not profile_id:
             raise ValueError("account_check_task requires profile_id")
-        # Resolved outside the `try` below on purpose: an unsupported platform is
-        # a caller error and has to propagate. Inside, the broad `except` would
-        # turn it into a `check_failed` result reported to Cloud.
+        # 未知平台是调用方错误，必须在打开 Profile 之前失败。
         navigate_url = login_url(platform)
 
-        result_status = "check_failed"
-        result_message = ""
-
+        self.reporter.report_task(task_id, self.agent_id, "running", 10, "正在打开 Profile")
+        devtools = self.bitbrowser.open_profile_with_devtools(profile_id)
+        identity: dict[str, object] = {}
+        cookies: list[dict[str, object]] = []
         try:
-            self.client.report_task(task_id, self.agent_id, "running", 10, "正在打开 Profile")
-            self.bitbrowser.open_profile(profile_id)
-
-            self.client.report_task(task_id, self.agent_id, "running", 30, f"正在访问 {platform}")
-            # Navigate to platform home page to trigger login state
+            self.reporter.report_task(
+                task_id, self.agent_id, "running", 30, f"正在访问 {platform}"
+            )
             self.bitbrowser.open_url(profile_id, navigate_url)
 
-            self.client.report_task(task_id, self.agent_id, "running", 50, "正在读取 Cookie")
-            cookies = self.bitbrowser.read_cookies(profile_id)
-
-            # Check 1: Profile must have cookies
+            self.reporter.report_task(
+                task_id, self.agent_id, "running", 50, "正在读取 Cookie"
+            )
+            cookies = browser_cookies.read_account_cookies(
+                self.bitbrowser, profile_id, devtools
+            )
             if not cookies:
-                result_status = "not_logged_in"
-                result_message = "Profile 无 Cookie，未登录"
+                identity = {
+                    "platform_account_id": "",
+                    "login_status": "not_logged_in",
+                    "message": "Profile 无 Cookie，未登录",
+                }
             else:
-                # Check 2: Profile proxy connectivity (profiles with proxy config)
-                try:
-                    self.bitbrowser.open_url(profile_id, PROXY_PROBE_URL)
-                except Exception:
-                    pass  # Proxy check is best-effort
-
-                # Default: can't determine actual login state without platform page parsing
-                # This requires platform-specific page scraping which is out of scope for v1
-                result_status = "normal"
-                result_message = f"Profile 有 {len(cookies)} 条 Cookie"
-
-            self.client.report_task(task_id, self.agent_id, "running", 80, "正在关闭 Profile")
-            self.bitbrowser.close_profile(profile_id)
-
-        except Exception as exc:
-            result_status = "check_failed"
-            result_message = str(exc)
+                self.reporter.report_task(
+                    task_id, self.agent_id, "running", 70, f"正在识别 {platform} 账号"
+                )
+                identity = _identify(platform, cookies, devtools)
+        finally:
+            self.reporter.report_task(
+                task_id, self.agent_id, "running", 90, "正在关闭 Profile"
+            )
             try:
                 self.bitbrowser.close_profile(profile_id)
-            except Exception:
+            except Exception:  # noqa: BLE001 - 关闭失败不覆盖检测结果
                 pass
 
+        check_result = str(identity.get("login_status") or "environment_error")
+        message = str(identity.get("message") or "")
+        platform_account_id = str(identity.get("platform_account_id") or "").strip()
+        if (
+            expected_platform_account_id
+            and platform_account_id
+            and platform_account_id != expected_platform_account_id
+        ):
+            check_result = "account_mismatch"
+            message = "当前窗口登录账号与媒体账号台账不一致"
+
         result = {
+            "account_id": account_id,
             "profile_id": profile_id,
             "platform": platform,
-            "check_result": result_status,
-            "cookie_count": 0,
+            "platform_account_id": platform_account_id,
+            "platform_account_name": str(identity.get("name") or ""),
+            "avatar_url": str(identity.get("avatar_url") or ""),
+            # Cloud 的 projectResult 只认 logged_in / not_logged_in，
+            # 其余值一律投影为 environment_error。
+            "login_status": _cloud_login_status(check_result),
+            "check_result": check_result,
+            "cookie_count": len(cookies),
         }
-        return self.client.report_task(
-            task_id, self.agent_id, "succeeded", 100,
-            result_message,
-            {"account_id": str(payload.get("account_id", "")), "profile_id": profile_id, "platform": platform, "check_result": result_status, "cookie_count": len(cookies) if 'cookies' in locals() else 0},
+        return self.reporter.report_task(
+            task_id, self.agent_id, "succeeded", 100, message, result
         )
+
+
+def _identify(
+    platform: str, cookies: list[dict[str, object]], devtools: str
+) -> dict[str, object]:
+    if platform == "baijiahao":
+        return baijiahao_identity.identify_baijiahao(cookies)
+    if platform == "bilibili":
+        nav_data = None
+        if devtools:
+            try:
+                nav_data = bilibili_identity.fetch_nav_via_cdp(devtools)
+            except Exception:  # noqa: BLE001 - 昵称/头像缺失不影响登录判定
+                nav_data = None
+        return bilibili_identity.identify_bilibili(cookies, nav_data)
+    return platform_identity.identify_platform_account(platform, cookies)
+
+
+def _cloud_login_status(check_result: str) -> str:
+    """把本地检测结论收敛到 Cloud 的三种登录态。"""
+    if check_result == "normal":
+        return "logged_in"
+    if check_result in {"not_logged_in", "expired", "account_mismatch"}:
+        return "not_logged_in"
+    return "environment_error"

@@ -1,35 +1,54 @@
 from __future__ import annotations
 
 import unittest
-from typing import Mapping
+from typing import Mapping, Optional
 
-from wt_media_agent.clients.cloud import CloudAgentClient
 from wt_media_agent.executors.noop import NoopExecutor
 
 
-class RecordingTransport:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, Mapping[str, object]]] = []
+class RecordingReporter:
+    """执行器可见的上报通道；记录调用并按协议返回。"""
 
-    def __call__(self, method: str, path: str, payload: Mapping[str, object], headers: Mapping[str, str]) -> Mapping[str, object]:
-        self.calls.append((method, path, payload))
-        return {"data": {"task_id": "task-1", "status": payload["status"], "progress": payload["progress"]}}
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def report_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        status: str,
+        progress: int,
+        message: str = "",
+        result: Optional[Mapping[str, object]] = None,
+    ) -> Mapping[str, object]:
+        self.calls.append(
+            {
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "status": status,
+                "progress": progress,
+                "message": message,
+                "result": result,
+            }
+        )
+        return {"task_id": task_id, "status": status, "progress": progress}
 
 
 class NoopExecutorTest(unittest.TestCase):
     def test_noop_executor_reports_lifecycle(self) -> None:
-        transport = RecordingTransport()
-        client = CloudAgentClient("http://cloud.test", transport=transport)
-        executor = NoopExecutor(client, agent_id="agent-local-1")
+        reporter = RecordingReporter()
+        executor = NoopExecutor(reporter, "agent-local-1")
 
         result = executor.execute({"task_id": "task-1", "task_type": "noop_task"})
 
         self.assertEqual(result["status"], "succeeded")
-        self.assertEqual([call[2]["status"] for call in transport.calls], ["running", "running", "succeeded"])
-        self.assertEqual([call[2]["progress"] for call in transport.calls], [0, 50, 100])
+        self.assertEqual(
+            [call["status"] for call in reporter.calls], ["running", "running", "succeeded"]
+        )
+        self.assertEqual([call["progress"] for call in reporter.calls], [0, 50, 100])
 
     def test_noop_executor_rejects_wrong_task_type(self) -> None:
-        executor = NoopExecutor(CloudAgentClient("http://cloud.test", transport=lambda m, p, body, headers: {}), "agent-local-1")
+        executor = NoopExecutor(RecordingReporter(), "agent-local-1")
 
         with self.assertRaises(ValueError):
             executor.execute({"task_id": "task-1", "task_type": "other"})

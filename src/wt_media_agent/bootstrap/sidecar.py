@@ -31,7 +31,8 @@ def run() -> int:
         # for a machine that had one, and the Desktop renders exactly that. The
         # 503 a missing store produces is what made it visible at all.
         save_directory_store=components.save_directories,
-        node_credential=components.node_credential,
+        agent_token=components.agent_token,
+        cloud_agent=components.cloud,
         state=components.state,
         auth_token=config.runtime_token,
         cloud_base_url=config.cloud_base_url,

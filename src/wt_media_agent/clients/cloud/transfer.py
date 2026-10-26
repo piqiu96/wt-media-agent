@@ -1,31 +1,11 @@
-"""Leases, progress and terminal states for the Cloud-Agent transfer surface.
+"""Cloud-Agent 文件传输的 lease、进度与终态。
 
-Four endpoints live under `/api/v1/cloud-agent/file-transfer-tasks/`: `claim`
-(which carries no request body at all -- the node is whoever the bearer
-credential names), `{task_id}/heartbeat`, `{task_id}/progress`, and
-`{task_id}/complete`. They are the only part of the Cloud-Agent API whose
-meaning is carried by the **HTTP status** rather than by the response envelope,
-and that one fact shapes this module.
+与其它 Agent 路由不同，这四个入口的含义在 **HTTP 状态** 上：lease 有效时
+`heartbeat`/`progress` 返回 200 且没有 body，失效时返回 409。因此
+`TransferTransport` 返回 `(status, body)`，body 只在需要读错误码时才有内容。
 
-`heartbeat` and `progress` answer `200` with no body whatsoever while the lease
-stands, and `409` once it does not. There is no `data` object to inspect and no
-errcode to branch on, so a client built like the rest of this package -- decode
-a body, look for `data` -- has nothing to read. It has to read the status.
-`TransferTransport` therefore returns `(status, body)` instead of the body
-alone, and the four methods that use it are the only ones that do. The older
-surface keeps its own transport: `report_task` and its neighbours answer with a
-body in every case that matters to them, and widening their contract would
-change behaviour that already works.
-
-`409` is the fact the download executor cannot do without. It means the lease is
-gone -- the task was cancelled, or taken over, or has already reached a terminal
-state -- and an executor that did not see it would keep writing bytes for a task
-nobody is listening to. It is not an edge case to be swallowed into a generic
-transport error.
-
-The node credential is the identity on these calls, so it is exactly what a
-careless message would quote. Nothing in this module renders it: it is passed to
-the transport as a header and appears in no message this module composes.
+409 意味着 lease 已不属于本次执行（任务被取消、被重新领取或已终态），
+执行器必须停止写入，不能当成普通传输错误重试。
 """
 
 from __future__ import annotations
@@ -44,6 +24,7 @@ TransferTransport = Callable[
 #: The keys `LocalLease` requires, in the order the contract lists them.
 REQUIRED_LEASE_FIELDS = (
     "task_id",
+    "attempt_id",
     "asset_type",
     "asset_id",
     "title",
@@ -70,12 +51,10 @@ class TransferError(RuntimeError):
 
 
 class TransferLeaseLostError(TransferError):
-    """`409`: this node no longer holds the lease.
+    """409：本次执行已不再持有 lease。
 
-    The task may have been cancelled by its owner, taken over after the lease
-    expired, or already finished. All three end the download, and none of them
-    is the executor's to retry, so they share one type. An executor that treated
-    this as transient would download a file nobody asked for any more.
+    任务被取消、lease 过期后被重新领取、或已经终态，都会到这里；三者都不能
+    重试，继续下载只会写一个没人要的文件。
     """
 
 
@@ -108,6 +87,7 @@ class TransferLease:
     """
 
     task_id: str
+    attempt_id: str
     asset_id: int
     title: str
     total_bytes: int
@@ -159,6 +139,7 @@ def parse_lease(payload: object) -> TransferLease:
         )
     return TransferLease(
         task_id=str(payload["task_id"]),
+        attempt_id=str(payload["attempt_id"]),
         asset_id=int(payload["asset_id"]),
         asset_type=str(payload["asset_type"]),
         title=str(payload["title"]),

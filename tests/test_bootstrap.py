@@ -102,26 +102,26 @@ class AssemblyTests(ComponentTestCase):
     def test_the_download_executor_reads_what_the_two_routes_write(self):
         """One object at each end, which is the whole of the assembly's job here.
 
-        The bind route writes the node credential and the save-directory route
-        writes the folder; the download executor reads both. Ends wired to
+        Desktop hands the Agent Token to the local route, and the save-directory
+        route writes the folder; the download executor reads both. Ends wired to
         *different* objects look exactly like this from either side -- an Agent
-        that answers `has_node_credential: true` and then claims nothing, for the
+        that answers `has_agent_token: true` and then claims nothing, for the
         rest of its life, with nothing in any log to say why -- and
         `bootstrap/app.py` is the only place the two ends are joined.
         """
-        credential, directory = "credential-the-bind-route-wrote", "/tmp/save-dir-from-the-route"
-        self.components.node_credential.set(credential)
+        token, directory = "v1.payload.signature", "/tmp/save-dir-from-the-route"
+        self.components.agent_token.set(token)
         self.components.save_directories.set(directory)
 
         executor = self.components.transfers._executors[TASK_TYPE_MATERIAL_DOWNLOAD](
             self.components.cloud, self.config.agent_id
         )
 
-        self.assertEqual(executor._credential(), credential)
+        self.assertEqual(executor._token(), token)
         self.assertEqual(executor._save_directory(), directory)
         # The loop's own callable is the second reader of the same object, and it
         # is the one that decides whether there is anything to claim at all.
-        self.assertEqual(self.components.transfers._credential(), credential)
+        self.assertEqual(self.components.transfers._token(), token)
 
     def test_both_loops_dispatch_from_one_inventory(self):
         """The registry *is* the sharing: one mapping, read by both loops.
@@ -255,10 +255,10 @@ class ModeSurfaceWiringTests(ComponentTestCase):
                 self.assertIs(kwargs.get("state"), components.state)
                 self.assertIs(kwargs.get("checkpoint_store"), components.store)
                 self.assertIs(kwargs.get("save_directory_store"), components.save_directories)
-                # The credential the bind route writes and the download loop
+                # The Agent Token the local route writes and the download loop
                 # reads is one object; a mode that passed a fresh holder would
                 # leave both ends working and nothing ever claimed.
-                self.assertIs(kwargs.get("node_credential"), components.node_credential)
+                self.assertIs(kwargs.get("agent_token"), components.agent_token)
 
     def test_both_api_modes_start_both_loops_when_the_switch_is_on(self):
         for name in ("sidecar", "local"):

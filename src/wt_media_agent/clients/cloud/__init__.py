@@ -1,22 +1,23 @@
-"""Cloud-Agent API client and consumer-side contract checks.
+"""Cloud-Agent API 客户端与契约兼容检查。
 
-The only module in the Agent that talks to the Cloud Cloud-Agent API. Per
-ADR-0016 nothing outside `clients/` may construct `CloudAgentClient`; it is
-built once in bootstrap and injected inward.
+Agent 里唯一访问 Cloud Agent API 的模块。按 ADR-0016，只有 `clients/` 可以
+构造 `CloudAgentClient`，bootstrap 构造一次后向内注入。
 """
 
-from wt_media_agent.clients.cloud.client import (
-    AgentIdentity,
-    CloudAgentClient,
-    SessionInvalidError,
-    Transport,
-)
+from wt_media_agent.clients.cloud.client import CloudAgentClient, Transport
 from wt_media_agent.clients.cloud.contract import (
     API_NAME,
     EXPECTED_MAJOR_VERSION,
     REQUIRED_CONTRACT_REVISION,
     is_cloud_agent_compatible,
     is_cloud_response_compatible,
+)
+from wt_media_agent.clients.cloud.errors import (
+    AgentAuthError,
+    CloudError,
+    CloudUnavailableError,
+    NoPendingTaskError,
+    StaleAttemptError,
 )
 from wt_media_agent.clients.cloud.transfer import (
     TransferError,
@@ -30,11 +31,14 @@ from wt_media_agent.clients.cloud.transfer import (
 
 __all__ = [
     "API_NAME",
-    "AgentIdentity",
+    "AgentAuthError",
     "CloudAgentClient",
+    "CloudError",
+    "CloudUnavailableError",
     "EXPECTED_MAJOR_VERSION",
+    "NoPendingTaskError",
     "REQUIRED_CONTRACT_REVISION",
-    "SessionInvalidError",
+    "StaleAttemptError",
     "TransferError",
     "TransferIntegrityRejectedError",
     "TransferLease",

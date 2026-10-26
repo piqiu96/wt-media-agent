@@ -21,15 +21,16 @@ from urllib import error as urlerror
 
 from wt_media_agent.clients.cloud import (
     CloudAgentClient,
-    SessionInvalidError,
+    AgentAuthError,
     TransferIntegrityRejectedError,
     TransferLeaseLostError,
     TransferUnavailableError,
 )
 from wt_media_agent.clients.cloud.transfer import completion_body, parse_lease, parse_terminal
 
-CREDENTIAL = "node-credential-SENTINEL"
+TOKEN = "agent-token-SENTINEL"
 TASK_ID = "task-1"
+ATTEMPT_ID = "attempt-1"
 
 CLAIM_PATH = "/api/v1/cloud-agent/file-transfer-tasks/claim"
 
@@ -37,6 +38,7 @@ CLAIM_PATH = "/api/v1/cloud-agent/file-transfer-tasks/claim"
 def lease(**overrides: object) -> dict[str, object]:
     body: dict[str, object] = {
         "task_id": TASK_ID,
+        "attempt_id": ATTEMPT_ID,
         "asset_type": "material",
         "asset_id": 42,
         "title": "春日",
@@ -103,23 +105,23 @@ class ClaimTest(unittest.TestCase):
         """
         client, transport = client_with((200, {"data": {"task": None}}))
 
-        self.assertIsNone(client.claim_transfer_task(CREDENTIAL))
+        self.assertIsNone(client.claim_transfer_task(TOKEN))
 
         method, path, payload, headers = transport.calls[0]
         self.assertEqual((method, path), ("POST", CLAIM_PATH))
         self.assertEqual(payload, {})
-        self.assertEqual(headers, {"authorization": f"Bearer {CREDENTIAL}"})
+        self.assertEqual(headers, {"authorization": f"Bearer {TOKEN}"})
 
     def test_an_empty_queue_is_an_answer_and_not_a_failure(self) -> None:
         """`task: null` is how Cloud says "nothing waiting"; it must not raise."""
         client, _ = client_with((200, {"data": {"task": None}}))
 
-        self.assertIsNone(client.claim_transfer_task(CREDENTIAL))
+        self.assertIsNone(client.claim_transfer_task(TOKEN))
 
     def test_a_lease_is_parsed_into_the_facts_the_download_needs(self) -> None:
         client, _ = client_with((200, {"data": {"task": lease()}}))
 
-        claimed = client.claim_transfer_task(CREDENTIAL)
+        claimed = client.claim_transfer_task(TOKEN)
 
         assert claimed is not None
         self.assertEqual(claimed.task_id, TASK_ID)
@@ -136,13 +138,13 @@ class ClaimTest(unittest.TestCase):
                 body = lease(**{field: None})
                 client, _ = client_with((200, {"data": {"task": body}}))
                 with self.assertRaises(ValueError):
-                    client.claim_transfer_task(CREDENTIAL)
+                    client.claim_transfer_task(TOKEN)
 
     def test_a_transfer_for_anything_but_a_material_is_refused(self) -> None:
         client, _ = client_with((200, {"data": {"task": lease(asset_type="video")}}))
 
         with self.assertRaises(ValueError):
-            client.claim_transfer_task(CREDENTIAL)
+            client.claim_transfer_task(TOKEN)
 
     def test_a_composite_output_lease_is_accepted_and_carries_its_type(self) -> None:
         """CHG-20261013-085: a finished output rides the same lease as a material.
@@ -153,16 +155,16 @@ class ClaimTest(unittest.TestCase):
         """
         client, _ = client_with((200, {"data": {"task": lease(asset_type="composite_output")}}))
 
-        claimed = client.claim_transfer_task(CREDENTIAL)
+        claimed = client.claim_transfer_task(TOKEN)
 
         assert claimed is not None
         self.assertEqual(claimed.asset_type, "composite_output")
 
-    def test_a_refused_credential_is_a_session_failure(self) -> None:
+    def test_a_refused_token_is_an_auth_failure(self) -> None:
         client, _ = client_with((401, {"message": "credential is not valid"}))
 
-        with self.assertRaises(SessionInvalidError):
-            client.claim_transfer_task(CREDENTIAL)
+        with self.assertRaises(AgentAuthError):
+            client.claim_transfer_task(TOKEN)
 
 
 class HeartbeatTest(unittest.TestCase):
@@ -170,15 +172,15 @@ class HeartbeatTest(unittest.TestCase):
         """A `200` here has no content at all -- there is no body to decode."""
         client, transport = client_with((200, {}))
 
-        self.assertIsNone(client.heartbeat_transfer_task(CREDENTIAL, TASK_ID, 512))
+        self.assertIsNone(client.heartbeat_transfer_task(TOKEN, TASK_ID, ATTEMPT_ID, 512))
 
         method, path, payload, headers = transport.calls[0]
         self.assertEqual(
             (method, path),
             ("POST", f"/api/v1/cloud-agent/file-transfer-tasks/{TASK_ID}/heartbeat"),
         )
-        self.assertEqual(payload, {"completed_bytes": 512})
-        self.assertEqual(headers, {"authorization": f"Bearer {CREDENTIAL}"})
+        self.assertEqual(payload, {"attempt_id": ATTEMPT_ID, "completed_bytes": 512})
+        self.assertEqual(headers, {"authorization": f"Bearer {TOKEN}"})
 
     def test_a_lost_lease_is_not_swallowed(self) -> None:
         """This is the fact the executor's loop turns on.
@@ -190,7 +192,7 @@ class HeartbeatTest(unittest.TestCase):
         client, _ = client_with((409, {"message": "task is cancelled"}))
 
         with self.assertRaises(TransferLeaseLostError):
-            client.heartbeat_transfer_task(CREDENTIAL, TASK_ID, 512)
+            client.heartbeat_transfer_task(TOKEN, TASK_ID, ATTEMPT_ID, 512)
 
 
 class ProgressTest(unittest.TestCase):
@@ -202,20 +204,20 @@ class ProgressTest(unittest.TestCase):
         """
         client, transport = client_with((200, {}))
 
-        client.report_transfer_progress(CREDENTIAL, TASK_ID, 512, 4096)
+        client.report_transfer_progress(TOKEN, TASK_ID, ATTEMPT_ID, 512, 4096)
 
         method, path, payload, _ = transport.calls[0]
         self.assertEqual(
             (method, path),
             ("POST", f"/api/v1/cloud-agent/file-transfer-tasks/{TASK_ID}/progress"),
         )
-        self.assertEqual(payload, {"completed_bytes": 512, "bytes_per_second": 4096})
+        self.assertEqual(payload, {"attempt_id": ATTEMPT_ID, "completed_bytes": 512, "bytes_per_second": 4096})
 
     def test_progress_does_not_renew_the_lease_and_says_so_on_409(self) -> None:
         client, _ = client_with((409, {}))
 
         with self.assertRaises(TransferLeaseLostError):
-            client.report_transfer_progress(CREDENTIAL, TASK_ID, 512, 4096)
+            client.report_transfer_progress(TOKEN, TASK_ID, ATTEMPT_ID, 512, 4096)
 
 
 class CompleteTest(unittest.TestCase):
@@ -235,8 +237,9 @@ class CompleteTest(unittest.TestCase):
         client, transport = self.terminal()
 
         terminal = client.complete_transfer_task(
-            CREDENTIAL,
+            TOKEN,
             TASK_ID,
+            ATTEMPT_ID,
             status="success",
             completed_bytes=1024,
             sha256="b" * 64,
@@ -250,6 +253,7 @@ class CompleteTest(unittest.TestCase):
         self.assertEqual(
             payload,
             {
+                "attempt_id": ATTEMPT_ID,
                 "status": "success",
                 "completed_bytes": 1024,
                 "sha256": "b" * 64,
@@ -266,11 +270,14 @@ class CompleteTest(unittest.TestCase):
         client, transport = self.terminal(200, status="failed")
 
         client.complete_transfer_task(
-            CREDENTIAL, TASK_ID, status="failed", error_code="download_stalled"
+            TOKEN, TASK_ID, ATTEMPT_ID, status="failed", error_code="download_stalled"
         )
 
         payload = transport.calls[0][2]
-        self.assertEqual(payload, {"status": "failed", "error_code": "download_stalled"})
+        self.assertEqual(
+            payload,
+            {"attempt_id": ATTEMPT_ID, "status": "failed", "error_code": "download_stalled"},
+        )
         self.assertNotIn("sha256", payload)
         self.assertNotIn("completed_bytes", payload)
 
@@ -281,7 +288,7 @@ class CompleteTest(unittest.TestCase):
 
         with self.assertRaises(TransferIntegrityRejectedError):
             client.complete_transfer_task(
-                CREDENTIAL, TASK_ID, status="success", completed_bytes=1, sha256="c" * 64
+                TOKEN, TASK_ID, ATTEMPT_ID, status="success", completed_bytes=1, sha256="c" * 64
             )
 
     def test_a_lost_lease_and_a_server_fault_are_told_apart(self) -> None:
@@ -289,13 +296,13 @@ class CompleteTest(unittest.TestCase):
         client, _ = client_with((409, {}))
         with self.assertRaises(TransferLeaseLostError):
             client.complete_transfer_task(
-                CREDENTIAL, TASK_ID, status="success", completed_bytes=1, sha256="c" * 64
+                TOKEN, TASK_ID, ATTEMPT_ID, status="success", completed_bytes=1, sha256="c" * 64
             )
 
         client, _ = client_with((503, {"message": "try later"}))
         with self.assertRaises(TransferUnavailableError):
             client.complete_transfer_task(
-                CREDENTIAL, TASK_ID, status="success", completed_bytes=1, sha256="c" * 64
+                TOKEN, TASK_ID, ATTEMPT_ID, status="success", completed_bytes=1, sha256="c" * 64
             )
 
 
@@ -306,15 +313,15 @@ class RefusalTest(unittest.TestCase):
             with self.subTest(status=status):
                 client, _ = client_with((status, {"message": "refused"}))
                 with self.assertRaises(Exception) as caught:
-                    client.heartbeat_transfer_task(CREDENTIAL, TASK_ID, 1)
-                self.assertNotIn(CREDENTIAL, str(caught.exception))
+                    client.heartbeat_transfer_task(TOKEN, TASK_ID, ATTEMPT_ID, 1)
+                self.assertNotIn(TOKEN, str(caught.exception))
 
     def test_clouds_own_description_survives_into_the_message(self) -> None:
         """It is the operator's only account of the refusal."""
         client, _ = client_with((409, {"message": "task is cancelled"}))
 
         with self.assertRaises(TransferLeaseLostError) as caught:
-            client.heartbeat_transfer_task(CREDENTIAL, TASK_ID, 1)
+            client.heartbeat_transfer_task(TOKEN, TASK_ID, ATTEMPT_ID, 1)
 
         self.assertIn("task is cancelled", str(caught.exception))
         self.assertIn("409", str(caught.exception))

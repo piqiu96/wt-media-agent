@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from wt_media_agent.clients.cloud import CloudAgentClient
+from wt_media_agent.executors.protocol import TaskReporter
 from wt_media_agent.clients.bitbrowser import BitBrowserClient
 
 
 class ProfileMutationExecutor:
     def __init__(
         self,
-        client: CloudAgentClient,
+        reporter: TaskReporter,
         agent_id: str,
         operation: str,
         bitbrowser: BitBrowserClient,
     ) -> None:
-        self.client = client
+        self.reporter = reporter
         self.agent_id = agent_id
         self.operation = operation
         self.bitbrowser = bitbrowser
@@ -30,15 +30,15 @@ class ProfileMutationExecutor:
         if self.operation != "create" and not profile_id:
             raise ValueError("profile mutation task requires profile_id")
 
-        self.client.report_task(task_id, self.agent_id, "running", 10, f"正在执行 Profile {self.operation}")
+        self.reporter.report_task(task_id, self.agent_id, "running", 10, f"正在执行 Profile {self.operation}")
         if self.operation == "create":
             config = {str(k): v for k, v in payload.items() if k != "profile_id"}
             created_id = self.bitbrowser.create_profile(config)
-            self.client.report_task(task_id, self.agent_id, "running", 70, "Profile 已创建，正在确认结果")
+            self.reporter.report_task(task_id, self.agent_id, "running", 70, "Profile 已创建，正在确认结果")
             snapshot = self.bitbrowser.scan_profiles()
             if not any(p.bit_profile_id == created_id for p in snapshot.profiles):
                 raise RuntimeError("profile_create_readback_missing")
-            return self.client.report_task(task_id, self.agent_id, "succeeded", 100, "Profile 创建并读回验证成功", {"profile_id": created_id, "readback": True})
+            return self.reporter.report_task(task_id, self.agent_id, "succeeded", 100, "Profile 创建并读回验证成功", {"profile_id": created_id, "readback": True})
         if self.operation == "open":
             self.bitbrowser.open_profile(profile_id)
         elif self.operation == "close":
@@ -48,11 +48,11 @@ class ProfileMutationExecutor:
             self.bitbrowser.update_profile(profile_id, config)
         else:
             raise ValueError(f"unsupported profile operation: {self.operation}")
-        self.client.report_task(task_id, self.agent_id, "running", 80, "BitBrowser 已返回成功")
+        self.reporter.report_task(task_id, self.agent_id, "running", 80, "BitBrowser 已返回成功")
         snapshot = self.bitbrowser.scan_profiles()
         if not any(p.bit_profile_id == profile_id for p in snapshot.profiles):
             raise RuntimeError("profile_mutation_readback_missing")
-        return self.client.report_task(task_id, self.agent_id, "succeeded", 100, f"Profile {self.operation} 并读回验证成功", {"profile_id": profile_id, "cloud_profile_id": str(payload.get("cloud_profile_id", "")), "readback": True, "operation": self.operation})
+        return self.reporter.report_task(task_id, self.agent_id, "succeeded", 100, f"Profile {self.operation} 并读回验证成功", {"profile_id": profile_id, "cloud_profile_id": str(payload.get("cloud_profile_id", "")), "readback": True, "operation": self.operation})
 
 
 def factory(operation: str, bitbrowser: BitBrowserClient):

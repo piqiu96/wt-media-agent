@@ -292,6 +292,19 @@ class SigtermTests(LoggingStateTestCase):
             held = socket.create_connection((self.HOST, port), timeout=5)
             self.addCleanup(held.close)
             held.sendall(b"GET /healthz HTTP/1.1\r\n")
+            # The accept queue is FIFO, so once a later probe has been answered,
+            # the held connection has been accepted and its handler thread is
+            # parked on the headers. Without this the signal can beat the
+            # accept loop under load and the process exits with no thread to
+            # join -- a harness race, not the behaviour under test.
+            probe = socket.create_connection((self.HOST, port), timeout=5)
+            try:
+                probe.sendall(
+                    b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                )
+                probe.recv(1)
+            finally:
+                probe.close()
 
         process.send_signal(signal.SIGTERM)
         return process, lines, held

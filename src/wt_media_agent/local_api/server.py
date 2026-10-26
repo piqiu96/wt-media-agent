@@ -1,4 +1,4 @@
-"""Local Agent HTTP/SSE API with task status, events, and node binding."""
+"""Local Agent HTTP/SSE API：状态、事件、本机操作，以及 Agent Token 配置。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import secrets
 import signal
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional, Protocol
@@ -28,9 +29,18 @@ from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.download_sink import DownloadSink
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
 from wt_media_agent.clients.bitbrowser import (
+    BitBrowserError,
     BitBrowserIdentityError,
     BitBrowserResponseError,
+    BitBrowserUnavailableError,
     ProfileSnapshot,
+)
+from wt_media_agent.clients.cloud import CloudAgentClient
+from wt_media_agent.clients.cloud.errors import (
+    AgentAuthError,
+    CloudError,
+    CloudUnavailableError,
+    StaleAttemptError,
 )
 from wt_media_agent.clients import platform_identity
 from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
@@ -46,7 +56,7 @@ from wt_media_agent.runtime.environment import (
     RuntimeEnvironmentCollector,
 )
 from wt_media_agent.runtime.logging import begin_operation, end_operation
-from wt_media_agent.runtime.node_credential import NodeCredential
+from wt_media_agent.runtime.agent_token import AgentToken
 
 #: Spelled out rather than `__name__`. `scripts/verify-health.sh` and
 #: `bin/control.sh` both run this module with `-m`, where `__name__`
@@ -80,7 +90,8 @@ class LocalApiServer:
         bitbrowser: ProfileScanner,
         checkpoint_store: Optional[CheckpointStore] = None,
         save_directories: Optional[SaveDirectoryStore] = None,
-        node_credential: Optional[NodeCredential] = None,
+        agent_token: Optional[AgentToken] = None,
+        cloud_agent: Optional[CloudAgentClient] = None,
         auth_token: str = "",
         cloud_base_url: str = "",
     ) -> None:
@@ -97,11 +108,12 @@ class LocalApiServer:
         # `save_directory_response` -- so a server wired without one says so
         # instead of reporting a machine that has chosen no directory.
         self.save_directories = save_directories
-        # The same object the transfer loop reads: this server is what records
-        # the credential Cloud issued, and that loop is what spends it. Absent is
-        # answered rather than ignored, exactly as an absent save-directory store
-        # is -- see `_no_node_credential_store`.
-        self.node_credential = node_credential
+        # Desktop 通过本机路由写入 Token，任务循环读取同一个对象。没装配时
+        # 如实回答不可用，而不是丢弃写入。
+        self.agent_token = agent_token
+        # 绑定与敏感预检以 Token 用户的身份访问 Cloud。事实（BitBrowser 主账号、
+        # 观察时间、Profile 是否可见）必须来自这里实读，不能由调用方转述。
+        self.cloud_agent = cloud_agent
         self.auth_token = auth_token or ""
         # The configured Cloud endpoint, handed in rather than read here (the
         # configuration layer is the only reader of `config/` and the
@@ -198,9 +210,12 @@ class LocalApiServer:
         try:
             snapshot = self.bitbrowser.scan_profiles()
             self._bitbrowser_scan.record(snapshot)
-            return 200, snapshot.to_dict()
+            # Cloud 用 observed_at 判断扫描事实是否新鲜；它就是这次实读的时刻。
+            return 200, {**snapshot.to_dict(), "observed_at": _utc_now_iso()}
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError:
             return 502, {"error": {"code": "bitbrowser_response_error"}}
 
@@ -217,6 +232,9 @@ class LocalApiServer:
                 _duration_ms(started_at),
             )
             return 201, {"data": {"id": profile_id}}
+        except BitBrowserUnavailableError as e:
+            logger.warning("local_api.profile_create.offline name=%s group_id=%s error=%s", profile_name, group_id, e)
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             logger.warning(
                 "local_api.profile_create.failure name=%s group_id=%s duration_ms=%d error=%s",
@@ -230,6 +248,8 @@ class LocalApiServer:
     def profile_groups_response(self) -> tuple[int, dict[str, object]]:
         try:
             return 200, {"data": {"groups": _safe_groups(self.bitbrowser.group_list())}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -271,56 +291,145 @@ class LocalApiServer:
         store.set(str(directory))
         return 200, {"data": _save_directory_facts(store)}
 
-    # ---- bind ----
+    # ---- Agent Token ----
 
-    def record_binding(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
-        """`POST /api/v1/bind`: the Cloud identity this Agent is to work under.
+    def record_agent_token(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/agent-token`：Desktop 交来 Cloud 签发的 Agent Token。
 
-        Two facts arrive together and are recorded together: the node id that
-        `/api/v1/status` reports, and -- since CHG-061 T-04 -- the node credential
-        Cloud issued for it. One call because they are one event: Desktop has
-        just registered this node with Cloud. A route that took the id from one
-        call and the credential from another could be left holding half of each.
-
-        The credential is **recorded and never echoed**. The answer says whether
-        this process holds one, and `has_node_credential` is read back from what
-        is held rather than from the request -- otherwise it would agree just as
-        well with a write that was dropped, which is the one failure a caller
-        cannot see for itself.
-
-        A request that carries no credential is not refused and changes nothing.
-        That is the local-only bind Desktop has always been able to make, and a
-        call with nothing to say about Cloud must not be able to unbind a running
-        download loop.
+        Token 只进内存，应答只说是否持有、何时过期，不回显 Token 本身。
+        `has_agent_token` 从已保存的状态读回，写入被丢弃时不会谎报成功。
         """
-        credential = body.get("node_credential")
-        if isinstance(credential, str) and credential:
-            store = self.node_credential
-            if store is None:
-                return self._no_node_credential_store()
-            store.set(credential)
-
-        node_id = str(body.get("node_id", "local-agent-dev"))
-        self.state.node_id = node_id
+        raw = body.get("token")
+        if not isinstance(raw, str) or not raw.strip():
+            return 400, {"error": {"code": "agent_token_required"}}
+        store = self.agent_token
+        if store is None:
+            return 503, {"error": {"code": "agent_token_unavailable"}}
+        expires_at = body.get("expires_at")
+        if isinstance(expires_at, bool) or not isinstance(expires_at, int):
+            expires_at = None
+        store.set(raw.strip(), expires_at)
         return 200, {
-            "node_id": node_id,
-            "session_token": secrets.token_hex(32),
-            "status": "bound",
-            "has_node_credential": bool(self.node_credential and self.node_credential.get()),
+            "data": {
+                "has_agent_token": store.has_token(),
+                "expires_at": store.expires_at(),
+            }
         }
 
-    def _no_node_credential_store(self) -> tuple[int, dict[str, object]]:
-        """What a server that cannot hold a credential answers.
+    # ---- 需要 Agent Token 的 Cloud 操作 ----
 
-        The same shape as `_no_save_directory_store`, and for the same reason: a
-        credential that arrives where there is no store is a write that is
-        dropped, and an answer read back from the request would report a binding
-        this process does not have. Measured, not imagined -- when this route was
-        first wired into the sidecar, `serve` was called without the
-        save-directory store and that route silently answered "no directory
-        chosen" for a machine that had one (fixed in the same commit).
+    def _agent_cloud(
+        self,
+    ) -> tuple[
+        Optional[CloudAgentClient],
+        Optional[str],
+        Optional[tuple[int, dict[str, object]]],
+    ]:
+        """这些路由缺 Cloud 客户端或 Token 就不能代表用户，如实回答。"""
+        if self.cloud_agent is None:
+            return None, None, (503, {"error": {"code": "cloud_unavailable"}})
+        store = self.agent_token
+        if store is None:
+            return None, None, (503, {"error": {"code": "agent_token_unavailable"}})
+        token = store.get()
+        if not token:
+            return None, None, (400, {"error": {"code": "agent_token_required"}})
+        return self.cloud_agent, token, None
+
+    def _scan_for_cloud(self) -> tuple[Optional[ProfileSnapshot], Optional[tuple[int, dict[str, object]]]]:
+        """实读一次 BitBrowser；失败按离线回答，不把旧快照当事实。"""
+        try:
+            return self.bitbrowser.scan_profiles(), None
+        except BitBrowserIdentityError:
+            return None, (503, {"error": {"code": "bitbrowser_identity_unverifiable"}})
+        except BitBrowserError:
+            return None, (
+                503,
+                {
+                    "error": {
+                        "code": "bit_browser_offline",
+                        "message": "BitBrowser 未运行或不可达",
+                        "retryable": True,
+                        "recovery_action": "start_bitbrowser",
+                    }
+                },
+            )
+
+    def bit_account_bind_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/bit-account/bind`：主账号取本机实读，不取调用方输入。
+
+        调用方只表达是否确认换绑；`main_user_id` 来自 BitBrowser 的实时应答。
         """
-        return 503, {"error": {"code": "node_credential_unavailable"}}
+        client, token, refusal = self._agent_cloud()
+        if refusal is not None:
+            return refusal
+        snapshot, refusal = self._scan_for_cloud()
+        if refusal is not None:
+            return refusal
+        main_user_id = snapshot.main_user_id.strip()
+        if not main_user_id:
+            return 503, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        try:
+            data = client.bind_bit_account(
+                token,
+                main_user_id=main_user_id,
+                observed_at=_utc_now_iso(),
+                rebind=body.get("rebind") is True,
+            )
+        except (CloudError, CloudUnavailableError) as exc:
+            return _cloud_failure(exc)
+        return 200, {"data": data}
+
+    def sensitive_preflight_response(
+        self, task_id: str, body: dict[str, object]
+    ) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/sensitive-tasks/<id>/preflight`：先实读，再请 Cloud 判定。"""
+        client, token, refusal = self._agent_cloud()
+        if refusal is not None:
+            return refusal
+        profile_id = str(body.get("profile_id", "")).strip()
+        if not profile_id:
+            return 400, {"error": {"code": "invalid_request"}}
+        snapshot, refusal = self._scan_for_cloud()
+        if refusal is not None:
+            return refusal
+        files_ready = False
+        if self.save_directories is not None:
+            files_ready = bool(_save_directory_facts(self.save_directories)["writable"])
+        facts = {
+            "bitbrowser_status": "running",
+            "main_user_id": snapshot.main_user_id,
+            "observed_at": _utc_now_iso(),
+            "profile_visible": any(
+                profile.bit_profile_id == profile_id for profile in snapshot.profiles
+            ),
+            "files_ready": files_ready,
+        }
+        try:
+            data = client.preflight_sensitive_task(token, task_id, facts)
+        except (CloudError, CloudUnavailableError) as exc:
+            return _cloud_failure(exc)
+        return 200, {"data": data}
+
+    def sensitive_permit_finish_response(
+        self, permit_id: str, body: dict[str, object]
+    ) -> tuple[int, dict[str, object]]:
+        """`POST /api/v1/sensitive-permits/<id>/finish`：交还许可。
+
+        本地操作失败时同样要交还，并标记 `result_uncertain`，否则 Cloud 会一直
+        占着这个窗口。
+        """
+        client, token, refusal = self._agent_cloud()
+        if refusal is not None:
+            return refusal
+        outcome = str(body.get("outcome", "")).strip()
+        if outcome not in ("completed", "result_uncertain"):
+            return 400, {"error": {"code": "invalid_request"}}
+        try:
+            client.finish_sensitive_permit(token, permit_id, outcome)
+        except (CloudError, CloudUnavailableError) as exc:
+            return _cloud_failure(exc)
+        return 204, {}
 
     def _no_save_directory_store(self) -> tuple[int, dict[str, object]]:
         """What a server with no local storage answers.
@@ -348,6 +457,9 @@ class LocalApiServer:
                 _duration_ms(started_at),
             )
             return 200, {"data": {"status": "opened"}}
+        except BitBrowserUnavailableError as e:
+            logger.warning("local_api.profile_open.offline profile_id=%s error=%s", profile_id, e)
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             logger.warning(
                 "local_api.profile_open.failure profile_id=%s duration_ms=%d error=%s",
@@ -372,6 +484,9 @@ class LocalApiServer:
                 _duration_ms(started_at),
             )
             return 200, {"data": {"status": "closed"}}
+        except BitBrowserUnavailableError as e:
+            logger.warning("local_api.profile_close.offline profile_id=%s error=%s", profile_id, e)
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             logger.warning(
                 "local_api.profile_close.failure profile_id=%s duration_ms=%d error=%s",
@@ -388,6 +503,8 @@ class LocalApiServer:
         try:
             self.bitbrowser.update_profile(profile_id, body)
             return 200, {"data": {"status": "updated"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -398,6 +515,8 @@ class LocalApiServer:
         try:
             self.bitbrowser.delete_profile(profile_id)
             return 200, {"data": {"status": "deleted"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -457,6 +576,8 @@ class LocalApiServer:
                 snapshot = self.bitbrowser.scan_profiles()
             except BitBrowserIdentityError:
                 return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+            except BitBrowserUnavailableError:
+                return _bitbrowser_offline_response()
             except BitBrowserResponseError:
                 return 502, {"error": {"code": "bitbrowser_response_error"}}
             found = next((item for item in snapshot.profiles if item.bit_profile_id == profile_id), None)
@@ -484,6 +605,8 @@ class LocalApiServer:
             snapshot = self.bitbrowser.scan_profiles()
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError:
             return 502, {"error": {"code": "bitbrowser_response_error"}}
         found = next((item for item in snapshot.profiles if item.bit_profile_id == profile_id), None)
@@ -510,6 +633,8 @@ class LocalApiServer:
             cookies = browser_cookies.read_account_cookies(self.bitbrowser, profile_id, devtools)
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
@@ -543,9 +668,57 @@ class LocalApiServer:
             cookies = self.bitbrowser.read_cookies(profile_id)
         except BitBrowserIdentityError:
             return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
+        except BitBrowserUnavailableError:
+            return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
         return 200, {"data": {"cookies": cookies}}
+
+
+def _bitbrowser_offline_response() -> tuple[int, dict[str, object]]:
+    return 503, {"error": {
+        "code": "bit_browser_offline",
+        "message": "比特浏览器未运行或无法连接",
+        "retryable": True,
+        "recovery_action": "start_bitbrowser",
+    }}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _path_id(path: str, prefix: str, suffix: str) -> Optional[str]:
+    """取出 `/prefix/<id>/suffix` 里的 id；形状不符时返回 None。"""
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    middle = path[len(prefix) : len(path) - len(suffix)]
+    return middle or None
+
+
+def _cloud_failure(exc: Exception) -> tuple[int, dict[str, object]]:
+    """把 Cloud 的拒绝转成本机应答，码、可否重试和下一步都以 Cloud 为准。"""
+    if isinstance(exc, CloudUnavailableError):
+        return 502, {
+            "error": {
+                "code": "cloud_unavailable",
+                "message": "Cloud 不可达",
+                "retryable": True,
+                "recovery_action": "",
+            }
+        }
+    assert isinstance(exc, CloudError)
+    return (
+        401 if isinstance(exc, AgentAuthError) else 409,
+        {
+            "error": {
+                "code": exc.code or "cloud_request_failed",
+                "message": exc.message,
+                "retryable": exc.retryable,
+                "recovery_action": exc.recovery_action,
+            }
+        },
+    )
 
 
 def _save_directory_facts(store: SaveDirectoryStore) -> dict[str, object]:
@@ -632,7 +805,21 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             if not self._check_auth():
                 self._write_json(401, {"error": "unauthorized"})
                 return
-            if self.path == "/api/v1/bit-browser/profile-scans":
+            route = urlparse.urlsplit(self.path).path
+            task_id = _path_id(route, "/api/v1/sensitive-tasks/", "/preflight")
+            permit_id = _path_id(route, "/api/v1/sensitive-permits/", "/finish")
+            if task_id is not None:
+                status, payload = api.sensitive_preflight_response(task_id, self._read_body())
+                self._write_json(status, payload)
+            elif permit_id is not None:
+                status, payload = api.sensitive_permit_finish_response(
+                    permit_id, self._read_body()
+                )
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-account/bind":
+                status, payload = api.bit_account_bind_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/bit-browser/profile-scans":
                 status, payload = api.profile_scan_response()
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-groups":
@@ -671,8 +858,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             elif self.path == "/api/v1/save-directory":
                 status, payload = api.set_save_directory_response(self._read_body())
                 self._write_json(status, payload)
-            elif self.path == "/api/v1/bind":
-                self._handle_bind()
+            elif self.path == "/api/v1/agent-token":
+                status, payload = api.record_agent_token(self._read_body())
+                self._write_json(status, payload)
             else:
                 self._write_json(404, {"error": "not_found"})
 
@@ -706,28 +894,6 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                     self.wfile.flush()
                 except Exception:
                     pass
-
-        def _handle_bind(self) -> None:
-            try:
-                length = int(self.headers.get("content-length", 0))
-                body = self.rfile.read(length) if length else b"{}"
-                payload = json.loads(body)
-            except (ValueError, json.JSONDecodeError):
-                self._write_json(400, {"error": "invalid_json"})
-                return
-
-            binding_token = payload.get("binding_token", "")
-            if not binding_token or not isinstance(binding_token, str):
-                self._write_json(400, {"error": "binding_token_required"})
-                return
-
-            # What is recorded, and what the answer may say about it, is the
-            # API's business and lives with the other routes' answers. The two
-            # refusals above stay here, unchanged: they are the shape this route
-            # has always answered with, and the vocabulary that names refusals by
-            # code has never named them.
-            status, answer = api.record_binding(payload)
-            self._write_json(status, answer)
 
         def _sse_write(self, event: str, data: str) -> None:
             try:
@@ -764,7 +930,10 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             return
 
         def _write_json(self, status: int, payload: dict[str, object]) -> None:
-            body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            if status == 204:
+                body = b""
+            else:
+                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))
@@ -815,7 +984,8 @@ def serve(
     bitbrowser: ProfileScanner,
     checkpoint_store: Optional[CheckpointStore] = None,
     save_directory_store: Optional[SaveDirectoryStore] = None,
-    node_credential: Optional[NodeCredential] = None,
+    agent_token: Optional[AgentToken] = None,
+    cloud_agent: Optional[CloudAgentClient] = None,
     state: LocalAgentState,
     auth_token: str = "",
     cloud_base_url: str = "",
@@ -825,7 +995,8 @@ def serve(
         bitbrowser=bitbrowser,
         checkpoint_store=checkpoint_store,
         save_directories=save_directory_store,
-        node_credential=node_credential,
+        agent_token=agent_token,
+        cloud_agent=cloud_agent,
         auth_token=auth_token,
         cloud_base_url=cloud_base_url,
     )
@@ -900,7 +1071,8 @@ def main(argv: list[str] | None = None) -> int:
         bitbrowser=components.bitbrowser,
         checkpoint_store=components.store,
         save_directory_store=components.save_directories,
-        node_credential=components.node_credential,
+        agent_token=components.agent_token,
+        cloud_agent=components.cloud,
         state=components.state,
         auth_token=args.auth_token or config.runtime_token,
         cloud_base_url=config.cloud_base_url,

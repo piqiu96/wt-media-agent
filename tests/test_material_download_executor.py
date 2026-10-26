@@ -61,11 +61,12 @@ from wt_media_agent.executors.material_download import (
 from wt_media_agent.storage import DownloadSink, TransferResume
 
 TASK_ID = "task-1"
-CREDENTIAL = "node-credential-SENTINEL"
+ATTEMPT_ID = "attempt-1"
+TOKEN = "agent-token-SENTINEL"
 #: What the credential callable answers after a second bind. A different value
-#: from `CREDENTIAL`, because "which credential did this report go out under" is
+#: from `TOKEN`, because "which credential did this report go out under" is
 #: a question only when the two can be told apart.
-ROTATED = "node-credential-issued-by-the-next-bind"
+ROTATED = "agent-token-issued-on-the-next-login"
 #: Two chunks at the default test chunk size, so a report, a resume and a stall
 #: all have somewhere to happen inside one body.
 BODY = bytes(range(256)) * 16
@@ -121,6 +122,7 @@ def sha256(body: bytes) -> str:
 def make_lease(body: bytes = BODY, **overrides: object) -> TransferLease:
     fields: dict[str, object] = {
         "task_id": TASK_ID,
+        "attempt_id": ATTEMPT_ID,
         "asset_id": 42,
         "title": "春日",
         "game_name": GAME_NAME,
@@ -352,6 +354,9 @@ class FakeCloud:
         self.heartbeats: list[tuple[str, str, int]] = []
         self.progress: list[tuple[str, str, int, int]] = []
         self.completions: list[dict] = []
+        #: 每次调用携带的 attempt_id，顺序与对应记录一致。
+        self.heartbeat_attempts: list[str] = []
+        self.progress_attempts: list[str] = []
         self.raise_on: dict[str, Exception] = {}
 
     def _check(self, method: str) -> None:
@@ -359,18 +364,26 @@ class FakeCloud:
         if failure is not None:
             raise failure
 
-    def heartbeat_transfer_task(self, credential: str, task_id: str, completed: int) -> None:
+    def heartbeat_transfer_task(
+        self, token: str, task_id: str, attempt_id: str, completed: int
+    ) -> None:
         self._check("heartbeat")
-        self.heartbeats.append((credential, task_id, completed))
+        self.heartbeats.append((token, task_id, completed))
+        self.heartbeat_attempts.append(attempt_id)
 
     def report_transfer_progress(
-        self, credential: str, task_id: str, completed: int, rate: int
+        self, token: str, task_id: str, attempt_id: str, completed: int, rate: int
     ) -> None:
         self._check("progress")
-        self.progress.append((credential, task_id, completed, rate))
+        self.progress.append((token, task_id, completed, rate))
+        self.progress_attempts.append(attempt_id)
 
-    def complete_transfer_task(self, credential: str, task_id: str, **fields: object):
-        self.completions.append({"credential": credential, "task_id": task_id, **fields})
+    def complete_transfer_task(
+        self, token: str, task_id: str, attempt_id: str, **fields: object
+    ):
+        self.completions.append(
+            {"token": token, "task_id": task_id, "attempt_id": attempt_id, **fields}
+        )
         self._check("complete")
         return TransferTerminal(
             task_id=task_id,
@@ -392,10 +405,9 @@ class DownloadTest(unittest.TestCase):
         # and the runner is what binds the two.
         self.recorded: list[tuple[str, TransferResume]] = []
         self.directory_choice: str | None = str(self.directory)
-        # What the executor's `credential` callable answers. An attribute and not
-        # a constant because the whole point of it being a callable is that the
-        # answer can change under a running download.
-        self.credential: str | None = CREDENTIAL
+        # 执行器的 `token` 回调当前返回什么。用属性而不是常量，因为这个回调
+        # 存在的意义就是值能在下载途中变化。
+        self.token: str | None = TOKEN
         self.sleeps: list[float] = []
 
     def _record(self, task_id: str, resume: TransferResume) -> None:
@@ -417,10 +429,9 @@ class DownloadTest(unittest.TestCase):
         return MaterialDownloadExecutor(
             self.cloud,  # type: ignore[arg-type]
             "agent-1",
-            # A callable, and `self.credential` rather than the constant so an
-            # arm can replace it: what the executor does when this process has no
-            # credential is a behaviour of its own (see `CredentialTests`).
-            credential=lambda: self.credential,
+            # 传回调而不是常量，让单个用例可以替换它：本进程没有 Token 时执行器
+            # 如何反应是另一组行为（见 `CredentialTests`）。
+            token=lambda: self.token,
             save_directory=lambda: self.directory_choice,
             record=self._record,
             opener=opener,
@@ -670,7 +681,7 @@ class CredentialTests(DownloadTest):
         into an `executor_error` with the row kept.
         """
         opener = ServingOpener()
-        self.credential = None
+        self.token = None
 
         with self.assertRaises(ValueError):
             self.run_download(opener)
@@ -682,7 +693,7 @@ class CredentialTests(DownloadTest):
 
         # The control, and the reason the arm above is about the credential: the
         # same opener and the same lease, run once this process holds one.
-        self.credential = CREDENTIAL
+        self.token = TOKEN
         self.assertEqual(self.run_download(ServingOpener())["status"], OUTCOME_SUCCESS)
 
     def test_a_credential_replaced_under_a_running_download_is_used_by_the_next_report(
@@ -708,7 +719,7 @@ class CredentialTests(DownloadTest):
                 # with is already under the new credential and the one before it
                 # is not: both sides of the swap are observed.
                 rotate_after=swapped_while_reading,
-                on_rotate=lambda: setattr(self, "credential", ROTATED),
+                on_rotate=lambda: setattr(self, "token", ROTATED),
             )
 
         # No second on the throttle, so every chunk reports and the split below
@@ -716,12 +727,12 @@ class CredentialTests(DownloadTest):
         outcome = self.run_download(opener, progress_min_seconds=0.0)
 
         self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
-        credentials = [credential for credential, _, _, _ in self.cloud.progress]
+        credentials = [token for token, _, _, _ in self.cloud.progress]
         self.assertGreater(len(credentials), 1, "this arm needs a report after the swap")
-        self.assertEqual(credentials[0], CREDENTIAL)
+        self.assertEqual(credentials[0], TOKEN)
         self.assertEqual(set(credentials[1:]), {ROTATED})
         # And the report that matters most is read last of all: the completion.
-        self.assertEqual(self.completion()["credential"], ROTATED)
+        self.assertEqual(self.completion()["token"], ROTATED)
 
 
 class TransferTest(DownloadTest):
@@ -734,10 +745,21 @@ class TransferTest(DownloadTest):
         self.run_download(ServingOpener())
 
         completion = self.completion()
-        self.assertEqual(completion["credential"], CREDENTIAL)
+        self.assertEqual(completion["token"], TOKEN)
         self.assertEqual(completion["status"], "success")
         self.assertEqual(completion["completed_bytes"], len(BODY))
         self.assertEqual(completion["sha256"], sha256(BODY))
+
+    def test_every_later_call_carries_the_leases_attempt_id(self) -> None:
+        """Cloud 用 attempt_id 拒绝被新 attempt 取代的旧结果，所以进度、续租、
+        终态都必须带上 claim 返回的那个值。"""
+        self.run_download(ServingOpener(), lease=make_lease(lease_seconds=1))
+
+        self.assertTrue(self.cloud.progress_attempts)
+        self.assertEqual(set(self.cloud.progress_attempts), {ATTEMPT_ID})
+        self.assertTrue(self.cloud.heartbeat_attempts)
+        self.assertEqual(set(self.cloud.heartbeat_attempts), {ATTEMPT_ID})
+        self.assertEqual(self.completion()["attempt_id"], ATTEMPT_ID)
 
     def test_the_part_file_is_not_the_file_and_the_file_is_there_at_the_end(self) -> None:
         self.run_download(ServingOpener())
@@ -1061,8 +1083,8 @@ class ProgressTest(DownloadTest):
 
         self.assertEqual(self.cloud.progress, [])
         self.assertTrue(self.cloud.heartbeats)
-        for credential, task_id, _ in self.cloud.heartbeats:
-            self.assertEqual((credential, task_id), (CREDENTIAL, TASK_ID))
+        for token, task_id, _ in self.cloud.heartbeats:
+            self.assertEqual((token, task_id), (TOKEN, TASK_ID))
 
     def test_a_heartbeat_carries_the_byte_figure_and_the_lease_it_renews(self) -> None:
         self.run_download(ServingOpener(), lease=make_lease(lease_seconds=3))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import unittest
@@ -64,6 +65,16 @@ class LocalProfileScanTests(unittest.TestCase):
         self.assertEqual(payload["profiles"][0]["proxy_port"], 0)
         self.assertNotIn("cookie", str(payload).lower())
         self.assertNotIn("password", str(payload).lower())
+
+    def test_carries_when_the_scan_was_observed(self) -> None:
+        """Cloud 只接受新鲜扫描，所以这次实读的时刻必须一起返回。"""
+        _, payload = LocalApiServer(
+            LocalAgentState(), bitbrowser=SnapshotClient()
+        ).profile_scan_response()
+
+        observed_at = datetime.fromisoformat(str(payload["observed_at"]).replace("Z", "+00:00"))
+        self.assertEqual(observed_at.utcoffset(), timedelta(0))
+        self.assertLess(abs((datetime.now(timezone.utc) - observed_at).total_seconds()), 60)
 
     def test_maps_identity_failure_without_raw_response(self) -> None:
         status, payload = LocalApiServer(

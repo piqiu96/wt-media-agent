@@ -86,8 +86,6 @@ PLACEHOLDER_PACKAGES = frozenset({"adapters"})
 ROOT_MODULES = frozenset(
     {
         "__init__",
-        "cloud_agent_client",
-        "cloud_agent_contract",
         "cloud_main",
         "local_main",
         "sidecar_main",
@@ -188,8 +186,6 @@ FROZEN_LAYER_EDGES = frozenset(
         ("bootstrap", "storage"),
         ("clients", "runtime"),
         ("clients", "services"),
-        ("cloud_agent_client", "clients"),
-        ("cloud_agent_contract", "clients"),
         ("cloud_main", "bootstrap"),
         ("executors", "clients"),
         ("executors", "services"),
