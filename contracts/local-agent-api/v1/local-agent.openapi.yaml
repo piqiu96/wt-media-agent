@@ -6,7 +6,8 @@ info:
   # Bumped by CHG-20261002-074: `scan` parameter added to /api/v1/status.
   # Bumped by CHG-20261023-101: Agent Token, BitBrowser bind, sensitive preflight and
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
-  version: 2026.10.23.1
+  # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
+  version: 2026.10.27.1
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -706,7 +707,7 @@ components:
       required: [profile_id, platform]
       properties:
         profile_id: {type: string, description: BitBrowser profile id.}
-        platform: {type: string, enum: [bilibili, baijiahao, douyin]}
+        platform: {type: string, enum: [bilibili, baidu, douyin]}
         expected_platform_account_id: {type: string, description: Existing Cloud platform account id used to detect mismatch.}
       additionalProperties: false
     AccountCheckResult:

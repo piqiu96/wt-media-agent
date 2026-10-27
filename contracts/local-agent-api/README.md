@@ -18,7 +18,7 @@ Paths the formal definition holds, by the change that added them:
   `POST /api/v1/bit-browser/profile-update`, `POST /api/v1/bit-browser/profile-delete`,
   `POST /api/v1/cookie-read`
 
-Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.23.1`. The
+Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.27.1`. The
 revision is that file's own `info.version`, and the file is the only place the
 number is written down. The list above is checked against the file's `paths:` and
 their methods by `tests/test_contract_docs.py`, so an endpoint added to one and

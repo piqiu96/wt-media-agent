@@ -1,6 +1,6 @@
-"""Baijiahao/Baidu account identity via the public logininfo API.
+"""Baidu account identity via the public logininfo API.
 
-Baijiahao UID is not derivable from cookies alone (BDUSS is encrypted), so the
+The Baidu UID is not derivable from cookies alone (BDUSS is encrypted), so the
 Agent calls image.baidu.com/user/logininfo server-side with the BDUSS cookie to
 read uid / nickname / portrait. The BDUSS value is sensitive and must never be
 logged; it is only sent as a request header.
@@ -13,15 +13,15 @@ import time
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-BAIJIAHAO_HOST = "https://image.baidu.com"
+BAIDU_LOGIN_HOST = "https://image.baidu.com"
 LOGININFO_URL_TEMPLATE = (
-    BAIJIAHAO_HOST + "/user/logininfo?time={time_ms}&src=pc&page=index"
+    BAIDU_LOGIN_HOST + "/user/logininfo?time={time_ms}&src=pc&page=index"
 )
 AVATAR_BASE_URL = "https://himg.bdimg.com/sys/portraitn/item/"
 
 
-def identify_baijiahao(cookies: list[dict[str, object]]) -> dict[str, object]:
-    """Identify a Baijiahao/Baidu account via the public logininfo API."""
+def identify_baidu(cookies: list[dict[str, object]]) -> dict[str, object]:
+    """Identify a Baidu account via the public logininfo API."""
     cookie_by_name: dict[str, str] = {}
     for cookie in cookies:
         if not isinstance(cookie, dict):
@@ -45,7 +45,7 @@ def identify_baijiahao(cookies: list[dict[str, object]]) -> dict[str, object]:
             url,
             headers={
                 "Accept": "application/json, text/plain, */*",
-                "Referer": BAIJIAHAO_HOST + "/",
+                "Referer": BAIDU_LOGIN_HOST + "/",
                 "Cookie": f"BDUSS={urlparse.quote(bduss)}",
                 "User-Agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -82,7 +82,7 @@ def identify_baijiahao(cookies: list[dict[str, object]]) -> dict[str, object]:
             "name": name,
             "avatar_url": avatar_url,
             "login_status": "normal",
-            "message": "已读取到百家号账号信息",
+            "message": "已读取到百度账号信息",
         }
     except Exception as exc:  # noqa: BLE001 - surface readable message, never leak cookie
         return {
@@ -90,5 +90,5 @@ def identify_baijiahao(cookies: list[dict[str, object]]) -> dict[str, object]:
             "name": "",
             "avatar_url": "",
             "login_status": "environment_error",
-            "message": f"百家号信息接口调用失败: {exc}",
+            "message": f"百度账号信息接口调用失败: {exc}",
         }
