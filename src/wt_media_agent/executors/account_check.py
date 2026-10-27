@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from wt_media_agent.clients import platform_identity
-from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
+from wt_media_agent.clients.baidu import identity as baidu_identity
 from wt_media_agent.clients.bilibili import identity as bilibili_identity
 from wt_media_agent.clients.bitbrowser import BitBrowserClient
 from wt_media_agent.clients.platform_urls import login_url
@@ -111,8 +111,8 @@ class AccountCheckExecutor:
 def _identify(
     platform: str, cookies: list[dict[str, object]], devtools: str
 ) -> dict[str, object]:
-    if platform == "baijiahao":
-        return baijiahao_identity.identify_baijiahao(cookies)
+    if platform == "baidu":
+        return baidu_identity.identify_baidu(cookies)
     if platform == "bilibili":
         nav_data = None
         if devtools:

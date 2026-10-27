@@ -43,7 +43,7 @@ from wt_media_agent.clients.cloud.errors import (
     StaleAttemptError,
 )
 from wt_media_agent.clients import platform_identity
-from wt_media_agent.clients.baijiahao import identity as baijiahao_identity
+from wt_media_agent.clients.baidu import identity as baidu_identity
 from wt_media_agent.clients.bilibili import identity as bilibili_identity
 from wt_media_agent.services.browser import cookies as browser_cookies
 from wt_media_agent.services.net.proxy import (
@@ -625,7 +625,7 @@ class LocalApiServer:
         profile_id = str(body.get("profile_id", "")).strip()
         platform = str(body.get("platform", "")).strip().lower()
         expected_id = str(body.get("expected_platform_account_id", "")).strip()
-        if not profile_id or platform not in {"bilibili", "baijiahao", "douyin"}:
+        if not profile_id or platform not in {"bilibili", "baidu", "douyin"}:
             return 400, {"error": {"code": "account_check_input_invalid"}}
         devtools = ""
         try:
@@ -642,8 +642,8 @@ class LocalApiServer:
         if platform == "bilibili" and devtools:
             nav_data = bilibili_identity.fetch_nav_via_cdp(devtools)
 
-        if platform == "baijiahao":
-            result = baijiahao_identity.identify_baijiahao(cookies)
+        if platform == "baidu":
+            result = baidu_identity.identify_baidu(cookies)
         elif platform == "bilibili":
             result = bilibili_identity.identify_bilibili(cookies, nav_data)
         else:

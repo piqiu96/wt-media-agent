@@ -18,7 +18,8 @@ from __future__ import annotations
 LOGIN_URLS: dict[str, str] = {
     "douyin": "https://www.douyin.com/",
     "bilibili": "https://www.bilibili.com/",
-    "baijiahao": "https://baijiahao.baidu.com/",
+    # 百度账号的登录态落在百家号站点；平台标识按平台名写 baidu。
+    "baidu": "https://baijiahao.baidu.com/",
 }
 
 

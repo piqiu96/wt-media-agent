@@ -78,11 +78,11 @@ class AccountCheckNavigationTests(unittest.TestCase):
 
     def test_the_navigation_target_is_the_one_the_clients_layer_declares(self):
         """Paired control: the URL follows the table rather than a copy of it."""
-        client, bitbrowser, executor = build(platform="baijiahao")
+        client, bitbrowser, executor = build(platform="baidu")
 
-        executor.execute({"task_id": "task-1", "profile_id": "p1", "platform": "baijiahao"})
+        executor.execute({"task_id": "task-1", "profile_id": "p1", "platform": "baidu"})
 
-        self.assertEqual(bitbrowser.opened_urls[0][1], platform_urls.LOGIN_URLS["baijiahao"])
+        self.assertEqual(bitbrowser.opened_urls[0][1], platform_urls.LOGIN_URLS["baidu"])
 
     def test_an_unsupported_platform_is_rejected_before_anything_is_reported(self):
         """A caller error must not be turned into a `check_failed` result.
@@ -133,13 +133,13 @@ class PlatformTableTests(unittest.TestCase):
     """
 
     def test_the_supported_platform_ids_are_the_ones_tasks_carry(self):
-        self.assertEqual(set(platform_urls.LOGIN_URLS), {"douyin", "bilibili", "baijiahao"})
+        self.assertEqual(set(platform_urls.LOGIN_URLS), {"douyin", "bilibili", "baidu"})
 
     def test_every_entry_points_at_the_https_host_it_names(self):
         expected = {
             "douyin": "www.douyin.com",
             "bilibili": "www.bilibili.com",
-            "baijiahao": "baijiahao.baidu.com",
+            "baidu": "baijiahao.baidu.com",
         }
         for platform, host in expected.items():
             with self.subTest(platform=platform):

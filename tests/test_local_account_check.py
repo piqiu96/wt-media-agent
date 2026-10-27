@@ -100,7 +100,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertEqual(payload["data"]["platform_account_id"], "")
         self.assertEqual(payload["data"]["login_status"], "environment_error")
 
-    def test_baijiahao_identifies_via_logininfo_api(self) -> None:
+    def test_baidu_identifies_via_logininfo_api(self) -> None:
         import json as _json
         from unittest import mock
 
@@ -112,7 +112,7 @@ class LocalAccountCheckTests(unittest.TestCase):
 
         with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
             urlopen.return_value.read.return_value = fake_body.encode()
-            status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "baijiahao"})
+            status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "baidu"})
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["data"]["platform_account_id"], "6572476037")
@@ -120,11 +120,11 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertEqual(payload["data"]["login_status"], "normal")
         self.assertIn("avatar_url", payload["data"])
 
-    def test_baijiahao_without_bduss_is_not_logged_in(self) -> None:
+    def test_baidu_without_bduss_is_not_logged_in(self) -> None:
         server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "PSTM", "value": "17"}]))
         from unittest import mock
         with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
-            status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "baijiahao"})
+            status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "baidu"})
         self.assertEqual(status, 200)
         self.assertEqual(payload["data"]["login_status"], "not_logged_in")
         urlopen.assert_not_called()
