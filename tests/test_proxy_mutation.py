@@ -133,6 +133,18 @@ class ProxyAssignmentAdapterTests(unittest.TestCase):
         self.assertTrue(result['data']['accepted'])
         self.assertEqual(calls, ['detail', 'update'])
 
+    def test_explicit_bitbrowser_rejection_does_not_echo_sensitive_message(self) -> None:
+        from wt_media_agent.clients.bitbrowser import BitBrowserClient
+        def transport(url, payload, timeout):
+            if url.endswith('/browser/detail'):
+                return {'success': True, 'data': {'browserFingerPrint': {}, 'proxyMethod': 2}}
+            return {'success': False, 'msg': 'private-provider-error'}
+        api = LocalApiServer(LocalAgentState(), bitbrowser=BitBrowserClient('http://127.0.0.1:54345', transport=transport))
+        status, result = api.proxy_assignment_response({'profile_id':'p1','proxy_protocol':'socks5','host':'127.0.0.1','port':1080})
+        self.assertEqual(status, 409)
+        self.assertEqual(result['error']['code'], 'proxy_assignment_rejected')
+        self.assertNotIn('private-provider-error', str(result))
+
     def test_missing_success_flag_is_not_treated_as_rejection_or_success(self) -> None:
         from wt_media_agent.clients.bitbrowser import BitBrowserClient
         def transport(url, payload, timeout):
