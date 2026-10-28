@@ -7,7 +7,7 @@ info:
   # Bumped by CHG-20261023-101: Agent Token, BitBrowser bind, sensitive preflight and
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
-  version: 2026.10.27.1
+  version: 2026.10.29.1
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -482,6 +482,34 @@ paths:
         '400': {description: Proxy mutation input is invalid.}
         '409': {description: The requested proxy does not match the Profile read-back.}
         '502': {description: BitBrowser Local API failed.}
+  /api/v1/proxy-assignment:
+    post:
+      operationId: applyProfileProxy
+      description: |
+        Assigns one Profile proxy. A 200 means BitBrowser explicitly accepted the
+        update; it does not assert read-back or proxy connectivity. Credentials
+        are write-only. The Agent may read existing fingerprint before mutation
+        to preserve browser identity, but does not scan after a successful write.
+        A transport failure or invalid response after sending the write is an
+        uncertain result and must not trigger an automatic retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProxyAssignmentMutationRequest'}
+      responses:
+        '200':
+          description: BitBrowser explicitly accepted the update.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/ProxyAssignmentAccepted'}
+        '400': {description: Invalid input; no update was sent.}
+        '409': {description: BitBrowser explicitly rejected the update.}
+        '503': {description: Outcome is uncertain; read actual state before any retry.}
   /api/v1/save-directory:
     get:
       operationId: readSaveDirectory
@@ -803,6 +831,13 @@ components:
         host: {type: string}
         port: {type: integer}
         readback: {type: boolean, enum: [true]}
+      additionalProperties: false
+    ProxyAssignmentAccepted:
+      type: object
+      required: [profile_id, accepted]
+      properties:
+        profile_id: {type: string}
+        accepted: {type: boolean, enum: [true]}
       additionalProperties: false
     ProxyUnbindMutationResult:
       type: object
