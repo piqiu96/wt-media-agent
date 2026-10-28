@@ -2,32 +2,9 @@
 
 from __future__ import annotations
 
-# Task status values (aligned with Cloud task_schemas v2026.10.23.1).
-TASK_STATUS_PENDING = "pending"
-TASK_STATUS_LEASED = "leased"
-TASK_STATUS_RUNNING = "running"
-TASK_STATUS_SUCCEEDED = "succeeded"
-TASK_STATUS_FAILED = "failed"
-TASK_STATUS_CANCELLED = "cancelled"
-
-# Task types.
-TASK_TYPE_NOOP = "noop_task"
-TASK_TYPE_COOKIE_READ = "cookie_read_task"
-TASK_TYPE_COOKIE_WRITE = "cookie_write_task"
-TASK_TYPE_ACCOUNT_CHECK = "account_check_task"
-TASK_TYPE_PROXY_CHECK = "proxy_check_task"
-TASK_TYPE_PROXY_MUTATION = "proxy_mutation_task"
-
-# The one task type that is not claimed from `/tasks/claim`: a download arrives
-# on the transfer surface as a `LocalLease`, so this string is the only thing
-# Cloud and this Agent spell the same way about it. Declared here so the
-# registry's coverage test sees it and `default_executor_factories` has to
-# answer for it.
+# The only remaining claimed work: a download arrives on the transfer surface
+# as a `LocalLease`, not through a generic Cloud task route.
 TASK_TYPE_MATERIAL_DOWNLOAD = "material_download_task"
-TASK_TYPE_PROFILE_CREATE = "profile_create_task"
-TASK_TYPE_PROFILE_OPEN = "profile_open_task"
-TASK_TYPE_PROFILE_CLOSE = "profile_close_task"
-TASK_TYPE_PROFILE_UPDATE = "profile_update_task"
 
 # Agent modes.
 AGENT_MODE_LOCAL = "local"
@@ -47,9 +24,9 @@ DEFAULT_BITBROWSER_API_URL = "http://127.0.0.1:54345"
 DEFAULT_BITBROWSER_TIMEOUT = 5.0
 
 # How long a caller that explicitly asked to reuse may be served an earlier
-# profile scan. `GET /api/v1/status?scan=reuse` is the only way to ask; the
-# live scan stays the default because the account id it carries is what Cloud's
-# execution gate and the bind flow act on.
+# profile scan. `GET /api/v1/status?scan=reuse` is the only way to ask; the live
+# scan stays the default because the account id it carries is what the bind
+# flow acts on.
 BITBROWSER_SCAN_REUSE_SECONDS = 300.0
 
 # Log retention (CHG-057 T-07, rewritten by CHG-058 T-02; the rulings 六 and 三).
@@ -66,7 +43,3 @@ BITBROWSER_SCAN_REUSE_SECONDS = 300.0
 # marked on one side is marked at the same length on the other.
 DEFAULT_LOG_MAX_RECORD_BYTES = 1024 * 1024
 DEFAULT_LOG_RETENTION_DAYS = 14
-
-# Lease.
-DEFAULT_LEASE_SECONDS = 60
-MAX_RETRIES = 3

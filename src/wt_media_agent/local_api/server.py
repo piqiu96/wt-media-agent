@@ -47,10 +47,7 @@ from wt_media_agent.clients import platform_identity
 from wt_media_agent.clients.baidu import identity as baidu_identity
 from wt_media_agent.clients.bilibili import identity as bilibili_identity
 from wt_media_agent.services.browser import cookies as browser_cookies
-from wt_media_agent.services.net.proxy import (
-    check_proxy_connectivity,
-    parse_first_proxy_address,
-)
+from wt_media_agent.services.net.proxy import parse_first_proxy_address
 from wt_media_agent.runtime.constants import BITBROWSER_SCAN_REUSE_SECONDS
 from wt_media_agent.runtime.environment import (
     BitBrowserScanCache,
@@ -162,7 +159,7 @@ class LocalApiServer:
     def status(self, *, reuse_scan: bool = False) -> dict[str, object]:
         """`/api/v1/status`. `reuse_scan` is opt-in; the live scan is the default.
 
-        The account id this response carries is what Cloud's execution gate and
+        The account id this response carries is what Cloud's bind/ownership checks and
         the bind flow act on, so only a caller that wants a verdict and not an
         account id -- the top bar's automatic tick -- may ask for a reused scan.
         """
@@ -469,22 +466,6 @@ class LocalApiServer:
             return _bitbrowser_offline_response()
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
-
-    def proxy_check_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
-        """Run the short TCP check inline; browser interaction is not involved."""
-        host = str(body.get("host", "")).strip()
-        try:
-            port = int(body.get("port", 0))
-        except (TypeError, ValueError):
-            port = 0
-        if not host or not 1 <= port <= 65535:
-            return 400, {"error": {"code": "proxy_input_invalid"}}
-        result = check_proxy_connectivity(host, port)
-        data: dict[str, object] = {"connectivity": result}
-        proxy_id = str(body.get("proxy_id", "")).strip()
-        if proxy_id:
-            data["proxy_id"] = proxy_id
-        return 200, {"data": data}
 
     def proxy_extract_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Fetch and parse one provider response without touching BitBrowser."""

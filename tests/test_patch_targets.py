@@ -49,9 +49,6 @@ FROZEN_PATCH_TARGETS = {
     f"{PACKAGE}.local_api.server.urlrequest.urlopen":
         "the local API's only outbound HTTP call; tests/test_local_account_check.py "
         "and tests/test_proxy_extract.py replace it at this path",
-    f"{PACKAGE}.local_api.server.check_proxy_connectivity":
-        "tests/test_proxy_check.py replaces it at this path, which is why "
-        "local_api/server.py must keep `from ...proxy import check_proxy_connectivity`",
     f"{PACKAGE}.sidecar_main.local_api_server":
         "the name the frozen entry module keeps for the local API surface "
         "(ADR-0016 §2: the entry may only spell out names that exist)",
@@ -146,8 +143,7 @@ class PatchTargetDiscoveryTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.sites), KNOWN_SITES)
         found = {target for _, _, target in self.sites}
         self.assertTrue(
-            {f"{PACKAGE}.local_api.server.urlrequest.urlopen",
-             f"{PACKAGE}.local_api.server.check_proxy_connectivity"} <= found,
+            {f"{PACKAGE}.local_api.server.urlrequest.urlopen"} <= found,
             found,
         )
 
@@ -194,16 +190,16 @@ class PatchTargetDiscoveryTests(unittest.TestCase):
     def test_the_binding_rule_rejects_reaching_through_a_module_alias(self):
         """Control: the refactor that breaks the target is `from X import mod`.
 
-        Called as `net.proxy.check_proxy_connectivity(...)`, the module binds
-        `net` and the patch string has nothing to attach to -- so the rule must
-        report the name as unbound, and the `from X import name` form as bound.
+        Called as `net.proxy.urlopen(...)`, the module binds `net` and the patch
+        string has nothing to attach to -- so the rule must report the name as
+        unbound, and the `from X import name` form as bound.
         """
-        through_module = "from wt_media_agent.services import net\n"
-        self.assertNotIn("check_proxy_connectivity", bound_names(through_module))
-        self.assertIn("net", bound_names(through_module))
+        through_module = "from wt_media_agent.services import urlrequest\n"
+        self.assertNotIn("urlopen", bound_names(through_module))
+        self.assertIn("urlrequest", bound_names(through_module))
 
-        direct = "from wt_media_agent.services.net.proxy import check_proxy_connectivity\n"
-        self.assertIn("check_proxy_connectivity", bound_names(direct))
+        direct = "from urllib.request import urlopen\n"
+        self.assertIn("urlopen", bound_names(direct))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ a command line, where `ps` would show it to every user on the machine.
 
 from __future__ import annotations
 
-from wt_media_agent.bootstrap.app import build_components, start_task_loops
+from wt_media_agent.bootstrap.app import build_components, start_transfer_loop
 from wt_media_agent.local_api.server import serve
 
 
@@ -17,9 +17,8 @@ def run() -> int:
     config = components.config
     if config.run_runner:
         # A sidecar is not only a status surface: with the switch on it also
-        # executes tasks. Both loops block, so each gets its own thread and the
-        # API keeps serving health and status while work is in flight.
-        start_task_loops(components)
+        # runs the file-transfer loop while the API keeps serving health/status.
+        start_transfer_loop(components)
     serve(
         config.local_api_host,
         config.local_api_port,

@@ -319,7 +319,7 @@ class NoExternalServicesControls(unittest.TestCase):
     controls red for a reason none of them was written to detect.
     """
 
-    PLANTED = "test_noop_executor.py"
+    PLANTED = "test_transfer_runner.py"
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -409,7 +409,7 @@ class MarkerRatchetControls(unittest.TestCase):
 
     def test_control_for_a_marker_nobody_declared(self):
         files = dict(self.files)
-        files["test_noop_executor.py"] = files["test_noop_executor.py"] + (
+        files["test_transfer_runner.py"] = files["test_transfer_runner.py"] + (
             "\n# network-ok: planted, and this file is not in the frozen table\n"
         )
         self.assertNotEqual(marked_counts(files), NETWORK_OK_COUNTS)

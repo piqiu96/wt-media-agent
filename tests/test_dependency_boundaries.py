@@ -188,7 +188,6 @@ FROZEN_LAYER_EDGES = frozenset(
         ("clients", "services"),
         ("cloud_main", "bootstrap"),
         ("executors", "clients"),
-        ("executors", "services"),
         # The download executor writes its bytes through
         # `storage/download_sink.py`, one of the three ways ADR-0016 §3 allows an
         # executor to reach the world ("executor 访问外部与存储必须经 clients /
@@ -229,7 +228,7 @@ class Edge:
 
     def __init__(self, lineno: int, source: str, target: str) -> None:
         self.lineno = lineno
-        self.source = source  # relative path, e.g. "wt_media_agent/executors/noop.py"
+        self.source = source  # relative path, e.g. "wt_media_agent/executors/material_download.py"
         self.target = target  # absolute module name, e.g. "wt_media_agent.clients.cloud"
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -814,12 +813,12 @@ class BoundaryRuleControls(unittest.TestCase):
         self.assertTrue(any("utils -> clients" in v for v in violations), violations)
 
     def test_r4_control(self):
-        files = self.plant(f"{PACKAGE}/executors/noop.py", "\nimport sqlite3\n")
+        files = self.plant(f"{PACKAGE}/executors/material_download.py", "\nimport sqlite3\n")
         self.assertTrue(any("sqlite3" in v for v in r4_executor_capabilities(files)))
 
     def test_r5_control_for_a_self_built_client(self):
         files = self.plant(
-            f"{PACKAGE}/executors/noop.py",
+            f"{PACKAGE}/executors/material_download.py",
             f"\nfrom {PACKAGE}.clients.bitbrowser import BitBrowserClient\n"
             "\n\ndef build():\n    return BitBrowserClient('http://127.0.0.1:54345')\n",
         )
@@ -827,7 +826,7 @@ class BoundaryRuleControls(unittest.TestCase):
         self.assertTrue(any("BitBrowserClient" in v for v in violations), violations)
 
     def test_r5_control_for_a_private_call(self):
-        files = self.plant(f"{PACKAGE}/executors/noop.py", "\n\ndef go(bitbrowser):\n    bitbrowser._post('/x', {})\n")
+        files = self.plant(f"{PACKAGE}/executors/material_download.py", "\n\ndef go(bitbrowser):\n    bitbrowser._post('/x', {})\n")
         violations = r5_executor_seams(files)
         self.assertTrue(any("_post" in v for v in violations), violations)
 
@@ -862,8 +861,8 @@ class BoundaryRuleControls(unittest.TestCase):
         self.assertTrue(any("wt-media-local-agent" in v for v in r8_frozen_surface(self.files, scripts)))
 
     def test_r9_control(self):
-        files = self.plant(f"{PACKAGE}/executors/noop.py", '\nHOME = "https://www.example.com/"\n')
-        self.assertTrue(any("executors/noop.py" in v for v in r9_url_literals(files)))
+        files = self.plant(f"{PACKAGE}/executors/material_download.py", '\nHOME = "https://www.example.com/"\n')
+        self.assertTrue(any("executors/material_download.py" in v for v in r9_url_literals(files)))
 
     def test_r10_control(self):
         files = self.plant(f"{PACKAGE}/storage/sqlite.py", f"\nfrom {PACKAGE}.clients import platform_urls\n")

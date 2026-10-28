@@ -1,8 +1,7 @@
 """Cloud-Agent API 客户端。
 
-所有 Agent 路由都以 `Authorization: Bearer <Agent Token>` 认证，身份由 Token
-的 `sub` 决定；请求体里不再有 `agent_id`/`node_id`。已领取任务的后续调用必须
-带 `attempt_id`，Cloud 用它拒绝被新 attempt 取代的旧结果。
+所有调用都以 `Authorization: Bearer <Agent Token>` 认证。浏览器操作不再通过
+Cloud 通用任务领取；保留的是 BitBrowser 绑定和独立 file-transfer 租约面。
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from urllib import request
 from wt_media_agent.clients.cloud.errors import (
     AgentAuthError,
     CloudUnavailableError,
-    NoPendingTaskError,
     failure_from,
 )
 from wt_media_agent.clients.cloud.transfer import (
@@ -57,113 +55,7 @@ class CloudAgentClient:
         # 所以单独用一个返回状态码的 transport。
         self._transfer_transport = transfer_transport or self._http_transfer_transport
 
-    # ---- 普通任务 ----
-
-    def claim_task(self, token: str, lease_seconds: int = 60) -> Optional[Mapping[str, object]]:
-        """领取一个任务；没有可领取任务时返回 None。"""
-        response = self._transport(
-            "POST",
-            "/api/v1/cloud-agent/tasks/claim",
-            {"lease_seconds": int(lease_seconds)},
-            _bearer(token),
-        )
-        try:
-            data = _expect_data(response)
-        except NoPendingTaskError:
-            return None
-        if not data.get("task_id"):
-            return None
-        return data
-
-    def report_task(
-        self,
-        token: str,
-        task_id: str,
-        attempt_id: str,
-        *,
-        status: str,
-        progress: int = 0,
-        message: str = "",
-        error_code: Optional[str] = None,
-        error_message: Optional[str] = None,
-        retryable: Optional[bool] = None,
-        recovery_action: Optional[str] = None,
-        result: Optional[Mapping[str, object]] = None,
-    ) -> Mapping[str, object]:
-        payload: dict[str, object] = {
-            "attempt_id": attempt_id,
-            "status": status,
-            "progress": int(progress),
-            "message": message,
-        }
-        if error_code is not None:
-            payload["error_code"] = error_code
-        if error_message is not None:
-            payload["error_message"] = error_message
-        if retryable is not None:
-            payload["retryable"] = retryable
-        if recovery_action is not None:
-            payload["recovery_action"] = recovery_action
-        if result is not None:
-            payload["result"] = dict(result)
-        response = self._transport(
-            "POST",
-            f"/api/v1/cloud-agent/tasks/{task_id}/report",
-            payload,
-            _bearer(token),
-        )
-        return _expect_data(response)
-
-    def report_activity(
-        self,
-        token: str,
-        task_id: str,
-        attempt_id: str,
-        *,
-        message: str = "",
-        stage: str = "",
-    ) -> None:
-        """刷新 last_report_at。Cloud 成功时返回 `data: null`。"""
-        payload: dict[str, object] = {"attempt_id": attempt_id}
-        if message:
-            payload["message"] = message
-        if stage:
-            payload["stage"] = stage
-        response = self._transport(
-            "POST",
-            f"/api/v1/cloud-agent/tasks/{task_id}/activity",
-            payload,
-            _bearer(token),
-        )
-        _raise_on_failure(response)
-        return None
-
     # ---- 准入与绑定 ----
-
-    def execution_preflight(
-        self,
-        token: str,
-        *,
-        action: str,
-        task_id: Optional[str] = None,
-        attempt_id: Optional[str] = None,
-        profile_id: Optional[str] = None,
-        media_account_id: Optional[str] = None,
-        facts: Optional[Mapping[str, object]] = None,
-    ) -> Mapping[str, object]:
-        payload: dict[str, object] = {
-            "action": action,
-            "task_id": task_id or "",
-            "attempt_id": attempt_id or "",
-            "profile_id": profile_id or "",
-            "media_account_id": media_account_id or "",
-        }
-        if facts is not None:
-            payload["facts"] = dict(facts)
-        response = self._transport(
-            "POST", "/api/v1/local-agent/execution-preflight", payload, _bearer(token)
-        )
-        return _expect_data(response)
 
     def bind_bit_account(
         self,
