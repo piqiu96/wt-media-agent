@@ -34,7 +34,7 @@
 ## 4. 本仓架构
 
 - `bootstrap/app.py` 统一装配运行资源；Local、Cloud 和 Sidecar 入口复用核心能力，按运行模式启用服务。
-- Runner 组织任务，Executor 实际执行；Client、Service 和 Storage 提供底层能力，不反向依赖执行器。
+- File-transfer Runner 组织下载租约，Executor 实际执行；Client、Service 和 Storage 提供底层能力，不反向依赖执行器。浏览器短操作走 Local API 同步调用。
 - Agent 不直接连接 Cloud MySQL，不自行裁决正式业务状态；执行成功不等于业务成功。
 - 运行期读取 `config/`，`config_online/` 仅作发布替换源；凭据不进入可分发配置。
 - Agent 自己装配和保存日志；Desktop 不全量转存 Agent 日志。

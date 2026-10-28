@@ -54,7 +54,7 @@ def configure_frozen_ca_bundle(
 
     An explicit SSL_CERT_FILE supports a private trust environment. Source runs
     retain Python's existing system trust selection. A frozen release with no
-    usable CA store fails at startup instead of silently losing task polls.
+    usable CA store fails at startup instead of silently losing transfer polls.
     """
     if not (is_frozen() if frozen is None else frozen):
         return None
@@ -126,9 +126,9 @@ def _as_float(raw: object) -> float:
 def _as_bool(raw: object) -> bool:
     """Accept the spellings a shell script or a TOML file actually produces.
 
-    An unrecognised spelling raises rather than defaulting: "run the runner"
-    is the switch that decides whether this process starts polling Cloud, and
-    a typo must not silently pick either answer.
+    An unrecognised spelling raises rather than defaulting: "run_runner" decides
+    whether this process starts the file-transfer loop, and a typo must not
+    silently pick either answer.
     """
     if isinstance(raw, bool):
         return raw
@@ -211,10 +211,10 @@ _SPEC: tuple[Field, ...] = (
     Field("bitbrowser_mutation_timeout_seconds", "bitbrowser.mutation_timeout_seconds", ("WT_MEDIA_BITBROWSER_MUTATION_TIMEOUT_SECONDS",), None, _as_optional_float),
     Field("agent_id", "agent.id", ("WT_MEDIA_AGENT_ID",), "local-agent-dev", _as_str),
     Field("data_dir", "agent.data_dir", ("WT_MEDIA_AGENT_DATA_DIR",), "", _as_str),
-    # The switch that decides whether this process polls Cloud for tasks. Off by
-    # default: an Agent started by hand, or by a health check, must not begin
-    # claiming tasks just because it was started. Desktop and the acceptance
-    # scripts turn it on explicitly.
+    # The compatibility switch for the surviving file-transfer loop. Off by
+    # default so a hand-started Agent or health check does not poll Cloud.
+    # Desktop and acceptance scripts turn it on explicitly; browser operations
+    # use the Local API and do not depend on it.
     Field("run_runner", "agent.run_runner", ("WT_MEDIA_AGENT_RUN_RUNNER",), False, _as_bool),
     # WT_MEDIA_AGENT_LOG_LEVEL is a compatibility alias: it is what
     # local_api/server.py read before T-03, and what

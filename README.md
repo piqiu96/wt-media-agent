@@ -6,7 +6,7 @@ Local Agent and Cloud Agent runtime skeleton for the modular social media operat
 
 - Local Agent and Cloud Agent process entrypoints.
 - Local health/status/events and secret-safe BitBrowser Profile scans.
-- Runtime adapters, task execution, storage, and Cloud Agent communication.
+- Runtime adapters, file-transfer lease execution, storage, and Cloud communication.
 
 ## Bootstrap
 
@@ -25,7 +25,7 @@ BitBrowser settings come from `config/agent.toml`; each key can be overridden by
 - `src/wt_media_agent/runtime`: config, paths, logging, environment detection, constants, version.
 - `src/wt_media_agent/clients`: outbound clients (`bitbrowser/`, `cloud/`, platform identity) — the lowest business layer.
 - `src/wt_media_agent/services`: capabilities built on `clients/` (browser, net, profile guard).
-- `src/wt_media_agent/executors`: per-task-type orchestration, wired in through `runner/registry.py`.
+- `src/wt_media_agent/executors`: material-download execution.
 - `src/wt_media_agent/local_api`: loopback control API (proxied by the Desktop Rust layer).
 - `src/wt_media_agent/storage`: checkpoint storage and local schema migration.
 - `contracts`: Agent-owned local contracts.
