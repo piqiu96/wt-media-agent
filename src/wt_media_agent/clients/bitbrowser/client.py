@@ -11,6 +11,7 @@ from urllib import request as urlrequest
 from wt_media_agent.clients.bitbrowser.errors import (
     BitBrowserIdentityError,
     BitBrowserResponseError,
+    BitBrowserRejectedError,
     BitBrowserUnavailableError,
 )
 from wt_media_agent.clients.bitbrowser.timeouts import (
@@ -117,9 +118,11 @@ class BitBrowserClient:
     def _check_success(self, response: dict[str, object]) -> dict[str, object]:
         if not isinstance(response, dict):
             raise BitBrowserResponseError("BitBrowser response is not an object")
-        if response.get("success") is not True:
+        if response.get("success") is False:
             msg = response.get("msg", "unknown error")
-            raise BitBrowserResponseError(f"BitBrowser request failed: {msg}")
+            raise BitBrowserRejectedError(f"BitBrowser request failed: {msg}")
+        if response.get("success") is not True:
+            raise BitBrowserResponseError("BitBrowser response has no explicit success")
         data = response.get("data")
         return data if isinstance(data, dict) else {}
 

@@ -88,6 +88,61 @@ class ProxyMutationTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(payload["error"]["code"], "proxy_mutation_readback_mismatch")
 
+class ProxyAssignmentAckTests(unittest.TestCase):
+    def test_explicit_ack_succeeds_without_post_write_scan(self) -> None:
+        client = MutationClient()
+        def forbidden_scan():
+            raise AssertionError("normal assignment must not scan after writing")
+        client.scan_profiles = forbidden_scan
+        status, payload = LocalApiServer(LocalAgentState(), bitbrowser=client).proxy_assignment_response({
+            "profile_id": "bit-profile-1", "proxy_protocol": "socks5", "host": "127.0.0.1", "port": 1080,
+            "username": "secret-user", "password": "secret-password",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"data": {"profile_id": "bit-profile-1", "accepted": True}})
+        self.assertNotIn("secret", str(payload))
+
+    def test_explicit_rejection_and_unknown_outcome_are_distinct(self) -> None:
+        from wt_media_agent.clients.bitbrowser.errors import BitBrowserRejectedError, BitBrowserUnavailableError
+        for error, status, code in [(BitBrowserRejectedError("no"), 409, "proxy_assignment_rejected"),
+                                    (BitBrowserUnavailableError("timeout"), 503, "proxy_assignment_unconfirmed")]:
+            with self.subTest(status=status):
+                client = MutationClient()
+                def fail(*args): raise error
+                client.update_profile = fail
+                actual, payload = LocalApiServer(LocalAgentState(), bitbrowser=client).proxy_assignment_response({
+                    "profile_id": "bit-profile-1", "proxy_protocol": "socks5", "host": "127.0.0.1", "port": 1080,
+                })
+                self.assertEqual(actual, status)
+                self.assertEqual(payload["error"]["code"], code)
+
+class ProxyAssignmentAdapterTests(unittest.TestCase):
+    def test_bitbrowser_ack_uses_prewrite_identity_read_but_no_postwrite_scan(self) -> None:
+        from wt_media_agent.clients.bitbrowser import BitBrowserClient
+        calls = []
+        def transport(url, payload, timeout):
+            calls.append(url.rsplit('/', 2)[-1])
+            if url.endswith('/browser/detail'):
+                return {'success': True, 'data': {'browserFingerPrint': {'id':'existing'}, 'proxyMethod':2}}
+            if url.endswith('/browser/update'):
+                return {'success': True, 'data': {}}
+            raise AssertionError('unexpected post-write read')
+        api = LocalApiServer(LocalAgentState(), bitbrowser=BitBrowserClient('http://127.0.0.1:54345', transport=transport))
+        status, result = api.proxy_assignment_response({'profile_id':'p1','proxy_protocol':'socks5','host':'127.0.0.1','port':1080})
+        self.assertEqual(status, 200)
+        self.assertTrue(result['data']['accepted'])
+        self.assertEqual(calls, ['detail', 'update'])
+
+    def test_missing_success_flag_is_not_treated_as_rejection_or_success(self) -> None:
+        from wt_media_agent.clients.bitbrowser import BitBrowserClient
+        def transport(url, payload, timeout):
+            if url.endswith('/browser/detail'):
+                return {'success': True, 'data': {'browserFingerPrint': {}, 'proxyMethod': 2}}
+            return {'data': {}}
+        api = LocalApiServer(LocalAgentState(), bitbrowser=BitBrowserClient('http://127.0.0.1:54345', transport=transport))
+        status, result = api.proxy_assignment_response({'profile_id':'p1','proxy_protocol':'socks5','host':'127.0.0.1','port':1080})
+        self.assertEqual(status, 503)
+        self.assertEqual(result['error']['code'], 'proxy_assignment_unconfirmed')
 
 if __name__ == "__main__":
     unittest.main()

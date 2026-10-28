@@ -35,6 +35,7 @@ from wt_media_agent.clients.bitbrowser import (
     BitBrowserUnavailableError,
     ProfileSnapshot,
 )
+from wt_media_agent.clients.bitbrowser.errors import BitBrowserRejectedError
 from wt_media_agent.clients.cloud import CloudAgentClient
 from wt_media_agent.clients.cloud.errors import (
     AgentAuthError,
@@ -554,6 +555,29 @@ class LocalApiServer:
             return 502, {"error": {"code": "proxy_extract_request_failed"}}
         return 200, {"data": address}
 
+    def proxy_assignment_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """Apply a proxy and report only an explicit BitBrowser acknowledgement."""
+        profile_id = str(body.get("profile_id", "")).strip()
+        protocol = str(body.get("proxy_protocol", "")).strip().lower()
+        host = str(body.get("host", "")).strip()
+        try:
+            port = int(body.get("port", 0))
+        except (TypeError, ValueError):
+            port = 0
+        if not profile_id or protocol not in {"http", "https", "socks5"} or not host or not 1 <= port <= 65535:
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        try:
+            self.bitbrowser.update_profile(profile_id, {
+                "proxyType": protocol, "host": host, "port": port,
+                "proxyUserName": str(body.get("username", "")),
+                "proxyPassword": str(body.get("password", "")),
+            })
+        except BitBrowserRejectedError:
+            return 409, {"error": {"code": "proxy_assignment_rejected"}}
+        except (BitBrowserResponseError, BitBrowserIdentityError):
+            return 503, {"error": {"code": "proxy_assignment_unconfirmed"}}
+        return 200, {"data": {"profile_id": profile_id, "accepted": True}}
+
     def proxy_mutation_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Write or remove one Profile proxy, then return verified secret-free facts."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -848,6 +872,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-mutation":
                 status, payload = api.proxy_mutation_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-assignment":
+                status, payload = api.proxy_assignment_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/account-check":
                 status, payload = api.account_check_response(self._read_body())

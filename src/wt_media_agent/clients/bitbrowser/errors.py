@@ -11,6 +11,10 @@ class BitBrowserResponseError(BitBrowserError):
     """The Local API was unavailable or returned an invalid response."""
 
 
+class BitBrowserRejectedError(BitBrowserResponseError):
+    """BitBrowser explicitly returned success=false."""
+
+
 class BitBrowserUnavailableError(BitBrowserResponseError):
     """The BitBrowser Local API could not be reached."""
 
