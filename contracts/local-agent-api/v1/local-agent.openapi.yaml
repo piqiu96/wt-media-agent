@@ -14,8 +14,7 @@ info:
     configured; an unauthenticated request answers `401 {"error": "unauthorized"}`.
 
     Routes that act for the signed-in user (`/api/v1/agent-token`,
-    `/api/v1/bit-account/bind`, `/api/v1/sensitive-tasks/{task_id}/preflight`,
-    `/api/v1/sensitive-permits/{permit_id}/finish`) additionally need the Agent
+    `/api/v1/bit-account/bind`) additionally need the Agent
     Token that the Desktop obtained from Cloud and handed to
     `POST /api/v1/agent-token`. That token lives in memory only: this API never
     echoes it back, never writes it to disk, and answers `400 agent_token_required`
@@ -319,53 +318,6 @@ paths:
         '409': {description: 'Cloud refused the binding (BIT_MAIN_USER_MISMATCH, BIT_BROWSER_OFFLINE, ...).'}
         '502': {description: Cloud unreachable, or BitBrowser is not running.}
         '503': {description: No Cloud client, no token store, or the BitBrowser identity could not be read.}
-  /api/v1/sensitive-tasks/{task_id}/preflight:
-    post:
-      operationId: preflightSensitiveTask
-      description: |
-        Reads BitBrowser now (status, main account, whether the Profile is
-        visible) plus the save directory, then asks Cloud to admit the operation.
-        Cloud's decision and failure codes are passed through unchanged.
-      parameters:
-        - name: task_id
-          in: path
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/SensitivePreflightRequest'}
-      responses:
-        '200':
-          description: Cloud's preflight outcome.
-        '400': {description: '`profile_id` missing, or no Agent Token provided.'}
-        '401': {description: Cloud refused the Agent Token.}
-        '409': {description: Cloud refused admission.}
-        '502': {description: Cloud unreachable, or BitBrowser is not running.}
-        '503': {description: No Cloud client, no token store, or the BitBrowser identity could not be read.}
-  /api/v1/sensitive-permits/{permit_id}/finish:
-    post:
-      operationId: finishSensitivePermit
-      description: |
-        Releases a held permit. A local operation that failed still releases it and
-        marks `result_uncertain`, otherwise Cloud keeps the window occupied.
-      parameters:
-        - name: permit_id
-          in: path
-          required: true
-          schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/SensitivePermitFinishRequest'}
-      responses:
-        '204': {description: Released or moved to review-required; empty body.}
-        '400': {description: 'Unknown outcome, or no Agent Token provided.'}
-        '401': {description: Cloud refused the Agent Token.}
-        '409': {description: The permit is no longer held or belongs to another user.}
-        '502': {description: Cloud unreachable.}
   /api/v1/account-check:
     post:
       operationId: checkPlatformAccountInProfile
@@ -419,26 +371,6 @@ paths:
         '400': {description: '`profile_id` is missing (`cookie_read_input_invalid`).'}
         '409': {description: BitBrowser identity is not verifiable.}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
-  /api/v1/proxy-check:
-    post:
-      operationId: checkProxyConnectivity
-      description: Synchronously runs a bounded proxy connectivity check and never returns credentials.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/ProxyCheckRequest'}
-      responses:
-        '200':
-          description: Connectivity result without credentials.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [data]
-                properties:
-                  data: {$ref: '#/components/schemas/ProxyCheckResult'}
-        '400': {description: Proxy input is invalid.}
   /api/v1/proxy-extract:
     post:
       operationId: extractDynamicProxy
@@ -718,18 +650,6 @@ components:
         bound_at: {type: string, format: date-time}
         last_verified_at: {type: string, format: date-time}
       additionalProperties: false
-    SensitivePreflightRequest:
-      type: object
-      required: [profile_id]
-      properties:
-        profile_id: {type: string, description: The BitBrowser Profile this sensitive operation targets.}
-      additionalProperties: false
-    SensitivePermitFinishRequest:
-      type: object
-      required: [outcome]
-      properties:
-        outcome: {type: string, enum: [completed, result_uncertain]}
-      additionalProperties: false
     AccountCheckRequest:
       type: object
       required: [profile_id, platform]
@@ -759,24 +679,6 @@ components:
       required: [profile_id]
       properties:
         profile_id: {type: string, description: BitBrowser profile id.}
-      additionalProperties: false
-    ProxyCheckRequest:
-      type: object
-      required: [host, port]
-      properties:
-        proxy_id: {type: string}
-        proxy_protocol: {type: string, enum: [http, https, socks5]}
-        host: {type: string}
-        port: {type: integer, minimum: 1, maximum: 65535}
-        username: {type: string, writeOnly: true}
-        password: {type: string, writeOnly: true}
-      additionalProperties: false
-    ProxyCheckResult:
-      type: object
-      required: [connectivity]
-      properties:
-        proxy_id: {type: string}
-        connectivity: {type: string, enum: [reachable, unreachable]}
       additionalProperties: false
     ProxyExtractionRequest:
       type: object

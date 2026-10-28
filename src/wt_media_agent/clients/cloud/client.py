@@ -181,40 +181,6 @@ class CloudAgentClient:
         )
         return _expect_data(response)
 
-    def preflight_sensitive_task(
-        self, token: str, task_id: str, facts: Mapping[str, object]
-    ) -> Mapping[str, object]:
-        response = self._transport(
-            "POST",
-            f"/api/v1/local-agent/sensitive-tasks/{task_id}/preflight",
-            {"facts": dict(facts)},
-            _bearer(token),
-        )
-        return _expect_data(response)
-
-    def renew_sensitive_permit(
-        self, token: str, permit_id: str, lease_seconds: int = 60
-    ) -> Mapping[str, object]:
-        response = self._transport(
-            "POST",
-            f"/api/v1/local-agent/sensitive-permits/{permit_id}/renew",
-            {"lease_seconds": int(lease_seconds)},
-            _bearer(token),
-        )
-        return _expect_data(response)
-
-    def finish_sensitive_permit(self, token: str, permit_id: str, outcome: str) -> None:
-        """交还许可。Cloud 成功时返回 204，没有 body 可解析。"""
-        status, body = self._transfer_transport(
-            "POST",
-            f"/api/v1/local-agent/sensitive-permits/{permit_id}/finish",
-            {"outcome": outcome},
-            _bearer(token),
-        )
-        failure = failure_from(body, status)
-        if failure is not None:
-            raise failure
-
     # ---- 文件传输 ----
     #
     # 四个调用的身份都在 Bearer Token 上；已领取后还必须带 claim 返回的

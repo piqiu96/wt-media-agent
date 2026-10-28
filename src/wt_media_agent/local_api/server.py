@@ -381,57 +381,6 @@ class LocalApiServer:
             return _cloud_failure(exc)
         return 200, {"data": data}
 
-    def sensitive_preflight_response(
-        self, task_id: str, body: dict[str, object]
-    ) -> tuple[int, dict[str, object]]:
-        """`POST /api/v1/sensitive-tasks/<id>/preflight`：先实读，再请 Cloud 判定。"""
-        client, token, refusal = self._agent_cloud()
-        if refusal is not None:
-            return refusal
-        profile_id = str(body.get("profile_id", "")).strip()
-        if not profile_id:
-            return 400, {"error": {"code": "invalid_request"}}
-        snapshot, refusal = self._scan_for_cloud()
-        if refusal is not None:
-            return refusal
-        files_ready = False
-        if self.save_directories is not None:
-            files_ready = bool(_save_directory_facts(self.save_directories)["writable"])
-        facts = {
-            "bitbrowser_status": "running",
-            "main_user_id": snapshot.main_user_id,
-            "observed_at": _utc_now_iso(),
-            "profile_visible": any(
-                profile.bit_profile_id == profile_id for profile in snapshot.profiles
-            ),
-            "files_ready": files_ready,
-        }
-        try:
-            data = client.preflight_sensitive_task(token, task_id, facts)
-        except (CloudError, CloudUnavailableError) as exc:
-            return _cloud_failure(exc)
-        return 200, {"data": data}
-
-    def sensitive_permit_finish_response(
-        self, permit_id: str, body: dict[str, object]
-    ) -> tuple[int, dict[str, object]]:
-        """`POST /api/v1/sensitive-permits/<id>/finish`：交还许可。
-
-        本地操作失败时同样要交还，并标记 `result_uncertain`，否则 Cloud 会一直
-        占着这个窗口。
-        """
-        client, token, refusal = self._agent_cloud()
-        if refusal is not None:
-            return refusal
-        outcome = str(body.get("outcome", "")).strip()
-        if outcome not in ("completed", "result_uncertain"):
-            return 400, {"error": {"code": "invalid_request"}}
-        try:
-            client.finish_sensitive_permit(token, permit_id, outcome)
-        except (CloudError, CloudUnavailableError) as exc:
-            return _cloud_failure(exc)
-        return 204, {}
-
     def _no_save_directory_store(self) -> tuple[int, dict[str, object]]:
         """What a server with no local storage answers.
 
@@ -830,17 +779,7 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(401, {"error": "unauthorized"})
                 return
             route = urlparse.urlsplit(self.path).path
-            task_id = _path_id(route, "/api/v1/sensitive-tasks/", "/preflight")
-            permit_id = _path_id(route, "/api/v1/sensitive-permits/", "/finish")
-            if task_id is not None:
-                status, payload = api.sensitive_preflight_response(task_id, self._read_body())
-                self._write_json(status, payload)
-            elif permit_id is not None:
-                status, payload = api.sensitive_permit_finish_response(
-                    permit_id, self._read_body()
-                )
-                self._write_json(status, payload)
-            elif self.path == "/api/v1/bit-account/bind":
+            if self.path == "/api/v1/bit-account/bind":
                 status, payload = api.bit_account_bind_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-scans":
@@ -863,9 +802,6 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-delete":
                 status, payload = api.profile_delete_response(self._read_body())
-                self._write_json(status, payload)
-            elif self.path == "/api/v1/proxy-check":
-                status, payload = api.proxy_check_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-extract":
                 status, payload = api.proxy_extract_response(self._read_body())

@@ -221,26 +221,6 @@ class PreflightAndBindingTest(unittest.TestCase):
             },
         )
 
-    def test_sensitive_preflight_sends_facts_and_renew_finish_do_not_send_a_credential(self) -> None:
-        transport = RecordingTransport({"data": {"outcome": "granted", "permit_id": "permit-1"}})
-        finish_transport = RecordingTransferTransport()
-        client = CloudAgentClient(
-            "http://cloud.test", transport=transport, transfer_transport=finish_transport
-        )
-
-        client.preflight_sensitive_task(TOKEN, "task-1", {"bitbrowser_status": "running"})
-        client.renew_sensitive_permit(TOKEN, "permit-1", 60)
-        client.finish_sensitive_permit(TOKEN, "permit-1", "completed")
-
-        self.assertEqual(transport.calls[0][1], "/api/v1/local-agent/sensitive-tasks/task-1/preflight")
-        self.assertEqual(transport.calls[0][2], {"facts": {"bitbrowser_status": "running"}})
-        self.assertEqual(transport.calls[1][1], "/api/v1/local-agent/sensitive-permits/permit-1/renew")
-        self.assertEqual(transport.calls[1][2], {"lease_seconds": 60})
-        self.assertEqual(finish_transport.calls[0][1], "/api/v1/local-agent/sensitive-permits/permit-1/finish")
-        self.assertEqual(finish_transport.calls[0][2], {"outcome": "completed"})
-        for _, _, _, headers in transport.calls + finish_transport.calls:
-            self.assertEqual(headers, {"authorization": f"Bearer {TOKEN}"})
-
 
 class FailureTest(unittest.TestCase):
     def test_missing_data_is_a_transport_failure(self) -> None:
