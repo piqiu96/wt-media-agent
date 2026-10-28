@@ -7,7 +7,8 @@ info:
   # Bumped by CHG-20261023-101: Agent Token, BitBrowser bind, sensitive preflight and
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
-  version: 2026.10.29.1
+  # Bumped by CHG-20261028-099: retire generic task preflight/permit routes and proxy-check.
+  version: 2026.10.29.2
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
