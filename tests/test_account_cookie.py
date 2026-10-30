@@ -23,6 +23,15 @@ class AccountCookieTest(unittest.TestCase):
     def test_inspect_never_writes(self):
         r,n=self.run_stage('inspect',[{'name':'BDUSS','value':'new','domain':'.baidu.com','path':'/'}])
         self.assertEqual((r['status'],n),('applied',0))
+    def test_manual_login_inspect_uses_verified_live_cookies_without_write(self):
+        actual=[{'name':'BDUSS','value':'manually-logged-in','domain':'.baidu.com','path':'/'}]
+        r,n=self.run_stage('inspect',actual,manual_login=True)
+        self.assertEqual((r['status'],r['verified'],n),('applied',True,0))
+        self.assertFalse(r['input_matches'])
+        self.assertEqual(r['cookies'],actual)
+        r,n=self.run_stage('inspect',actual,manual_login=True,expected_platform_account_id='different')
+        self.assertEqual((r['status'],n),('failed',0))
+
     def test_apply_readback_and_other_platform(self):
         other={'name':'s','value':'keep','domain':'.bilibili.com','path':'/'}
         old={'name':'BDUSS','value':'old','domain':'.baidu.com','path':'/'}
@@ -54,3 +63,34 @@ class CDPFrameTests(unittest.TestCase):
         sock=Socket()
         self.assertEqual(_ws_recv(sock)['result']['cookies'][0]['value'],'x'*70000)
         self.assertEqual(_ws_recv(sock),{'id':2})
+
+class PlatformFetchContextTests(unittest.TestCase):
+    def test_default_bitbrowser_console_uses_separate_platform_target(self):
+        import io,json
+        from wt_media_agent.services.browser import cdp
+        targets=[{'id':'console','type':'page','url':'https://console.bitbrowser.net/','webSocketDebuggerUrl':'ws://console'}]
+        created=targets+[{'id':'platform','type':'page','url':'https://api.bilibili.com/x/web-interface/nav','webSocketDebuggerUrl':'ws://platform'}]
+        seen=[]
+        class Page:
+            def __init__(self,url):self.url=url
+            def call(self,method,params):
+                seen.append((self.url,method,params));return {'targetId':'platform'}
+            def evaluate(self,expression):
+                if expression=='location.origin':return 'https://api.bilibili.com'
+                self_test.assertEqual(self.url,'ws://platform')
+                return json.dumps({'status':200,'body':'{"code":-101}'})
+            def close(self):pass
+        self_test=self
+        with patch.object(cdp,'CDPPage',Page),patch.object(cdp.urllib.request,'urlopen',side_effect=[io.BytesIO(json.dumps(targets).encode()),io.BytesIO(json.dumps(targets).encode()),io.BytesIO(json.dumps(created).encode())]):
+            result=cdp.eval_fetch_json('localhost:1','https://api.bilibili.com/x/web-interface/nav',same_origin=True)
+        self.assertEqual(result['json'],{'code':-101})
+        self.assertEqual(seen,[('ws://console','Target.createTarget',{'url':'https://api.bilibili.com/x/web-interface/nav'})])
+
+    def test_existing_platform_target_is_reused_without_new_tab(self):
+        import io,json
+        from wt_media_agent.services.browser import cdp
+        targets=[{'type':'page','url':'https://api.bilibili.com/x/web-interface/nav','webSocketDebuggerUrl':'ws://platform'}]
+        page=unittest.mock.Mock();page.evaluate.return_value=json.dumps({'status':200,'body':'{"code":0}'})
+        with patch.object(cdp,'CDPPage',return_value=page),patch.object(cdp.urllib.request,'urlopen',side_effect=[io.BytesIO(json.dumps(targets).encode()),io.BytesIO(json.dumps(targets).encode())]):
+            self.assertEqual(cdp.eval_fetch_json('localhost:1','https://api.bilibili.com/x/web-interface/nav',same_origin=True)['json']['code'],0)
+        page.call.assert_not_called()

@@ -8,7 +8,7 @@ info:
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
   # Bumped by CHG-20261028-099: retire generic task preflight/permit routes and proxy-check.
-  version: 2026.10.30.2
+  version: 2026.10.30.3
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -170,7 +170,11 @@ paths:
     post:
       operationId: createBitBrowserProfile
       description: |
-        Creates one Profile in BitBrowser from the caller's body and answers its id.
+        With creation_marker WT_IMPORT:batch:row:attempt, persist the marker in remark and
+        scan for an exact marker before creation. inspect_only never creates.
+        Returns data.status created|existing|unavailable|uncertain; only an explicit
+        vendor rejection means unavailable. Transport/scan ambiguity remains uncertain.
+        Without a marker, creates one Profile and answers its id.
         The body is the BitBrowser creation payload (`name`, `groupId`, proxy
         fields, ...) except credentials, which are never echoed.
       requestBody:
@@ -191,7 +195,8 @@ paths:
                     type: object
                     required: [id]
                     properties:
-                      id: {type: string, description: The new BitBrowser profile id.}
+                      id: {type: string, description: Empty while unresolved or unavailable.}
+                      status: {type: string, enum: [created, existing, unavailable, uncertain]}
         '502': {description: BitBrowser Local API failed or returned an invalid response.}
   /api/v1/bit-browser/profile-open:
     post:
@@ -732,6 +737,8 @@ components:
       type: object
       required: [name]
       properties:
+        creation_marker: {type: string, pattern: '^WT_IMPORT:[0-9]+:[0-9]+:[0-9]+$'}
+        inspect_only: {type: boolean, default: false}
         name: {type: string}
         groupId: {type: string, description: BitBrowser group id; `group_id` is accepted as an alias.}
       additionalProperties: true
@@ -923,6 +930,10 @@ components:
           type: string
         input_cookie:
           type: string
+        manual_login:
+          type: boolean
+          default: false
+          description: Inspect only after explicit manual login; returns verified real identity and live cookies without reapplying input.
         fingerprint:
           type: string
         platform:

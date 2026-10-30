@@ -12,7 +12,9 @@ import json
 import os
 import socket
 import struct
+import time
 import urllib.request
+from urllib.parse import urlsplit
 from typing import Any
 
 
@@ -147,7 +149,7 @@ def read_live_cookies(http_endpoint: str) -> list[dict[str, Any]]:
         page.close()
 
 
-def eval_fetch_json(http_endpoint: str, url: str, timeout_ms: int = 10000) -> dict[str, Any]:
+def eval_fetch_json(http_endpoint: str, url: str, timeout_ms: int = 10000, *, same_origin: bool = False) -> dict[str, Any]:
     """Evaluate an in-page fetch to url and return the parsed JSON body."""
     expression = (
         f"(async () => {{"
@@ -156,7 +158,40 @@ def eval_fetch_json(http_endpoint: str, url: str, timeout_ms: int = 10000) -> di
         f"  return JSON.stringify({{ status: r.status, body: t }});"
         f"}})()"
     )
-    page = CDPPage(_find_page_ws(http_endpoint))
+    ws = _find_page_ws(http_endpoint)
+    if same_origin:
+        origin = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}"
+        with urllib.request.urlopen(f"http://{http_endpoint}/json", timeout=10) as response:
+            targets = json.load(response)
+        matching = next((t for t in targets if t.get('type') == 'page' and str(t.get('url', '')).startswith(origin + '/')), None)
+        if matching:
+            ws = matching['webSocketDebuggerUrl']
+        else:
+            # A new BitBrowser window starts on its own console, whose CORS/CSP
+            # rules prevent platform fetches. Open a separate platform page;
+            # never navigate away from the operator's existing tab.
+            control = CDPPage(ws)
+            try:
+                target_id = control.call('Target.createTarget', {'url': url})['targetId']
+            finally:
+                control.close()
+            deadline = time.monotonic() + timeout_ms / 1000
+            while time.monotonic() < deadline:
+                with urllib.request.urlopen(f"http://{http_endpoint}/json", timeout=10) as response:
+                    target = next((t for t in json.load(response) if t.get('id') == target_id), None)
+                if target and target.get('webSocketDebuggerUrl'):
+                    candidate = CDPPage(target['webSocketDebuggerUrl'])
+                    try:
+                        ready = candidate.evaluate('location.origin') == origin
+                    finally:
+                        candidate.close()
+                    if ready:
+                        ws = target['webSocketDebuggerUrl']
+                        break
+                time.sleep(0.1)
+            else:
+                raise CDPError('platform page did not become ready')
+    page = CDPPage(ws)
     try:
         raw = page.evaluate(expression)
         if not isinstance(raw, str):

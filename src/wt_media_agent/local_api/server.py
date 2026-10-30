@@ -218,6 +218,9 @@ class LocalApiServer:
             return 502, {"error": {"code": "bitbrowser_response_error"}}
 
     def profile_create_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        if body.get("creation_marker"):
+            from wt_media_agent.services.browser.import_window import prepare_window
+            return prepare_window(self.bitbrowser, body, lambda e: isinstance(e, BitBrowserRejectedError))
         started_at = time.monotonic()
         profile_name = str(body.get("name", "")).strip()
         group_id = str(body.get("groupId", "") or body.get("group_id", "")).strip()
@@ -647,6 +650,8 @@ class LocalApiServer:
 
     def account_cookie_response(self, stage, body):
         def identify(platform, cookies, endpoint):
+            if not cookies:
+                return {"login_status": "not_logged_in", "platform_account_id": "", "name": "", "avatar_url": "", "message": "窗口暂无此平台登录信息"}
             if platform == "bilibili":
                 return bilibili_identity.identify_bilibili(cookies, bilibili_identity.fetch_nav_via_cdp(endpoint))
             if platform == "baidu":
