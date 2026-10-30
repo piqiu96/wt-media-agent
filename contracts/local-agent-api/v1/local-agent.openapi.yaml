@@ -8,7 +8,7 @@ info:
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
   # Bumped by CHG-20261028-099: retire generic task preflight/permit routes and proxy-check.
-  version: 2026.10.29.3
+  version: 2026.10.30.1
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -321,6 +321,7 @@ paths:
         '503': {description: No Cloud client, no token store, or the BitBrowser identity could not be read.}
   /api/v1/account-check:
     post:
+      description: Read-only live browser check. Never writes Cookies or substitutes saved Cookies. A current platform response establishes identity; live-read or platform failure returns 502, not a login verdict.
       operationId: checkPlatformAccountInProfile
       description: Synchronously opens/reads one BitBrowser profile and returns only safe platform identity facts.
       requestBody:
@@ -340,7 +341,7 @@ paths:
                   data: {$ref: '#/components/schemas/AccountCheckResult'}
         '400': {description: Required profile or platform input is invalid.}
         '409': {description: BitBrowser identity is not verifiable.}
-        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+        '502': {description: Live browser session or platform identity response is unavailable.}
   /api/v1/cookie-read:
     post:
       operationId: readProfileCookies

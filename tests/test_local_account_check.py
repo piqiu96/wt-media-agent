@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ class CookieClient:
 
     def open_profile_with_devtools(self, profile_id: str) -> str:
         self.opened.append(profile_id)
-        return ""  # 测试中无 CDP，走 detail/saved cookie 路径
+        return "localhost:9222"
 
     def read_cookies(self, profile_id: str) -> list[dict[str, object]]:
         return self.cookies
@@ -53,6 +54,11 @@ class ErrorClient(CookieClient):
 
 
 class LocalAccountCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.live = mock.patch("wt_media_agent.services.browser.cdp.read_live_cookies", return_value=[]).start()
+        self.addCleanup(mock.patch.stopall)
+        self.nav = mock.patch("wt_media_agent.clients.bilibili.identity.fetch_nav_via_cdp", return_value={"code":0,"data":{"mid":293793435,"uname":"测试用户","face":"http://avatar","isLogin":True}}).start()
+
     def test_bilibili_nav_data_fills_name_and_avatar(self) -> None:
         from wt_media_agent.clients.bilibili.identity import identify_bilibili
 
@@ -70,14 +76,27 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertEqual(result["login_status"], "normal")
         self.assertNotIn("secret-session", str(result))
 
-    def test_bilibili_uid_from_cookie_without_nav(self) -> None:
-        server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "DedeUserID", "value": "37069716"}]))
+    def test_saved_cookie_alone_never_proves_login(self):
+        from wt_media_agent.clients.bilibili.identity import identify_bilibili
+        result=identify_bilibili([{"name":"DedeUserID","value":"37069716"}], None)
+        self.assertEqual(result["login_status"],"environment_error")
+        self.assertEqual(result["platform_account_id"],"")
 
-        status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "bilibili"})
+    def test_live_platform_uid_wins_over_stale_cookie(self):
+        self.live.return_value=[{"name":"DedeUserID","value":"37069716"}]
+        server=LocalApiServer(LocalAgentState(),bitbrowser=CookieClient([]))
+        status,payload=server.account_check_response({"profile_id":"profile-1","platform":"bilibili"})
+        self.assertEqual(status,200)
+        self.assertEqual(payload["data"]["platform_account_id"],"293793435")
 
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["data"]["platform_account_id"], "37069716")
-        self.assertEqual(payload["data"]["login_status"], "normal")
+    def test_live_read_failure_never_uses_saved_cookie(self):
+        self.live.side_effect=RuntimeError("CDP unavailable")
+        client=CookieClient([{"name":"DedeUserID","value":"37069716"}])
+        client.read_cookies=mock.Mock(side_effect=AssertionError("saved fallback forbidden"))
+        status,payload=LocalApiServer(LocalAgentState(),bitbrowser=client).account_check_response({"profile_id":"profile-1","platform":"bilibili"})
+        self.assertEqual(status,502)
+        self.assertEqual(payload["error"]["code"],"account_check_live_read_failed")
+        client.read_cookies.assert_not_called()
 
     def test_expected_uid_mismatch_returns_account_mismatch(self) -> None:
         server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "DedeUserID", "value": "293793435"}]))
@@ -92,13 +111,13 @@ class LocalAccountCheckTests(unittest.TestCase):
         self.assertEqual(payload["data"]["login_status"], "account_mismatch")
 
     def test_unknown_platform_identity_is_not_success(self) -> None:
+        self.live.return_value=[{"name":"passport_csrf_token","value":"secret"}]
         server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "passport_csrf_token", "value": "secret"}]))
 
         status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "douyin"})
 
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["data"]["platform_account_id"], "")
-        self.assertEqual(payload["data"]["login_status"], "environment_error")
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["error"]["code"], "account_check_platform_unavailable")
 
     def test_baidu_identifies_via_logininfo_api(self) -> None:
         import json as _json
@@ -110,6 +129,7 @@ class LocalAccountCheckTests(unittest.TestCase):
         })
         server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([{"name": "BDUSS", "value": "real-bduss"}]))
 
+        self.live.return_value=[{"name":"BDUSS","value":"real-bduss"}]
         with mock.patch("wt_media_agent.local_api.server.urlrequest.urlopen") as urlopen:
             urlopen.return_value.read.return_value = fake_body.encode()
             status, payload = server.account_check_response({"profile_id": "profile-1", "platform": "baidu"})

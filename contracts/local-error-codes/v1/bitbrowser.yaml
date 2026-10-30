@@ -1,6 +1,8 @@
 schema_version: 1
-revision: "2026.10.29.3"
+revision: "2026.10.30.1"
 errors:
+  account_check_live_read_failed: {http_status: 502}
+  account_check_platform_unavailable: {http_status: 502}
   not_found: {http_status: 404}
   bitbrowser_identity_unverifiable: {http_status: 409}
   bitbrowser_response_error: {http_status: 502}

@@ -624,6 +624,9 @@ class LocalApiServer:
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
+        except browser_cookies.LiveCookieReadError as exc:
+            return 502, {"error": {"code": "account_check_live_read_failed", "message": str(exc)}}
+
         nav_data = None
         if platform == "bilibili" and devtools:
             nav_data = bilibili_identity.fetch_nav_via_cdp(devtools)
@@ -634,6 +637,8 @@ class LocalApiServer:
             result = bilibili_identity.identify_bilibili(cookies, nav_data)
         else:
             result = platform_identity.identify_platform_account(platform, cookies)
+        if result.get("login_status") == "environment_error":
+            return 502, {"error": {"code": "account_check_platform_unavailable", "message": result.get("message", "平台检查暂不可用")}}
         if expected_id and result.get("platform_account_id") and result["platform_account_id"] != expected_id:
             result["login_status"] = "account_mismatch"
             result["message"] = "当前窗口登录账号与媒体账号台账不一致"
