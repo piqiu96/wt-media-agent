@@ -46,7 +46,7 @@ class BindingTest(unittest.TestCase):
         self.assertEqual(
             transport.calls[0][2],
             {
-                "main_user_id": "main-1",
+                "bit_main_user_id": "main-1",
                 "observed_at": "2026-10-23T00:00:00Z",
                 "rebind": True,
             },

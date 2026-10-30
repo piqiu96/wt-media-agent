@@ -68,7 +68,7 @@ class CloudAgentClient:
         response = self._transport(
             "POST",
             "/api/v1/local-agent/bit-account/bind",
-            {"main_user_id": main_user_id, "observed_at": observed_at, "rebind": rebind},
+            {"bit_main_user_id": main_user_id, "observed_at": observed_at, "rebind": rebind},
             _bearer(token),
         )
         return _expect_data(response)

@@ -105,6 +105,8 @@ def execute(bitbrowser, stage, body, identify):
     identity = identify(platform, actual, endpoint)
     input_matches = matches_input(actual, incoming)
     success = input_matches and identity.get('login_status') == 'normal' and bool(identity.get('platform_account_id')) and (not expected_id or str(identity['platform_account_id']) == expected_id)
+    if stage == 'inspect' and body.get('manual_login') is True and identity.get('login_status') == 'normal' and identity.get('platform_account_id') and (not expected_id or str(identity['platform_account_id']) == expected_id):
+        return {**identity, 'status': 'applied', 'applied': True, 'verified': True, 'input_matches': input_matches, 'cookies': actual, 'message': '人工登录已确认'}
     if success:
         return {**identity, 'status': 'applied', 'applied': True, 'input_matches': True, 'cookies': actual, 'message': 'Cookie 已更新并确认登录'}
     if stage == 'inspect' and body.get('fingerprint') == current_fp and not input_matches:

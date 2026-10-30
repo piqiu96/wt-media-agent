@@ -18,7 +18,7 @@ NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 def fetch_nav_via_cdp(devtools: str) -> dict[str, object] | None:
     """Fetch Bilibili nav (mid/uname/face) from inside the page to bypass risk control."""
     try:
-        nav = cdp.eval_fetch_json(devtools, NAV_URL)
+        nav = cdp.eval_fetch_json(devtools, NAV_URL, same_origin=True)
         if nav.get("status") == 200:
             return nav.get("json") or {}
     except Exception:  # noqa: BLE001 - best-effort, never block identification
