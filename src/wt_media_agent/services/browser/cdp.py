@@ -56,19 +56,36 @@ def _ws_send(sock: socket.socket, message: str) -> None:
 
 def _ws_recv(sock: socket.socket, timeout: float = 30.0) -> Any:
     sock.settimeout(timeout)
-    data = b""
+    def exact(size):
+        data = bytearray()
+        while len(data) < size:
+            chunk = sock.recv(size - len(data))
+            if not chunk:
+                raise CDPError("CDP connection closed")
+            data.extend(chunk)
+        return bytes(data)
+    message = bytearray()
     while True:
-        chunk = sock.recv(65536)
-        if not chunk:
-            break
-        data += chunk
-        try:
-            idx = data.find(b"{")
-            return json.loads(data[idx:].decode(errors="replace"))
-        except (ValueError, json.JSONDecodeError):
-            if len(data) > 20_000_000:
-                raise CDPError("CDP response too large")
-    raise CDPError("CDP connection closed")
+        first, second = exact(2)
+        opcode = first & 15
+        length = second & 127
+        if length == 126:
+            length = struct.unpack(">H", exact(2))[0]
+        elif length == 127:
+            length = struct.unpack(">Q", exact(8))[0]
+        if length + len(message) > 20_000_000:
+            raise CDPError("CDP response too large")
+        mask = exact(4) if second & 128 else None
+        payload = exact(length)
+        if mask:
+            payload = bytes(v ^ mask[i % 4] for i, v in enumerate(payload))
+        if opcode == 8:
+            raise CDPError("CDP connection closed")
+        if opcode in (9, 10):
+            continue
+        message.extend(payload)
+        if first & 128:
+            return json.loads(message.decode())
 
 
 class CDPPage:
@@ -157,3 +174,18 @@ def _safe_json(text: str) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except (ValueError, TypeError):
         return {}
+
+
+def write_cookies(http_endpoint: str, cookies: list[dict[str, Any]]) -> None:
+    """Set only supplied scoped cookies. Never clear all profile Cookies."""
+    page = CDPPage(_find_page_ws(http_endpoint))
+    try:
+        payload = []
+        for cookie in cookies:
+            item = dict(cookie)
+            if item.get('expires', 0) <= 0:
+                item.pop('expires', None)
+            payload.append(item)
+        page.call('Network.setCookies', {'cookies': payload})
+    finally:
+        page.close()

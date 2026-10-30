@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +19,9 @@ class CookieClient:
         self.cookies = cookies
         self.opened: list[str] = []
 
-    def open_profile(self, profile_id: str) -> None:
+    def open_profile_with_devtools(self, profile_id: str) -> str:
         self.opened.append(profile_id)
+        return "127.0.0.1:1"
 
     def read_cookies(self, profile_id: str) -> list[dict[str, object]]:
         return self.cookies
@@ -41,18 +43,19 @@ class CookieClient:
 
 
 class ErrorClient(CookieClient):
-    def open_profile(self, profile_id: str) -> None:
+    def open_profile_with_devtools(self, profile_id: str) -> str:
         raise BitBrowserResponseError("upstream unavailable")
 
 
 class LocalCookieReadTests(unittest.TestCase):
     def test_cookie_read_returns_real_cookies(self) -> None:
         server = LocalApiServer(LocalAgentState(), bitbrowser=CookieClient([
-            {"name": "DedeUserID", "value": "123456"},
-            {"name": "SESSDATA", "value": "session"},
+            {"name": "DedeUserID", "value": "123456", "domain": ".bilibili.com"},
+            {"name": "SESSDATA", "value": "session", "domain": ".bilibili.com"},
         ]))
 
-        status, payload = server.cookie_read_response({"profile_id": "profile-1"})
+        with patch("wt_media_agent.services.browser.cdp.read_live_cookies", return_value=server.bitbrowser.cookies):
+            status, payload = server.cookie_read_response({"profile_id": "profile-1", "platform":"bilibili"})
 
         self.assertEqual(status, 200)
         self.assertEqual(len(payload["data"]["cookies"]), 2)
@@ -69,10 +72,11 @@ class LocalCookieReadTests(unittest.TestCase):
     def test_cookie_read_maps_bitbrowser_failure(self) -> None:
         server = LocalApiServer(LocalAgentState(), bitbrowser=ErrorClient([]))
 
-        status, payload = server.cookie_read_response({"profile_id": "profile-1"})
+        with patch("wt_media_agent.services.browser.cdp.read_live_cookies", return_value=server.bitbrowser.cookies):
+            status, payload = server.cookie_read_response({"profile_id": "profile-1", "platform":"bilibili"})
 
         self.assertEqual(status, 502)
-        self.assertEqual(payload["error"]["code"], "bitbrowser_response_error")
+        self.assertEqual(payload["error"]["code"], "account_cookie_live_read_failed")
 
 
 if __name__ == "__main__":

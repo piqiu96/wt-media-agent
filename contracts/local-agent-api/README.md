@@ -22,7 +22,7 @@ Paths the formal definition holds, by the change that added them:
   `POST /api/v1/bit-browser/profile-update`, `POST /api/v1/bit-browser/profile-delete`,
   `POST /api/v1/cookie-read`
 
-Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.30.1`. The
+Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.30.2`. The
 revision is that file's own `info.version`, and the file is the only place the
 number is written down. The list above is checked against the file's `paths:` and
 their methods by `tests/test_contract_docs.py`, so an endpoint added to one and
@@ -33,3 +33,7 @@ The old bind route (`/api/v1/bind`) is gone: a machine is no longer bound to a
 device identity. The Desktop proves the machine by handing over the Agent Token
 its Desktop session exchanged, and BitBrowser's main account is read from
 BitBrowser by the Agent rather than sent in by a caller.
+
+- `POST /api/v1/account-cookie/prepare` — live scoped snapshot and identity.
+- `POST /api/v1/account-cookie/apply` — compare persisted fingerprint, write scoped cookies and read back.
+- `POST /api/v1/account-cookie/inspect` — read-only reconciliation; never repeats writes.

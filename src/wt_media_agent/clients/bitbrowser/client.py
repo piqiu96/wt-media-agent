@@ -166,9 +166,19 @@ class BitBrowserClient:
             data = self._check_success(response)
         except BitBrowserResponseError as error:
             if "正在打开" in str(error) or "已打开" in str(error):
-                return ""
-            raise
-        return str(data.get("http") or "").strip()
+                data = {}
+            else:
+                raise
+        endpoint = str(data.get("http") or "").strip()
+        if endpoint:
+            return endpoint
+        # Read back an already opening/running target instead of reopening it.
+        ports = self._check_success(self._post("/browser/ports", {"ids": [profile_id]}))
+        try:
+            port = int(ports.get(profile_id) or 0)
+        except (TypeError, ValueError):
+            return ""
+        return f"127.0.0.1:{port}" if 1 <= port <= 65535 else ""
 
     def close_profile(self, profile_id: str) -> None:
         """Close a browser profile."""
@@ -260,31 +270,6 @@ class BitBrowserClient:
         result = self._check_success(self._post("/group/list", {"page": 0, "pageSize": self.PAGE_SIZE}))
         groups = result.get("list", []) if isinstance(result, dict) else []
         return groups if isinstance(groups, list) else []
-
-    def read_cookies(self, profile_id: str) -> list[dict[str, object]]:
-        """Read the profile's stored cookies from /browser/detail.
-
-        This BitBrowser version exposes the profile's active cookies in the
-        /browser/detail `cookie` JSON array field; there is no /browser/cookie
-        endpoint. Cookie values are sensitive and must not be logged.
-        """
-        response = self._transport(f"{self._base_url}/browser/detail", {"id": profile_id}, self._timeout)
-        data = self._check_success(response)
-        raw = data.get("cookie")
-        if not isinstance(raw, str) or not raw.strip():
-            return []
-        try:
-            cookies = json.loads(raw)
-        except (ValueError, TypeError):
-            return []
-        return cookies if isinstance(cookies, list) else []
-
-    def save_cookies(self, profile_id: str, cookies: list[dict[str, object]]) -> None:
-        """Save cookies to a browser profile."""
-        self._check_success(self._post("/browser/cookie/save", {
-            "id": profile_id,
-            "cookies": cookies,
-        }))
 
     def scan_profiles(self) -> ProfileSnapshot:
         profiles: list[BitProfile] = []

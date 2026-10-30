@@ -8,7 +8,7 @@ info:
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
   # Bumped by CHG-20261028-099: retire generic task preflight/permit routes and proxy-check.
-  version: 2026.10.30.1
+  version: 2026.10.30.2
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -323,7 +323,6 @@ paths:
     post:
       description: Read-only live browser check. Never writes Cookies or substitutes saved Cookies. A current platform response establishes identity; live-read or platform failure returns 502, not a login verdict.
       operationId: checkPlatformAccountInProfile
-      description: Synchronously opens/reads one BitBrowser profile and returns only safe platform identity facts.
       requestBody:
         required: true
         content:
@@ -345,15 +344,14 @@ paths:
   /api/v1/cookie-read:
     post:
       operationId: readProfileCookies
-      description: |
-        Reads the cookies of one BitBrowser Profile. The cookie list is sensitive:
-        the Agent returns it to the local caller, and it must never be logged or
-        sent to Cloud as an ordinary task payload.
+      description: Read only live target-platform cookies, source=live. Saved configuration
+        cannot substitute. Requires platform.
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/CookieReadRequest'}
+            schema:
+              $ref: '#/components/schemas/CookieReadRequest'
       responses:
         '200':
           description: The cookies read from the Profile.
@@ -361,18 +359,28 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [data]
+                required:
+                - data
                 properties:
                   data:
                     type: object
-                    required: [cookies]
+                    required:
+                    - cookies
                     properties:
                       cookies:
                         type: array
-                        items: {type: object}
-        '400': {description: '`profile_id` is missing (`cookie_read_input_invalid`).'}
-        '409': {description: BitBrowser identity is not verifiable.}
-        '502': {description: BitBrowser Local API failed or returned an invalid response.}
+                        items:
+                          type: object
+                      source:
+                        type: string
+                        enum:
+                        - live
+        '400':
+          description: '`profile_id` is missing (`cookie_read_input_invalid`).'
+        '409':
+          description: BitBrowser identity is not verifiable.
+        '502':
+          description: BitBrowser Local API failed or returned an invalid response.
   /api/v1/proxy-extract:
     post:
       operationId: extractDynamicProxy
@@ -542,6 +550,85 @@ paths:
                 properties:
                   data: {$ref: '#/components/schemas/SaveDirectoryFacts'}
         '400': {description: The path is not absolute, or is not a directory on this machine.}
+  /api/v1/account-cookie/prepare:
+    post:
+      operationId: accountCookiePrepare
+      description: Live target-platform snapshot and actual identity. Unreadable does
+        not mean empty.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCookieRequest'
+      responses:
+        '200':
+          description: Explicit prepared/applied/failed/uncertain receipt; HTTP success
+            alone is not operation success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AccountCookieResult'
+        '400':
+          description: Invalid input.
+        '502':
+          description: Live browser read unavailable; no stored fallback.
+  /api/v1/account-cookie/apply:
+    post:
+      operationId: accountCookieApply
+      description: Requires Cloud-persisted fingerprint. Compare live snapshot again
+        before writing only the platform scope; preserve other domains. Failure after
+        possible write is uncertain. No retry or automatic restore.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCookieRequest'
+      responses:
+        '200':
+          description: Explicit prepared/applied/failed/uncertain receipt; HTTP success
+            alone is not operation success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AccountCookieResult'
+        '400':
+          description: Invalid input.
+        '502':
+          description: Live browser read unavailable; no stored fallback.
+  /api/v1/account-cookie/inspect:
+    post:
+      operationId: accountCookieInspect
+      description: Read-only reconciliation of the same operation; never writes Cookies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCookieRequest'
+      responses:
+        '200':
+          description: Explicit prepared/applied/failed/uncertain receipt; HTTP success
+            alone is not operation success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AccountCookieResult'
+        '400':
+          description: Invalid input.
+        '502':
+          description: Live browser read unavailable; no stored fallback.
+
 components:
   schemas:
     Health:
@@ -722,9 +809,19 @@ components:
       additionalProperties: false
     CookieReadRequest:
       type: object
-      required: [profile_id]
+      required:
+      - profile_id
+      - platform
       properties:
-        profile_id: {type: string, description: BitBrowser profile id.}
+        profile_id:
+          type: string
+          description: BitBrowser profile id.
+        platform:
+          type: string
+          enum:
+          - bilibili
+          - baidu
+          - douyin
       additionalProperties: false
     ProxyExtractionRequest:
       type: object
@@ -809,3 +906,68 @@ components:
         writable: {type: boolean, description: Whether the stored directory accepts writes now. False when save_dir is null.}
         free_bytes: {type: integer, minimum: 0, description: Free bytes on the stored directory's volume, read at request time. 0 when save_dir is null.}
       additionalProperties: false
+
+    AccountCookieRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - operation_id
+      - profile_id
+      - platform
+      properties:
+        operation_id:
+          type: string
+        profile_id:
+          type: string
+        expected_platform_account_id:
+          type: string
+        input_cookie:
+          type: string
+        fingerprint:
+          type: string
+        platform:
+          type: string
+          enum:
+          - bilibili
+          - baidu
+          - douyin
+    AccountCookieResult:
+      type: object
+      properties:
+        verified:
+          type: boolean
+          description: Read-only inspection obtained a definite platform result; permits
+            settling a failed update without repeating a write.
+        status:
+          type: string
+          enum:
+          - prepared
+          - applied
+          - failed
+          - uncertain
+        applied:
+          type: boolean
+        before_cookie:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        cookies:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        fingerprint:
+          type: string
+        platform_account_id:
+          type: string
+        name:
+          type: string
+        avatar_url:
+          type: string
+        login_status:
+          type: string
+        input_matches:
+          type: boolean
+        message:
+          type: string
