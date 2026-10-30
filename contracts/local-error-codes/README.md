@@ -2,7 +2,7 @@
 
 Local Agent error code definitions.
 
-- `v1/bitbrowser.yaml` (revision `2026.10.29.3`): BitBrowser local-API failures,
+- `v1/bitbrowser.yaml` (revision `2026.10.30.1`): BitBrowser local-API failures,
   the offline and Cloud-unreachable refusals used by the Cloud-facing routes, and
   the fields that must never appear in an answer.
 - `v1/transfer.yaml` (revision `2026.10.23.1`): the save-directory and Agent Token
