@@ -47,6 +47,7 @@ from wt_media_agent.clients import platform_identity
 from wt_media_agent.clients.baidu import identity as baidu_identity
 from wt_media_agent.clients.bilibili import identity as bilibili_identity
 from wt_media_agent.services.browser import cookies as browser_cookies
+from wt_media_agent.services.browser import account_cookie
 from wt_media_agent.services.net.proxy import parse_first_proxy_address
 from wt_media_agent.runtime.constants import BITBROWSER_SCAN_REUSE_SECONDS
 from wt_media_agent.runtime.environment import (
@@ -75,7 +76,6 @@ class ProfileScanner(Protocol):
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None: ...
     def delete_profile(self, profile_id: str) -> None: ...
     def group_list(self) -> list[dict[str, object]]: ...
-    def read_cookies(self, profile_id: str) -> list[dict[str, object]]: ...
 
 
 class LocalApiServer:
@@ -645,25 +645,31 @@ class LocalApiServer:
         result["check_items"] = _build_account_check_items(result, bool(expected_id))
         return 200, {"data": result}
 
-    def cookie_read_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
-        """Synchronously read cookies from a BitBrowser profile.
+    def account_cookie_response(self, stage, body):
+        def identify(platform, cookies, endpoint):
+            if platform == "bilibili":
+                return bilibili_identity.identify_bilibili(cookies, bilibili_identity.fetch_nav_via_cdp(endpoint))
+            if platform == "baidu":
+                return baidu_identity.identify_baidu(cookies)
+            return platform_identity.identify_platform_account(platform, cookies)
+        try:
+            return 200, {"data": account_cookie.execute(self.bitbrowser, stage, body, identify)}
+        except (ValueError, TypeError):
+            return 400, {"error": {"code": "account_cookie_input_invalid", "message": "Cookie 格式或操作参数不正确"}}
+        except Exception:
+            return 502, {"error": {"code": "account_cookie_live_read_failed", "message": "无法读取窗口状态，请核实后继续"}}
 
-        Returns the real cookie list so the caller can refresh active_cookie.
-        Cookie data is sensitive; callers must follow secret_policy.
-        """
+    def cookie_read_response(self, body):
         profile_id = str(body.get("profile_id", "")).strip()
-        if not profile_id:
+        platform = str(body.get("platform", "")).strip()
+        if not profile_id or platform not in account_cookie.DOMAINS:
             return 400, {"error": {"code": "cookie_read_input_invalid"}}
         try:
-            self.bitbrowser.open_profile(profile_id)
-            cookies = self.bitbrowser.read_cookies(profile_id)
-        except BitBrowserIdentityError:
-            return 409, {"error": {"code": "bitbrowser_identity_unverifiable"}}
-        except BitBrowserUnavailableError:
-            return _bitbrowser_offline_response()
-        except BitBrowserResponseError as e:
-            return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
-        return 200, {"data": {"cookies": cookies}}
+            endpoint = self.bitbrowser.open_profile_with_devtools(profile_id)
+            cookies = browser_cookies.read_account_cookies(self.bitbrowser, profile_id, endpoint)
+            return 200, {"data": {"cookies": account_cookie.scoped(cookies, platform), "source": "live"}}
+        except Exception:
+            return 502, {"error": {"code": "account_cookie_live_read_failed", "message": "实时 Cookie 读取失败"}}
 
 
 def _bitbrowser_offline_response() -> tuple[int, dict[str, object]]:
@@ -838,6 +844,15 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/account-check":
                 status, payload = api.account_check_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/account-cookie/prepare":
+                status, payload = api.account_cookie_response("prepare", self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/account-cookie/apply":
+                status, payload = api.account_cookie_response("apply", self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/account-cookie/inspect":
+                status, payload = api.account_cookie_response("inspect", self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/cookie-read":
                 status, payload = api.cookie_read_response(self._read_body())

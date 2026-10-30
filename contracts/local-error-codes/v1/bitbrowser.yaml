@@ -1,5 +1,5 @@
 schema_version: 1
-revision: "2026.10.30.1"
+revision: "2026.10.30.2"
 errors:
   account_check_live_read_failed: {http_status: 502}
   account_check_platform_unavailable: {http_status: 502}
@@ -25,3 +25,5 @@ secret_policy:
   proxy_operation_rejected: {http_status: 409, retryable: true}
   proxy_operation_unconfirmed: {http_status: 503, retryable: false}
   proxy_verification_unavailable: {http_status: 503, retryable: true}
+  account_cookie_input_invalid: {http_status: 400}
+  account_cookie_live_read_failed: {http_status: 502}
