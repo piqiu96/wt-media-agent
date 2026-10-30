@@ -8,7 +8,7 @@ info:
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
   # Bumped by CHG-20261028-099: retire generic task preflight/permit routes and proxy-check.
-  version: 2026.10.29.2
+  version: 2026.10.29.3
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -375,7 +375,7 @@ paths:
   /api/v1/proxy-extract:
     post:
       operationId: extractDynamicProxy
-      description: Synchronously fetches a user-supplied HTTPS or HTTP provider URL, parses the first valid plain-text proxy address, and returns it only to the trusted Cloud caller. It never changes a BitBrowser Profile.
+      description: Synchronously fetches a user-supplied HTTPS or HTTP provider URL from the operator's workstation, parses the first valid plain-text proxy address, and returns it only to the Desktop caller. It never changes a BitBrowser Profile or calls Cloud.
       requestBody:
         required: true
         content:
@@ -393,6 +393,50 @@ paths:
                   data: {$ref: '#/components/schemas/ProxyExtractionResult'}
         '400': {description: Extraction URL or returned address is invalid.}
         '502': {description: The provider request failed or timed out.}
+  /api/v1/proxy-write:
+    post:
+      operationId: acknowledgeProfileProxyWrite
+      description: Write assign/unbind once. Normal success requires explicit BitBrowser acknowledgement, without post-write scanning. Unknown outcomes must be verified before another write. Credentials are never echoed.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ProxyMutationRequest'}}}
+      responses:
+        '200':
+          description: Explicit BitBrowser acknowledgement.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    required: [accepted]
+                    properties: {accepted: {type: boolean, enum: [true]}}
+        '400': {description: Invalid input, no write.}
+        '409': {description: Explicit BitBrowser refusal, proxy_operation_rejected.}
+        '503': {description: Unknown outcome, proxy_operation_unconfirmed. Do not blindly retry.}
+  /api/v1/proxy-verification:
+    post:
+      operationId: compareProfileProxyLocally
+      description: Read only and compare protocol, host, port, username and password locally. No credentials or fingerprint in output. Missing or masked fields are unverifiable. Never writes or tests connectivity.
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ProxyMutationRequest'}}}
+      responses:
+        '200':
+          description: Secret-free comparison conclusion.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    required: [comparison]
+                    properties: {comparison: {type: string, enum: [matches, different, unverifiable]}}
+        '400': {description: Invalid comparison input.}
+        '409': {description: Cannot read the actual configuration.}
+        '503': {description: Read unavailable; outcome remains unknown.}
   /api/v1/proxy-mutation:
     post:
       operationId: mutateProfileProxy

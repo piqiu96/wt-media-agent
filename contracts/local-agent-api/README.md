@@ -8,7 +8,11 @@ Paths the formal definition holds, by the change that added them:
 - M2-C: `POST /api/v1/bit-browser/profile-scans`, `POST /api/v1/bit-browser/profile-groups`,
   `POST /api/v1/account-check`, `POST /api/v1/proxy-extract`,
   `POST /api/v1/proxy-mutation`
-- CHG-20261028-099: `POST /api/v1/proxy-assignment` (explicit BitBrowser success;
+- CHG-20261028-099 routes dynamic `proxy-extract` through Desktop on the operator's
+  workstation; Cloud no longer invokes the loopback route for preview or refresh.
+- CHG-20261028-099: `POST /api/v1/proxy-write` (ack only),
+  `POST /api/v1/proxy-verification` (read-only local comparison),
+  `POST /api/v1/proxy-assignment` (explicit BitBrowser success;
   the existing `proxy-mutation` endpoint retains its read-back contract)
 - CHG-20260923-057: `GET /api/v1/health` (aggregate health; `/healthz` stays frozen)
 - CHG-20260924-061: `GET /api/v1/save-directory`, `POST /api/v1/save-directory`
@@ -18,7 +22,7 @@ Paths the formal definition holds, by the change that added them:
   `POST /api/v1/bit-browser/profile-update`, `POST /api/v1/bit-browser/profile-delete`,
   `POST /api/v1/cookie-read`
 
-Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.29.2`. The
+Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.10.29.3`. The
 revision is that file's own `info.version`, and the file is the only place the
 number is written down. The list above is checked against the file's `paths:` and
 their methods by `tests/test_contract_docs.py`, so an endpoint added to one and

@@ -508,6 +508,38 @@ class LocalApiServer:
             return 503, {"error": {"code": "proxy_assignment_unconfirmed"}}
         return 200, {"data": {"profile_id": profile_id, "accepted": True}}
 
+    def proxy_write_response(self, body: dict[str, object], *, verify: bool = False) -> tuple[int, dict[str, object]]:
+        """Acknowledge a write, or explicitly compare an uncertain write locally."""
+        profile_id = str(body.get("profile_id", "")).strip()
+        operation = str(body.get("operation", "assign")).strip().lower()
+        if operation not in {"assign", "unbind"} or not profile_id:
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        try:
+            port = int(body.get("port", 0))
+        except (ValueError, TypeError):
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        protocol = str(body.get("proxy_protocol", "")).lower()
+        host = str(body.get("host", "")).strip()
+        if operation == "assign" and (protocol not in {"http", "https", "socks5"} or not host or not 1 <= port <= 65535):
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        expected = {"proxyType": "noproxy" if operation == "unbind" else protocol,
+                    "host": "" if operation == "unbind" else host,
+                    "port": 0 if operation == "unbind" else port,
+                    "proxyUserName": "" if operation == "unbind" else str(body.get("username", "")),
+                    "proxyPassword": "" if operation == "unbind" else str(body.get("password", ""))}
+        try:
+            if verify:
+                comparison = self.bitbrowser.compare_proxy(profile_id, expected)
+                return 200, {"data": {"comparison": comparison if comparison in {"matches", "different", "unverifiable"} else "unverifiable"}}
+            if operation == "unbind":
+                expected["proxyMethod"] = 2
+            self.bitbrowser.update_profile(profile_id, expected)
+        except BitBrowserRejectedError:
+            return 409, {"error": {"code": "proxy_operation_rejected" if not verify else "proxy_verification_unavailable"}}
+        except (BitBrowserResponseError, BitBrowserIdentityError):
+            return 503, {"error": {"code": "proxy_operation_unconfirmed" if not verify else "proxy_verification_unavailable"}}
+        return 200, {"data": {"accepted": True}}
+
     def proxy_mutation_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Write or remove one Profile proxy, then return verified secret-free facts."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -786,6 +818,12 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-extract":
                 status, payload = api.proxy_extract_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-write":
+                status, payload = api.proxy_write_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-verification":
+                status, payload = api.proxy_write_response(self._read_body(), verify=True)
                 self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-mutation":
                 status, payload = api.proxy_mutation_response(self._read_body())

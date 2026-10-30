@@ -1,5 +1,5 @@
 schema_version: 1
-revision: "2026.10.29.1"
+revision: "2026.10.29.3"
 errors:
   not_found: {http_status: 404}
   bitbrowser_identity_unverifiable: {http_status: 409}
@@ -20,3 +20,6 @@ secret_policy:
   # never echoes it, and no log line carries it.
   forbidden_fields: [cookie, password, proxyUserName, proxyPassword, agent_token]
   raw_upstream_messages_exposed: false
+  proxy_operation_rejected: {http_status: 409, retryable: true}
+  proxy_operation_unconfirmed: {http_status: 503, retryable: false}
+  proxy_verification_unavailable: {http_status: 503, retryable: true}

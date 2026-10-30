@@ -237,7 +237,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         transport = FakeTransport([
             {"success": True, "data": {}},
             {"success": True, "data": {}},
-            {"success": True, "data": {"browserFingerPrint": {"ua": "x"}, "proxyMethod": 2}},
+            {"success": True, "data": {"browserFingerPrint": {"ua": "x"}, "proxyMethod": 2, "proxyType": "noproxy"}},
             {"success": True, "data": {}},
         ])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
@@ -264,7 +264,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
     def test_update_profile_preserves_current_fingerprint_and_proxy_method(self) -> None:
         transport = FakeTransport([
-            {"success": True, "data": {"browserFingerPrint": {"ua": "preserved"}, "proxyMethod": 2}},
+            {"success": True, "data": {"browserFingerPrint": {"ua": "preserved"}, "proxyMethod": 2, "proxyType": "noproxy"}},
             {"success": True, "data": {}},
         ])
         client = BitBrowserClient("http://127.0.0.1:54345", transport=transport, timeout=2)
@@ -279,6 +279,7 @@ class BitBrowserRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["name"], "新名")
         self.assertEqual(payload["browserFingerPrint"], {"ua": "preserved"})
         self.assertEqual(payload["proxyMethod"], 2)
+        self.assertEqual(payload["proxyType"], "noproxy")
 
     def test_update_profile_keeps_caller_fields_without_detail(self) -> None:
         transport = FakeTransport([{"success": True, "data": {}}])
@@ -286,7 +287,9 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
         client.update_profile(
             "profile-1",
-            {"name": "窗口", "browserFingerPrint": {"ua": "caller"}, "proxyMethod": 3},
+            {"name": "窗口", "browserFingerPrint": {"ua": "caller"}, "proxyMethod": 3,
+             "proxyType": "noproxy", "host": "", "port": 0,
+             "proxyUserName": "", "proxyPassword": ""},
         )
 
         self.assertEqual(len(transport.calls), 1)

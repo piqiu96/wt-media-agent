@@ -179,8 +179,8 @@ class BitBrowserClient:
         except BitBrowserResponseError:
             pass  # Close may fail if already closed
 
-    def _read_profile_runtime_fields(self, profile_id: str) -> tuple[dict[str, object], object]:
-        """Return (browserFingerPrint, proxyMethod) for a profile from /browser/detail.
+    def _read_profile_runtime_fields(self, profile_id: str) -> dict[str, object]:
+        """Read fields required by /browser/update from the local profile detail.
 
         The fingerprint is sensitive browser identity and must not leave the local
         runtime. Restoring Cloud config must pass the existing fingerprint and proxy
@@ -201,23 +201,55 @@ class BitBrowserClient:
             raise BitBrowserResponseError(
                 f"无法读取窗口 {profile_id} 的当前指纹，为保护浏览器身份不执行更新"
             )
-        return fingerprint, data.get("proxyMethod")
+        return data
 
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None:
         """Update an existing browser profile.
 
-        BitBrowser /browser/update requires browserFingerPrint and proxyMethod. Preserve
-        the profile's current values instead of sending empty/absent ones, so the browser
-        identity is not regenerated and the proxy method is not reset.
+        BitBrowser /browser/update requires browserFingerPrint, proxyMethod and
+        proxyType. A metadata edit must also preserve the current proxy address
+        and credentials rather than silently changing the network configuration.
         """
         payload = dict(config)
         payload["id"] = profile_id
-        if "browserFingerPrint" not in payload or "proxyMethod" not in payload:
-            fingerprint, proxy_method = self._read_profile_runtime_fields(profile_id)
-            payload.setdefault("browserFingerPrint", fingerprint)
-            if "proxyMethod" not in payload:
-                payload["proxyMethod"] = proxy_method if proxy_method is not None else 2
+        proxy_fields = ("proxyType", "host", "port", "proxyUserName", "proxyPassword")
+        if any(key not in payload for key in ("browserFingerPrint", "proxyMethod", *proxy_fields)):
+            current = self._read_profile_runtime_fields(profile_id)
+            payload.setdefault("browserFingerPrint", current["browserFingerPrint"])
+            payload.setdefault("proxyMethod", current.get("proxyMethod") if current.get("proxyMethod") is not None else 2)
+            if "proxyType" not in payload and not current.get("proxyType"):
+                raise BitBrowserResponseError("无法读取当前代理类型，为保护窗口代理配置不执行更新")
+            for key in proxy_fields:
+                if key not in payload:
+                    if key not in current and current.get("proxyType") not in {"noproxy", "direct"}:
+                        raise BitBrowserResponseError("无法读取完整的当前代理配置，为保护窗口代理不执行更新")
+                    payload[key] = current.get(key, 0 if key == "port" else "")
         self._check_success(self._post_with_timeout("/browser/update", payload, self._mutation_timeout()))
+
+    def compare_proxy(self, profile_id: str, expected: dict[str, object]) -> str:
+        """Compare locally; credentials and fingerprint never leave this method."""
+        data = self._check_success(self._post("/browser/detail", {"id": profile_id}))
+        # A known mismatch is conclusive even when Bit omits credentials for a
+        # direct connection. Only a possible match needs every secret field.
+        if data.get("proxyType") is None:
+            return "unverifiable"
+        if str(data["proxyType"]).lower() != str(expected["proxyType"]).lower():
+            return "different"
+        if data.get("host") is None or data.get("port") is None:
+            return "unverifiable"
+        try:
+            if str(data["host"]) != str(expected["host"]) or int(data["port"] or 0) != int(expected["port"] or 0):
+                return "different"
+        except (ValueError, TypeError, KeyError):
+            return "unverifiable"
+        if data.get("proxyUserName") is None or data.get("proxyPassword") is None:
+            return "unverifiable"
+        for key in ("proxyUserName", "proxyPassword"):
+            raw = str(data[key])
+            if raw and set(raw) <= {"*", "•"}:
+                return "unverifiable"
+        same = all(str(data[key]) == str(expected[key]) for key in ("proxyUserName", "proxyPassword"))
+        return "matches" if same else "different"
 
     def delete_profile(self, profile_id: str) -> None:
         """Delete a browser profile."""
