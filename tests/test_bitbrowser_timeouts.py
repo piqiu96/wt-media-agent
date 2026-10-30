@@ -59,7 +59,7 @@ class ClientSeamTest(unittest.TestCase):
     def test_the_base_timeout_still_governs_the_non_operation_calls(self):
         """`/browser/detail` is not a create or a mutation: no override applies."""
         transport = FakeTransport([
-            {"success": True, "data": {"browserFingerPrint": {"ua": "x"}, "proxyMethod": 2}},
+            {"success": True, "data": {"browserFingerPrint": {"ua": "x"}, "proxyMethod": 2, "proxyType": "noproxy"}},
             {"success": True, "data": {}},
         ])
         client = BitBrowserClient(

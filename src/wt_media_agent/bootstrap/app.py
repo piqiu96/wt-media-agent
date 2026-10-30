@@ -12,12 +12,10 @@ below is handed what it needs rather than reaching for it:
 5. the Cloud client
 6. storage: schema, then the checkpoint store and the save-directory store
 7. the Agent Token, empty until Desktop hands one over
-8. the configuration both loops share
+8. the transfer loop configuration
 9. the transfer loop, so the download factory below can close over its `record`
-10. executor factories, bound to the client from step 4
-11. the download entry, into that loop out of the registry built in step 10
-12. the task runner, given those factories instead of looking a registry up
-13. the observable state the local API reports from
+10. the download executor, registered on that loop
+11. the observable state the local API reports from
 
 Nothing below this module reads the environment or builds a client: they all
 receive a `Components`, which is what makes "the executor used the configured
@@ -34,17 +32,11 @@ from wt_media_agent.clients.bitbrowser import BitBrowserClient, bitbrowser_from_
 from wt_media_agent.clients.cloud import CloudAgentClient
 from wt_media_agent.executors.material_download import MaterialDownloadExecutor
 from wt_media_agent.local_api.state import LocalAgentState
-from wt_media_agent.runner.config import TaskRunnerConfig
-from wt_media_agent.runner.registry import default_executor_factories
-from wt_media_agent.runner.runner import TaskRunner
+from wt_media_agent.runner.config import TransferRunnerConfig
 from wt_media_agent.runner.transfer import TransferRunner
 from wt_media_agent.runtime.agent_token import AgentToken
 from wt_media_agent.runtime.config import AgentConfig, configure_frozen_ca_bundle, load_config
-from wt_media_agent.runtime.constants import (
-    DEFAULT_LEASE_SECONDS,
-    MAX_RETRIES,
-    TASK_TYPE_MATERIAL_DOWNLOAD,
-)
+from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 from wt_media_agent.runtime.logging import configure_from
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import DEFAULT_DB_NAME, apply_migrations
@@ -62,36 +54,23 @@ class Components:
     store: CheckpointStore
     save_directories: SaveDirectoryStore
     agent_token: AgentToken
-    runner: TaskRunner
     transfers: TransferRunner
 
 
-def start_task_loops(components: Components) -> list[threading.Thread]:
-    """Start both polling loops, each on a thread of its own.
+def start_transfer_loop(components: Components) -> list[threading.Thread]:
+    """Start the file-transfer loop.
 
-    Here rather than in each mode module because the answer is the same in all
-    three, and the one thing that is easy to get wrong is easy to get wrong
-    three times: both loops block until `stop()`, so one thread cannot run both,
-    and a mode that started only `TaskRunner` would leave downloads running
-    nowhere and saying nothing about it (which is what `bootstrap/local.py` did
-    until this was written down once).
-
-    Daemon threads, and nothing is joined: an Agent whose loops are still
-    sleeping is not a reason to keep a process alive, and a transfer cut off
-    part-way is exactly what the lease and the resume record are for.
-
-    Returned so a caller can say what it started (`tests/test_bootstrap_loops.py`
-    asserts on the names and the daemon flag). Callers that do not care ignore
-    the value, as all three mode modules do.
+    The generic Cloud task loop was retired with `/cloud-agent/tasks/*`: browser
+    operations are one-shot Local API calls, while file transfers keep their own
+    leased surface and loop.
     """
-    loops = [
-        threading.Thread(target=components.runner.start, name="agent-runner", daemon=True),
-        threading.Thread(target=components.transfers.start, name="agent-transfers", daemon=True),
-    ]
-    for loop in loops:
-        loop.start()
-    return loops
-
+    loop = threading.Thread(
+        target=components.transfers.start,
+        name="agent-transfers",
+        daemon=True,
+    )
+    loop.start()
+    return [loop]
 
 def database_path(config: AgentConfig) -> Path:
     """The Agent's SQLite file, under the configured data directory."""
@@ -127,8 +106,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # 4. The BitBrowser client. Loopback HTTP with the configured timeouts.
     bitbrowser = bitbrowser_from_config(config)
 
-    # 5. The Cloud client, with the configured request timeout. It used to
-    #    hard-code `timeout=10`.
+    # 5. The Cloud client for binding and file-transfer calls.
     cloud = CloudAgentClient(
         config.cloud_base_url, timeout=config.cloud_timeout_seconds
     )
@@ -149,34 +127,23 @@ def build_components(config: AgentConfig | None = None) -> Components:
     #    already running.
     agent_token = AgentToken()
 
-    # 8. Both loops' shared configuration. One value rather than two because
-    #    every field in it is a fact about this process, not about a loop:
-    #    `agent_id` goes on a checkpoint row either way, and a db path that
-    #    differed between them would be two Agents sharing one directory.
-    loop_config = TaskRunnerConfig(
+    # 8. The transfer loop's configuration. Every field is a fact about this process:
+    #    `agent_id` goes on a checkpoint row and the db path is shared state.
+    loop_config = TransferRunnerConfig(
         agent_id=config.agent_id,
         base_url=config.cloud_base_url,
         db_path=str(db_path),
-        lease_seconds=DEFAULT_LEASE_SECONDS,
-        max_retries=MAX_RETRIES,
     )
 
-    # 9. The transfer loop, before the registry because the download factory
+    # 9. The transfer loop, before its executor because the download factory
     #    closes over `record` -- the only thing that knows how to write a resume
-    #    record. It is handed its executors below, once the registry exists.
+    #    record.
     transfers = TransferRunner(
         cloud, store, loop_config, token=agent_token.get
     )
 
-    # 10. Executor factories. `bitbrowser` from step 4 is bound by closure, so
-    #     every browser-driving executor shares this one instance and none of
-    #     them can build its own.
-    #
-    #     The download executor's other three facts arrive the same way: the
-    #     token as a callable (Desktop replaces it, and the executor reports
-    #     under whichever is current), the save directory as a callable (the
-    #     operator may change it mid-download), and the record writer as the
-    #     transfer loop's own `record`.
+    # 10. The file-transfer executor. The generic browser task runner is gone;
+    #     one-shot browser work arrives through the Local API.
     def download_executor(client: CloudAgentClient, agent_id: str) -> MaterialDownloadExecutor:
         return MaterialDownloadExecutor(
             client,
@@ -186,24 +153,9 @@ def build_components(config: AgentConfig | None = None) -> Components:
             record=transfers.record,
         )
 
-    executors = default_executor_factories(bitbrowser, transfer=download_executor)
+    transfers.register_executor(TASK_TYPE_MATERIAL_DOWNLOAD, download_executor)
 
-    # 11. The download entry reaches the transfer loop *through the registry*,
-    #     which is what makes "one task-type to executor inventory, two loops"
-    #     true rather than aspirational: a task type the registry answers for is
-    #     dispatchable by either loop, and one it does not is dispatchable by
-    #     neither.
-    transfers.register_executor(
-        TASK_TYPE_MATERIAL_DOWNLOAD, executors[TASK_TYPE_MATERIAL_DOWNLOAD]
-    )
-
-    # 12. The runner. It receives its registry as an argument; it has no default,
-    #     so a runner that was not wired here would fail closed on `no_executor`.
-    runner = TaskRunner(
-        cloud, store, loop_config, token=agent_token.get, executors=executors
-    )
-
-    # 13. Observable state for the local API surface.
+    # 11. Observable state for the local API surface.
     state = LocalAgentState(agent_id=config.agent_id)
 
     return Components(
@@ -214,6 +166,5 @@ def build_components(config: AgentConfig | None = None) -> Components:
         store=store,
         save_directories=save_directories,
         agent_token=agent_token,
-        runner=runner,
         transfers=transfers,
     )

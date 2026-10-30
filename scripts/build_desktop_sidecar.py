@@ -13,6 +13,7 @@ for the other half of the contract.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ import tempfile
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
+
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,6 +119,43 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verify_frozen_local_api(binary: Path) -> list[str]:
+    """Refuse a sidecar whose bundled routes differ from the selected source.
+
+    PyInstaller can otherwise resolve an older installed wt_media_agent package
+    even when the entry script and --paths point at an isolated worktree.
+    """
+    from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
+
+    source = ROOT / "src" / "wt_media_agent" / "local_api" / "server.py"
+    required = {
+        node.value for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and node.value.startswith("/api/v1/")
+    }
+    archive = CArchiveReader(str(binary))
+    with tempfile.TemporaryDirectory(prefix="wt-media-agent-verify-") as temporary:
+        pyz = Path(temporary) / "PYZ.pyz"
+        pyz.write_bytes(archive.extract("PYZ.pyz"))
+        frozen = ZlibArchiveReader(str(pyz)).extract("wt_media_agent.local_api.server")
+
+    def literals(code):
+        for value in code.co_consts:
+            if isinstance(value, str):
+                yield value
+            elif hasattr(value, "co_consts"):
+                yield from literals(value)
+
+    bundled = {value for value in literals(frozen) if value.startswith("/api/v1/")}
+    missing = required - bundled
+    if missing:
+        raise RuntimeError(
+            "frozen Local Agent does not match selected source; missing routes: "
+            + ", ".join(sorted(missing))
+        )
+    return sorted(bundled)
 
 CONFIG_SOURCE_DIR_NAME = "config_online"
 
@@ -212,11 +251,17 @@ def build(target: str, output_dir: Path, manifest: Path) -> Path:
         ]
         command[6:6] = pyinstaller_signing_args()
         command[-1:-1] = bundled_ca_args()
+        environment = os.environ.copy()
+        source_path = str(ROOT / "src")
+        environment["PYTHONPATH"] = os.pathsep.join(
+            part for part in (source_path, environment.get("PYTHONPATH", "")) if part
+        )
         with unsigned_python_shared_library():
-            subprocess.run(command, check=True)
+            subprocess.run(command, check=True, cwd=ROOT, env=environment)
         built = workdir / "dist" / name
         if not built.is_file():
             raise RuntimeError(f"PyInstaller did not produce {built}")
+        local_api_routes = verify_frozen_local_api(built)
         signing = standalone_signing_args()
         if signing:
             subprocess.run([*signing, str(built)], check=True)
@@ -228,6 +273,7 @@ def build(target: str, output_dir: Path, manifest: Path) -> Path:
         "target": target,
         "filename": name,
         "sha256": sha256(destination),
+        "local_api_routes": local_api_routes,
     }, indent=2) + "\n", encoding="utf-8")
     return destination
 

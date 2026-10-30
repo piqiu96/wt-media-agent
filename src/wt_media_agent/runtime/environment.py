@@ -91,7 +91,7 @@ class BitBrowserScanCache:
 
     Reuse can therefore describe a machine that has since changed -- that is
     what it is for, and it is why the live scan stays the default: the account
-    id this carries is what Cloud's execution gate and the bind flow act on,
+    id this carries is what Cloud's bind and ownership checks act on,
     and a stale id there is a wrong answer rather than a late one.
     """
 

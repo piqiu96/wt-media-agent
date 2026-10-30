@@ -1,4 +1,4 @@
-"""Tests for `TransferRunner`: the loop that runs downloads beside `TaskRunner`.
+"""Tests for `TransferRunner`, the leased download loop.
 
 What is asserted here is the loop's own work, and it is deliberately narrow: it
 claims, it hands the executor the lease and whatever record this machine holds
@@ -22,10 +22,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from wt_media_agent.clients.cloud import AgentAuthError, TransferLease, TransferTerminal, TransferUnavailableError
 from wt_media_agent.executors.material_download import OUTCOME_SUCCESS
-from wt_media_agent.executors.protocol import ExecutorFactory
-from wt_media_agent.runner.config import TaskRunnerConfig
-from wt_media_agent.runner.registry import UnwiredTransfer
-from wt_media_agent.runner.transfer import TRANSFER_STATUS, TransferRunner
+from wt_media_agent.runner.config import TransferRunnerConfig
+from wt_media_agent.runner.transfer import TRANSFER_STATUS, ExecutorFactory, TransferRunner, UnwiredTransfer
 from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 from wt_media_agent.storage import CheckpointStore, TaskCheckpoint
 from wt_media_agent.storage.migration import apply_migrations
@@ -137,7 +135,7 @@ class TransferRunnerTest(unittest.TestCase):
         return TransferRunner(
             cloud or self.cloud,  # type: ignore[arg-type]
             self.store,
-            TaskRunnerConfig(
+            TransferRunnerConfig(
                 agent_id=AGENT_ID,
                 base_url="http://127.0.0.1:8188",
                 db_path=":memory:",
@@ -256,7 +254,7 @@ class TransferRunnerTest(unittest.TestCase):
         self.assertEqual(checkpoint.checkpoint_status, "transferring")  # type: ignore[union-attr]
         self.assertEqual(checkpoint.checkpoint_status, TRANSFER_STATUS)  # type: ignore[union-attr]
         # And the fact that value exists for: a transfer row is not a task.
-        # `get_incomplete_checkpoints` is what `TaskRunner`'s restart summary and
+        # `get_incomplete_checkpoints` is what legacy status summaries and
         # `/api/v1/status` read, and they select on the status this row must not
         # have -- a row that appeared there would report a download as the
         # Agent's current task, with a progress of 0 for its whole life.

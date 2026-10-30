@@ -65,6 +65,7 @@ NETWORK_OK_COUNTS = {
     "test_cloud_agent_client.py": 2,
     "test_local_health.py": 1,
     "test_proxy_extract.py": 1,
+    "test_proxy_mutation.py": 1,
     # CHG-061 T-04: the save-directory routes, over the loopback server the same
     # helper starts. Marked for the same reason as `test_local_health.py`'s --
     # the point of those cases is what a real socket answers, and a patched
@@ -319,7 +320,7 @@ class NoExternalServicesControls(unittest.TestCase):
     controls red for a reason none of them was written to detect.
     """
 
-    PLANTED = "test_noop_executor.py"
+    PLANTED = "test_transfer_runner.py"
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -409,7 +410,7 @@ class MarkerRatchetControls(unittest.TestCase):
 
     def test_control_for_a_marker_nobody_declared(self):
         files = dict(self.files)
-        files["test_noop_executor.py"] = files["test_noop_executor.py"] + (
+        files["test_transfer_runner.py"] = files["test_transfer_runner.py"] + (
             "\n# network-ok: planted, and this file is not in the frozen table\n"
         )
         self.assertNotEqual(marked_counts(files), NETWORK_OK_COUNTS)

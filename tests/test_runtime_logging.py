@@ -180,7 +180,7 @@ class ErrorRecordFieldsTest(LoggingStateTestCase):
         return path.read_text() if path.is_file() else ""
 
     def test_an_error_that_carries_a_code_and_a_task_renders_both(self):
-        logging.getLogger("wt_media_agent.runner.runner").error(
+        logging.getLogger("wt_media_agent.runner.transfer").error(
             "task t-1 failed: boom",
             extra={"error_code": "executor_error", "task_id": "t-1"},
         )
@@ -236,7 +236,7 @@ class ErrorRecordFieldsTest(LoggingStateTestCase):
         everything; neither gains field rendering. Asserted so the boundary is
         a decision rather than an accident.
         """
-        logging.getLogger("wt_media_agent.runner.runner").error(
+        logging.getLogger("wt_media_agent.runner.transfer").error(
             "task t-1 failed: boom",
             extra={"error_code": "executor_error", "task_id": "t-1"},
         )
@@ -303,7 +303,7 @@ class ThreeFileLayoutTest(LoggingStateTestCase):
                 self.assertTrue((self.directory / name).is_file(), f"{name} missing")
 
     def test_the_task_narrative_goes_to_the_task_log_as_well_as_the_agent_log(self):
-        logging.getLogger("wt_media_agent.runner.runner").info("executing task abc")
+        logging.getLogger("wt_media_agent.runner.transfer").info("executing task abc")
         self.assertIn("executing task abc", self.read(TASK_LOG_NAME))
         self.assertIn("executing task abc", self.read(AGENT_LOG_NAME))
 

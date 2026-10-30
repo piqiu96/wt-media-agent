@@ -28,7 +28,6 @@ from http.server import ThreadingHTTPServer
 
 from support import LoggingStateTestCase, UnusedBitBrowser
 
-from wt_media_agent import runtime
 from wt_media_agent.bootstrap import cloud as cloud_mode
 from wt_media_agent.bootstrap.app import build_components, database_path
 from wt_media_agent.local_api.server import LocalApiServer, make_handler
@@ -37,14 +36,6 @@ from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 
 #: An empty environment, so the developer's shell cannot decide a result.
 SILENT_ENV: dict[str, str] = {}
-
-
-def declared_task_types() -> set[str]:
-    return {
-        value
-        for name, value in vars(runtime.constants).items()
-        if name.startswith("TASK_TYPE_") and isinstance(value, str)
-    }
 
 
 class ComponentTestCase(LoggingStateTestCase):
@@ -81,24 +72,6 @@ class AssemblyTests(ComponentTestCase):
         self.components = self.build()
         self.config = self.components.config
 
-    def test_every_browser_driven_executor_shares_the_assembled_client(self):
-        """The property that self-construction made unassertable.
-
-        `runner._executors` is private, but this is the only handle on what the
-        runner was actually handed, and "what it was handed" is the whole point
-        of T-04.
-        """
-        client = self.components.bitbrowser
-        factories = self.components.runner._executors
-
-        self.assertEqual(set(factories), declared_task_types())
-        for task_type, factory in sorted(factories.items()):
-            instance = factory(self.components.cloud, self.config.agent_id)
-            own = getattr(instance, "bitbrowser", None)
-            if own is not None:
-                with self.subTest(task_type=task_type):
-                    self.assertIs(own, client)
-
     def test_the_download_executor_reads_what_the_two_routes_write(self):
         """One object at each end, which is the whole of the assembly's job here.
 
@@ -123,21 +96,6 @@ class AssemblyTests(ComponentTestCase):
         # is the one that decides whether there is anything to claim at all.
         self.assertEqual(self.components.transfers._token(), token)
 
-    def test_both_loops_dispatch_from_one_inventory(self):
-        """The registry *is* the sharing: one mapping, read by both loops.
-
-        Two registries built from the same factories would agree today and drift
-        the first time either loop is handed something the other is not -- and
-        the loop that is missing an entry does not fail, it refuses in a debug
-        log line while Cloud waits out the lease.
-        """
-        runner_factories = self.components.runner._executors
-        transfer_factories = self.components.transfers._executors
-
-        self.assertEqual(set(transfer_factories), {TASK_TYPE_MATERIAL_DOWNLOAD})
-        for task_type, factory in transfer_factories.items():
-            self.assertIs(factory, runner_factories[task_type])
-
     def test_the_state_reports_the_configured_agent_id(self):
         """A configured id, not the dataclass default -- which happens to agree."""
         configured = "agent-7f3c"
@@ -145,7 +103,7 @@ class AssemblyTests(ComponentTestCase):
 
         self.assertEqual(components.config.agent_id, configured)
         self.assertEqual(components.state.agent_id, configured)
-        self.assertEqual(components.runner.config.agent_id, configured)
+        self.assertEqual(components.transfers.config.agent_id, configured)
 
     def test_the_database_lives_under_the_configured_data_directory(self):
         path = database_path(self.config)
@@ -185,7 +143,7 @@ class AssemblyTests(ComponentTestCase):
 class CloudModeTests(ComponentTestCase):
     def test_cloud_mode_reports_and_returns_without_starting_the_runner(self):
         started = mock.MagicMock()
-        components = replace(self.build(), runner=mock.MagicMock(start=started))
+        components = replace(self.build(), transfers=mock.MagicMock(start=started))
 
         with mock.patch.object(cloud_mode, "build_components", return_value=components):
             exit_code = cloud_mode.run()
@@ -193,17 +151,14 @@ class CloudModeTests(ComponentTestCase):
         self.assertEqual(exit_code, 0)
         started.assert_not_called()
 
-    def test_cloud_mode_starts_the_runner_only_when_the_switch_is_on(self):
+    def test_cloud_mode_starts_the_transfer_loop_only_when_the_switch_is_on(self):
         """Paired control for the test above: the switch really does gate it."""
         started = mock.MagicMock()
         components = replace(
             self.build(WT_MEDIA_AGENT_RUN_RUNNER="true"),
-            runner=mock.MagicMock(start=started),
-            # Both loops are stubbed, and both because run mode starts both: a
-            # real `TransferRunner` here would poll Cloud on a daemon thread for
-            # the rest of the run, against a base URL no test serves, and log
-            # into a throwaway directory this test is about to delete.
-            transfers=mock.MagicMock(),
+            # A real TransferRunner would poll Cloud on a daemon thread for the
+            # rest of the run, against a base URL no test serves.
+            transfers=mock.MagicMock(start=started),
         )
         self.assertTrue(components.config.run_runner)
 
@@ -232,13 +187,13 @@ class ModeSurfaceWiringTests(ComponentTestCase):
     def _drive(self, mode, **env):
         """Run one mode surface with both of its side effects replaced.
 
-        `start_task_loops` is replaced rather than allowed to run: it starts two
-        threads that poll Cloud until `stop()`, and what this class is about is
-        what the mode hands over, not what the loops then do with it.
+        `start_transfer_loop` is replaced rather than allowed to run: it starts a
+        thread that polls Cloud until `stop()`, and what this class is about is
+        what the mode hands over, not what the loop then does with it.
         """
         components = self.build(**env)
         with mock.patch.object(mode, "build_components", return_value=components):
-            with mock.patch.object(mode, "start_task_loops") as loops:
+            with mock.patch.object(mode, "start_transfer_loop") as loops:
                 with mock.patch.object(mode, "serve") as serve:
                     mode.run()
         return components, serve, loops
@@ -260,7 +215,7 @@ class ModeSurfaceWiringTests(ComponentTestCase):
                 # leave both ends working and nothing ever claimed.
                 self.assertIs(kwargs.get("agent_token"), components.agent_token)
 
-    def test_both_api_modes_start_both_loops_when_the_switch_is_on(self):
+    def test_both_api_modes_start_the_transfer_loop_when_the_switch_is_on(self):
         for name in ("sidecar", "local"):
             with self.subTest(mode=name):
                 components, _, loops = self._drive(

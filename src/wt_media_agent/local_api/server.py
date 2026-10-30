@@ -35,6 +35,7 @@ from wt_media_agent.clients.bitbrowser import (
     BitBrowserUnavailableError,
     ProfileSnapshot,
 )
+from wt_media_agent.clients.bitbrowser.errors import BitBrowserRejectedError
 from wt_media_agent.clients.cloud import CloudAgentClient
 from wt_media_agent.clients.cloud.errors import (
     AgentAuthError,
@@ -46,10 +47,7 @@ from wt_media_agent.clients import platform_identity
 from wt_media_agent.clients.baidu import identity as baidu_identity
 from wt_media_agent.clients.bilibili import identity as bilibili_identity
 from wt_media_agent.services.browser import cookies as browser_cookies
-from wt_media_agent.services.net.proxy import (
-    check_proxy_connectivity,
-    parse_first_proxy_address,
-)
+from wt_media_agent.services.net.proxy import parse_first_proxy_address
 from wt_media_agent.runtime.constants import BITBROWSER_SCAN_REUSE_SECONDS
 from wt_media_agent.runtime.environment import (
     BitBrowserScanCache,
@@ -161,7 +159,7 @@ class LocalApiServer:
     def status(self, *, reuse_scan: bool = False) -> dict[str, object]:
         """`/api/v1/status`. `reuse_scan` is opt-in; the live scan is the default.
 
-        The account id this response carries is what Cloud's execution gate and
+        The account id this response carries is what Cloud's bind/ownership checks and
         the bind flow act on, so only a caller that wants a verdict and not an
         account id -- the top bar's automatic tick -- may ask for a reused scan.
         """
@@ -380,57 +378,6 @@ class LocalApiServer:
             return _cloud_failure(exc)
         return 200, {"data": data}
 
-    def sensitive_preflight_response(
-        self, task_id: str, body: dict[str, object]
-    ) -> tuple[int, dict[str, object]]:
-        """`POST /api/v1/sensitive-tasks/<id>/preflight`：先实读，再请 Cloud 判定。"""
-        client, token, refusal = self._agent_cloud()
-        if refusal is not None:
-            return refusal
-        profile_id = str(body.get("profile_id", "")).strip()
-        if not profile_id:
-            return 400, {"error": {"code": "invalid_request"}}
-        snapshot, refusal = self._scan_for_cloud()
-        if refusal is not None:
-            return refusal
-        files_ready = False
-        if self.save_directories is not None:
-            files_ready = bool(_save_directory_facts(self.save_directories)["writable"])
-        facts = {
-            "bitbrowser_status": "running",
-            "main_user_id": snapshot.main_user_id,
-            "observed_at": _utc_now_iso(),
-            "profile_visible": any(
-                profile.bit_profile_id == profile_id for profile in snapshot.profiles
-            ),
-            "files_ready": files_ready,
-        }
-        try:
-            data = client.preflight_sensitive_task(token, task_id, facts)
-        except (CloudError, CloudUnavailableError) as exc:
-            return _cloud_failure(exc)
-        return 200, {"data": data}
-
-    def sensitive_permit_finish_response(
-        self, permit_id: str, body: dict[str, object]
-    ) -> tuple[int, dict[str, object]]:
-        """`POST /api/v1/sensitive-permits/<id>/finish`：交还许可。
-
-        本地操作失败时同样要交还，并标记 `result_uncertain`，否则 Cloud 会一直
-        占着这个窗口。
-        """
-        client, token, refusal = self._agent_cloud()
-        if refusal is not None:
-            return refusal
-        outcome = str(body.get("outcome", "")).strip()
-        if outcome not in ("completed", "result_uncertain"):
-            return 400, {"error": {"code": "invalid_request"}}
-        try:
-            client.finish_sensitive_permit(token, permit_id, outcome)
-        except (CloudError, CloudUnavailableError) as exc:
-            return _cloud_failure(exc)
-        return 204, {}
-
     def _no_save_directory_store(self) -> tuple[int, dict[str, object]]:
         """What a server with no local storage answers.
 
@@ -520,22 +467,6 @@ class LocalApiServer:
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
-    def proxy_check_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
-        """Run the short TCP check inline; browser interaction is not involved."""
-        host = str(body.get("host", "")).strip()
-        try:
-            port = int(body.get("port", 0))
-        except (TypeError, ValueError):
-            port = 0
-        if not host or not 1 <= port <= 65535:
-            return 400, {"error": {"code": "proxy_input_invalid"}}
-        result = check_proxy_connectivity(host, port)
-        data: dict[str, object] = {"connectivity": result}
-        proxy_id = str(body.get("proxy_id", "")).strip()
-        if proxy_id:
-            data["proxy_id"] = proxy_id
-        return 200, {"data": data}
-
     def proxy_extract_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Fetch and parse one provider response without touching BitBrowser."""
         extract_url = str(body.get("extract_url", "")).strip()
@@ -553,6 +484,61 @@ class LocalApiServer:
         except (OSError, TimeoutError):
             return 502, {"error": {"code": "proxy_extract_request_failed"}}
         return 200, {"data": address}
+
+    def proxy_assignment_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+        """Apply a proxy and report only an explicit BitBrowser acknowledgement."""
+        profile_id = str(body.get("profile_id", "")).strip()
+        protocol = str(body.get("proxy_protocol", "")).strip().lower()
+        host = str(body.get("host", "")).strip()
+        try:
+            port = int(body.get("port", 0))
+        except (TypeError, ValueError):
+            port = 0
+        if not profile_id or protocol not in {"http", "https", "socks5"} or not host or not 1 <= port <= 65535:
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        try:
+            self.bitbrowser.update_profile(profile_id, {
+                "proxyType": protocol, "host": host, "port": port,
+                "proxyUserName": str(body.get("username", "")),
+                "proxyPassword": str(body.get("password", "")),
+            })
+        except BitBrowserRejectedError:
+            return 409, {"error": {"code": "proxy_assignment_rejected"}}
+        except (BitBrowserResponseError, BitBrowserIdentityError):
+            return 503, {"error": {"code": "proxy_assignment_unconfirmed"}}
+        return 200, {"data": {"profile_id": profile_id, "accepted": True}}
+
+    def proxy_write_response(self, body: dict[str, object], *, verify: bool = False) -> tuple[int, dict[str, object]]:
+        """Acknowledge a write, or explicitly compare an uncertain write locally."""
+        profile_id = str(body.get("profile_id", "")).strip()
+        operation = str(body.get("operation", "assign")).strip().lower()
+        if operation not in {"assign", "unbind"} or not profile_id:
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        try:
+            port = int(body.get("port", 0))
+        except (ValueError, TypeError):
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        protocol = str(body.get("proxy_protocol", "")).lower()
+        host = str(body.get("host", "")).strip()
+        if operation == "assign" and (protocol not in {"http", "https", "socks5"} or not host or not 1 <= port <= 65535):
+            return 400, {"error": {"code": "proxy_mutation_input_invalid"}}
+        expected = {"proxyType": "noproxy" if operation == "unbind" else protocol,
+                    "host": "" if operation == "unbind" else host,
+                    "port": 0 if operation == "unbind" else port,
+                    "proxyUserName": "" if operation == "unbind" else str(body.get("username", "")),
+                    "proxyPassword": "" if operation == "unbind" else str(body.get("password", ""))}
+        try:
+            if verify:
+                comparison = self.bitbrowser.compare_proxy(profile_id, expected)
+                return 200, {"data": {"comparison": comparison if comparison in {"matches", "different", "unverifiable"} else "unverifiable"}}
+            if operation == "unbind":
+                expected["proxyMethod"] = 2
+            self.bitbrowser.update_profile(profile_id, expected)
+        except BitBrowserRejectedError:
+            return 409, {"error": {"code": "proxy_operation_rejected" if not verify else "proxy_verification_unavailable"}}
+        except (BitBrowserResponseError, BitBrowserIdentityError):
+            return 503, {"error": {"code": "proxy_operation_unconfirmed" if not verify else "proxy_verification_unavailable"}}
+        return 200, {"data": {"accepted": True}}
 
     def proxy_mutation_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Write or remove one Profile proxy, then return verified secret-free facts."""
@@ -806,17 +792,7 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._write_json(401, {"error": "unauthorized"})
                 return
             route = urlparse.urlsplit(self.path).path
-            task_id = _path_id(route, "/api/v1/sensitive-tasks/", "/preflight")
-            permit_id = _path_id(route, "/api/v1/sensitive-permits/", "/finish")
-            if task_id is not None:
-                status, payload = api.sensitive_preflight_response(task_id, self._read_body())
-                self._write_json(status, payload)
-            elif permit_id is not None:
-                status, payload = api.sensitive_permit_finish_response(
-                    permit_id, self._read_body()
-                )
-                self._write_json(status, payload)
-            elif self.path == "/api/v1/bit-account/bind":
+            if self.path == "/api/v1/bit-account/bind":
                 status, payload = api.bit_account_bind_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-scans":
@@ -840,14 +816,20 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             elif self.path == "/api/v1/bit-browser/profile-delete":
                 status, payload = api.profile_delete_response(self._read_body())
                 self._write_json(status, payload)
-            elif self.path == "/api/v1/proxy-check":
-                status, payload = api.proxy_check_response(self._read_body())
-                self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-extract":
                 status, payload = api.proxy_extract_response(self._read_body())
                 self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-write":
+                status, payload = api.proxy_write_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-verification":
+                status, payload = api.proxy_write_response(self._read_body(), verify=True)
+                self._write_json(status, payload)
             elif self.path == "/api/v1/proxy-mutation":
                 status, payload = api.proxy_mutation_response(self._read_body())
+                self._write_json(status, payload)
+            elif self.path == "/api/v1/proxy-assignment":
+                status, payload = api.proxy_assignment_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/account-check":
                 status, payload = api.account_check_response(self._read_body())

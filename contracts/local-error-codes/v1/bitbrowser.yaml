@@ -1,5 +1,5 @@
 schema_version: 1
-revision: "2026.10.23.1"
+revision: "2026.10.29.3"
 errors:
   not_found: {http_status: 404}
   bitbrowser_identity_unverifiable: {http_status: 409}
@@ -12,8 +12,14 @@ errors:
   # was reached and refused.
   cloud_unavailable: {http_status: 502}
   invalid_request: {http_status: 400}
+  proxy_mutation_input_invalid: {http_status: 400}
+  proxy_assignment_rejected: {http_status: 409}
+  proxy_assignment_unconfirmed: {http_status: 503}
 secret_policy:
   # `agent_token` is the Cloud-issued bearer the Desktop handed over; the local API
   # never echoes it, and no log line carries it.
   forbidden_fields: [cookie, password, proxyUserName, proxyPassword, agent_token]
   raw_upstream_messages_exposed: false
+  proxy_operation_rejected: {http_status: 409, retryable: true}
+  proxy_operation_unconfirmed: {http_status: 503, retryable: false}
+  proxy_verification_unavailable: {http_status: 503, retryable: true}

@@ -8,12 +8,12 @@
 | --- | --- | --- | --- |
 | `src/wt_media_agent/bootstrap/` | 生产装配与进程入口 | Local／Cloud／Sidecar | 启动顺序、服务装配 |
 | `src/wt_media_agent/runtime/` | 配置、路径、日志和运行环境 | 共用 | 配置、日志、发布环境 |
-| `src/wt_media_agent/clients/cloud/` | Cloud 通信与兼容检查 | 共用 | 领取、心跳、回传协议 |
+| `src/wt_media_agent/clients/cloud/` | Cloud 通信与兼容检查 | 共用 | Agent Token、绑定、file-transfer 租约 |
 | `src/wt_media_agent/clients/bitbrowser/` | BitBrowser 客户端 | Local | Profile 与浏览器窗口 |
 | `src/wt_media_agent/clients/` | 其他平台客户端与身份适配 | 主要为 Local | 平台接入、出站调用 |
 | `src/wt_media_agent/services/` | 浏览器、Cookie、代理等执行辅助能力 | 主要为 Local | 本机执行细节 |
-| `src/wt_media_agent/executors/` | 具体任务动作 | 按任务类型 | 执行结果与副作用 |
-| `src/wt_media_agent/runner/` | 任务循环、进度、取消和重试 | 共用 | 任务执行语义 |
+| `src/wt_media_agent/executors/` | file-transfer 执行 | 共用 | 下载、校验和恢复结果 |
+| `src/wt_media_agent/runner/` | file-transfer 租约循环与恢复 | 共用 | 下载租约语义 |
 | `src/wt_media_agent/storage/` | 本进程状态与检查点 | 共用 | 恢复、本地持久化 |
 | `src/wt_media_agent/local_api/` | Desktop 使用的本地控制 API | Local | 本机接口、健康状态 |
 | `src/wt_media_agent/adapters/` | 平台适配预留目录，当前不视为已交付实现 | 按任务确认 | 新平台适配 |

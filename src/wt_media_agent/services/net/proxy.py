@@ -1,24 +1,8 @@
-"""Proxy connectivity probing and proxy-address parsing.
-
-Shared by the local API control plane and the proxy task executors. Kept as one
-module rather than three: the three functions form a single cohesive concern
-(proxy reachability and address parsing) and splitting them would add
-abstractions without changing any boundary.
-"""
+"""Proxy-address parsing for local execution boundaries."""
 
 from __future__ import annotations
 
-import socket
 from urllib import parse as urlparse
-
-
-def check_proxy_connectivity(host: str, port: int, timeout: float = 5.0) -> str:
-    """Return a stable, UI-safe connectivity result without exposing credentials."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return "reachable"
-    except OSError as exc:
-        return f"unreachable: {type(exc).__name__}"
 
 
 def parse_first_proxy_address(raw: str, default_protocol: str) -> dict[str, object]:

@@ -1,10 +1,7 @@
-"""The loop that runs file transfers, beside `TaskRunner` rather than inside it.
+"""The loop that runs leased file transfers.
 
-A download is not a task this Agent claims from `/tasks/claim`. It arrives on
-its own surface and what it holds is a lease that must be renewed while bytes
-move. `TaskRunner` has none of those things and is tested without them, so a
-download runs in its own loop with its own poll. The two share the registry's
-task-type to executor inventory and nothing else.
+A download is not a generic Cloud task. It arrives on its own surface and holds
+a lease that must be renewed while bytes move, so it has its own loop and poll.
 
 **When it is allowed to claim at all.** Every one of the four transfer calls is
 identified by the Agent Token and by nothing else, and this loop is started
@@ -30,7 +27,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Mapping
-from typing import Optional
+from typing import Callable, Optional
 
 from wt_media_agent.clients.cloud import (
     AgentAuthError,
@@ -42,16 +39,33 @@ from wt_media_agent.clients.cloud.transfer import (
     COMPOSITE_OUTPUT_ASSET_TYPE,
     MATERIAL_ASSET_TYPE,
 )
-from wt_media_agent.executors.material_download import OUTCOME_SUCCESS, Credential
-from wt_media_agent.executors.protocol import ExecutorFactory
-from wt_media_agent.runner.config import TaskRunnerConfig
-from wt_media_agent.runner.registry import TransferNotWired
+from wt_media_agent.executors.material_download import MaterialDownloadExecutor, OUTCOME_SUCCESS, Credential
+from wt_media_agent.runner.config import TransferRunnerConfig
 from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 from wt_media_agent.storage.checkpoint_store import CheckpointStore, TaskCheckpoint
 from wt_media_agent.storage.transfer_resume import TransferResume
 from wt_media_agent.utils.time import utc_now_iso
 
 logger = logging.getLogger(__name__)
+
+ExecutorFactory = Callable[[CloudAgentClient, str], MaterialDownloadExecutor]
+
+
+class TransferNotWired(RuntimeError):
+    """A transfer reached an Agent started without a download executor."""
+
+
+class UnwiredTransfer:
+    """Fail closed when the process did not register a download executor."""
+
+    def __init__(self, client: CloudAgentClient, agent_id: str) -> None:
+        del client, agent_id
+
+    def execute(self, task: Mapping[str, object]) -> Mapping[str, object]:
+        raise TransferNotWired(
+            "this Agent has no download executor: file transfers cannot run here"
+        )
+
 
 #: The `checkpoint_status` a transfer's row carries.
 #:
@@ -60,8 +74,7 @@ logger = logging.getLogger(__name__)
 #: `current_task_progress` of 0 for its whole life, because the progress column
 #: is a task percentage and a transfer's figure is a byte count. And
 #: `get_incomplete_checkpoints` selects `('claimed', 'running')` only, so this
-#: value also keeps a transfer row out of `TaskRunner`'s restart summary, which
-#: would otherwise promise to resume a row that loop never touches.
+#: value also keeps a transfer row out of the retired generic restart summary.
 TRANSFER_STATUS = "transferring"
 
 #: Which executor each leasable asset type runs on. Both download kinds share
@@ -83,26 +96,23 @@ class TransferRunner:
         self,
         client: CloudAgentClient,
         store: CheckpointStore,
-        config: TaskRunnerConfig,
+        config: TransferRunnerConfig,
         *,
         token: Credential,
         executors: Mapping[str, ExecutorFactory] | None = None,
     ) -> None:
         self.client = client
         self.store = store
-        # `TaskRunnerConfig` and not a second dataclass: this loop needs the poll
-        # interval and the agent id that goes on a checkpoint row, and both are
-        # the same facts about the same process. `lease_seconds` is unused here
-        # -- the lease's own length comes down with it.
+        # `TransferRunnerConfig` carries only the facts this loop needs: the
+        # poll interval and the agent id written on a checkpoint row.
         self.config = config
         # The whole identity of the four transfer calls: how to ask for it, not
         # the token itself, because Desktop hands it over after this loop is
         # already running -- and replaces it whenever it re-logs in. Never
         # composed into a message here.
         self._token = token
-        # Empty by default, on purpose and for `TaskRunner`'s reason: a loop
-        # nobody wired up must fail closed rather than reach Cloud through a
-        # registry it built behind the caller's back.
+        # Empty by default: a loop nobody wired up fails closed rather than
+        # reaching Cloud through an executor it built behind the caller's back.
         self._executors: dict[str, ExecutorFactory] = dict(executors or {})
         # The token value Cloud last refused, if any. Kept so that a refusal
         # does not turn into a poll-per-second stream of the same 401, while a
@@ -121,11 +131,10 @@ class TransferRunner:
     def start(self) -> None:
         """Start the loop. Blocks until stopped.
 
-        There is no recovery pass and no offline queue to flush, unlike
-        `TaskRunner`. A transfer's durable state is the resume record its
-        executor reads when Cloud next hands it the task, and a terminal report
-        that could not be delivered is Cloud's lease expiry to act on -- there is
-        nothing here to replay at start-up.
+        There is no recovery pass and no offline queue. A transfer's durable
+        state is the resume record its executor reads when Cloud next hands it
+        the task, and a terminal report that could not be delivered is Cloud's
+        lease expiry to act on -- there is nothing here to replay at start-up.
         """
         self._running = True
         while self._running:

@@ -11,7 +11,7 @@ endpoint must *not* do:
 * **No outbound write request, for any reason.** No heartbeat, no task claim,
   nothing that changes state on the far side. Cloud's client in this Agent has
   no read-only call at all -- register, heartbeat, claim, report and the two
-  sensitive-task permits are every one of them writes -- so Cloud's status
+  one-shot browser operations are every one of them writes -- so Cloud's status
   cannot come from asking Cloud. It comes from the one signal that needs no
   request: whether a socket to the configured host and port can be opened.
   Nothing is sent and no credential is used, which is why what this reports is
