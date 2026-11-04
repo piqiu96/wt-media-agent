@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from datetime import date
 
 from wt_media_agent.clients.cloud import (
+    CloudAgentClient,
     TransferIntegrityRejectedError,
     TransferLease,
     TransferLeaseLostError,
@@ -575,6 +576,55 @@ class NamingTest(DownloadTest):
             self.completion()["file_name"],
             f"{DATE_DIR}/{GAME_NAME}-42-一把三千万！ #左梓轩小叮当.mp4",
         )
+
+
+class ClaimedCategoryNamingTest(DownloadTest):
+    def claim(self, **metadata: object) -> TransferLease:
+        wire: dict[str, object] = {
+            "task_id": TASK_ID,
+            "attempt_id": ATTEMPT_ID,
+            "asset_type": "material",
+            "asset_id": 42,
+            "title": "春日",
+            "category_name": "三角洲行动",
+            "total_bytes": len(BODY),
+            "expected_sha256": sha256(BODY),
+            "lease_seconds": 60,
+            "download_url": SIGNED_URL,
+            "download_url_expires_at": "2026-09-27T10:00:00Z",
+        }
+        wire.update(metadata)
+        client = CloudAgentClient(
+            "https://cloud.test",
+            transport=lambda *_args: self.fail("claim must use the transfer transport"),
+            transfer_transport=lambda *_args: (200, {"errcode": 0, "data": {"task": wire}}),
+        )
+        claimed = client.claim_transfer_task(TOKEN)
+        assert claimed is not None
+        return claimed
+
+    def test_claimed_material_and_output_use_current_category_on_disk(self) -> None:
+        for asset_type, asset_id, title, expected in (
+            ("material", 42, "春日", "20260930/三角洲行动-42-春日.mp4"),
+            ("composite_output", 5, "原始成片", "20260930/三角洲行动-5-原始成片.mp4"),
+        ):
+            with self.subTest(asset_type=asset_type):
+                claimed = self.claim(asset_type=asset_type, asset_id=asset_id, title=title)
+                outcome = self.run_download(ServingOpener(), lease=claimed)
+                self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+                self.assertEqual(self.cloud.completions[-1]["file_name"], expected)
+                self.assertEqual((self.directory / expected).read_bytes(), BODY)
+                self.assertEqual(self.cloud.completions[-1]["sha256"], sha256(BODY))
+
+    def test_claimed_multibyte_category_and_title_still_fit_filename_budget(self) -> None:
+        claimed = self.claim(category_name="类" * 100, title="春🌸" * 150)
+        outcome = self.run_download(ServingOpener(), lease=claimed)
+        self.assertEqual(outcome["status"], OUTCOME_SUCCESS)
+        name = self.completion()["file_name"]
+        self.assertTrue(name.startswith("20260930/类"), name)
+        self.assertTrue(name.endswith(".mp4"), name)
+        self.assertLessEqual(len(name.encode("utf-8")), 255)
+        self.assertEqual((self.directory / name).read_bytes(), BODY)
 
 
 class SaveDirectoryTest(DownloadTest):

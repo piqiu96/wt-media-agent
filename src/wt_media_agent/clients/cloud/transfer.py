@@ -148,7 +148,9 @@ def parse_lease(payload: object) -> TransferLease:
         lease_seconds=int(payload["lease_seconds"]),
         download_url=str(payload["download_url"]),
         download_url_expires_at=str(payload["download_url_expires_at"]),
-        game_name=str(payload.get("game_name") or ""),
+        # The current wire uses category_name; retain game_name only for old
+        # Cloud responses. Explicitly empty current metadata stays unknown.
+        game_name=str(payload.get("category_name", payload.get("game_name")) or ""),
         published_at=_parse_publish_date(payload.get("published_at")),
         max_attempts=int(payload.get("max_attempts") or 1),
         attempt_count=int(payload.get("attempt_count") or 0),
