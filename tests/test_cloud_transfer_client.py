@@ -373,6 +373,18 @@ class LeaseParsingTest(unittest.TestCase):
         self.assertEqual(parse_lease(lease()).game_name, "")
         self.assertEqual(parse_lease(lease(game_name="三角洲行动")).game_name, "三角洲行动")
 
+    def test_category_name_is_canonical_and_legacy_alias_only_fills_absence(self) -> None:
+        for fields, expected in (
+            ({"category_name": "当前类目"}, "当前类目"),
+            ({"category_name": "当前类目", "game_name": "旧类目"}, "当前类目"),
+            ({"category_name": "", "game_name": "旧类目"}, ""),
+            ({"category_name": None, "game_name": "旧类目"}, ""),
+            ({"game_name": "旧类目"}, "旧类目"),
+            ({}, ""),
+        ):
+            with self.subTest(fields=fields):
+                self.assertEqual(parse_lease(lease(**fields)).game_name, expected)
+
     def test_the_published_at_is_optional_and_becomes_a_calendar_date(self) -> None:
         """Naming is cosmetic, so the parse degrades instead of refusing.
 
