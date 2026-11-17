@@ -16,6 +16,7 @@ rewritten here to route through this function.
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -27,5 +28,20 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     """
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    try:
+        # First open can race another connection changing rollback journal to
+        # WAL. SQLite may return BUSY here without invoking its busy timeout.
+        # Retry only this connection setup, never a task transaction or click.
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                return conn
+            except sqlite3.OperationalError as exc:
+                code = getattr(exc, "sqlite_errorcode", 0) & 255
+                if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+    except BaseException:
+        conn.close()
+        raise
