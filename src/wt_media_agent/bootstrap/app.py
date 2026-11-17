@@ -41,6 +41,8 @@ from wt_media_agent.runtime.logging import configure_from
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import DEFAULT_DB_NAME, apply_migrations
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
+from wt_media_agent.storage.publication import PublicationJournal
+from wt_media_agent.runner.publication import PublicationExecution
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,8 @@ class Components:
     save_directories: SaveDirectoryStore
     agent_token: AgentToken
     transfers: TransferRunner
+    publication_journal: PublicationJournal
+    publication_execution: PublicationExecution
 
 
 def start_transfer_loop(components: Components) -> list[threading.Thread]:
@@ -120,6 +124,8 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # `agent_metadata`, a table migration 0001 created for exactly this and that
     # nothing wrote to until now.
     save_directories = SaveDirectoryStore(db_path)
+    publication_journal = PublicationJournal(db_path)
+    publication_execution = PublicationExecution(publication_journal)
 
     # 7. The Cloud identity this process works under. Desktop exchanges its
     #    desktop session for an Agent Token and hands it here over the local
@@ -167,4 +173,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         save_directories=save_directories,
         agent_token=agent_token,
         transfers=transfers,
+        publication_journal=publication_journal,
+        publication_execution=publication_execution,
     )

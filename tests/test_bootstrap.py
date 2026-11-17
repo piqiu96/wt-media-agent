@@ -105,6 +105,12 @@ class AssemblyTests(ComponentTestCase):
         self.assertEqual(components.state.agent_id, configured)
         self.assertEqual(components.transfers.config.agent_id, configured)
 
+    def test_publication_boundary_shares_the_existing_database_without_starting_work(self):
+        journal=self.components.publication_journal
+        self.assertEqual(journal.db_path,database_path(self.config))
+        self.assertIs(self.components.publication_execution.journal,journal)
+        self.assertEqual(journal.pending(self.config.cloud_base_url,"3"),[])
+
     def test_the_database_lives_under_the_configured_data_directory(self):
         path = database_path(self.config)
 
