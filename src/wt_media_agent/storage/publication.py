@@ -25,6 +25,22 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
+def _environment(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError('a credential-free Cloud environment URL is required')
+    host = parsed.hostname.lower()
+    if ':' in host:
+        host = '[' + host + ']'
+    port = parsed.port
+    if port is not None and (parsed.scheme, port) not in (('http', 80), ('https', 443)):
+        host += ':' + str(port)
+    if any(part in ('.', '..') for part in parsed.path.split('/')):
+        raise ValueError('ambiguous environment path')
+    return parsed.scheme + '://' + host + parsed.path.rstrip('/')
+
+
+
 @dataclass(frozen=True)
 class ExecutionIdentity:
     environment: str
@@ -34,15 +50,12 @@ class ExecutionIdentity:
     bit_profile_id: str
 
     def __post_init__(self):
-        parsed = urlsplit(self.environment)
-        if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError('a credential-free Cloud environment URL is required')
+        object.__setattr__(self, 'environment', _environment(self.environment))
         for value in (self.user_id, self.task_id, self.attempt_id):
-            if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or int(value) <= 0:
+            if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or not 0 < int(value) < 2**64:
                 raise ValueError('positive canonical decimal identities are required')
         if not isinstance(self.bit_profile_id, str) or not self.bit_profile_id or len(self.bit_profile_id) > 255 or self.bit_profile_id.strip() != self.bit_profile_id:
             raise ValueError('actual BitBrowser Profile identity is required')
-        object.__setattr__(self, 'environment', self.environment.rstrip('/'))
 
     @property
     def key(self) -> str:
@@ -188,7 +201,7 @@ class PublicationJournal:
                 JOIN task_checkpoints c ON c.task_id=r.task_id
                 WHERE c.task_type='publication' AND r.delivered=0 AND c.agent_id=?
                   AND json_extract(c.checkpoint_json,'$.identity.environment')=? ORDER BY r.id""",
-                (user_id, environment.rstrip('/'))).fetchall()
+                (user_id, _environment(environment))).fetchall()
             return [{'id': row['id'], 'packet': json.loads(row['result_json'])} for row in rows]
 
     def flush(self, environment: str, user_id: str, send: Callable[[dict], dict]) -> int:
@@ -207,7 +220,7 @@ class PublicationJournal:
                     JOIN task_checkpoints c ON c.task_id=r.task_id
                     WHERE r.id=? AND c.task_type='publication' AND c.agent_id=?
                       AND json_extract(c.checkpoint_json,'$.identity.environment')=?""",
-                    (pending['id'], user_id, environment.rstrip('/'))).fetchone()
+                    (pending['id'], user_id, _environment(environment))).fetchone()
                 if row is None or row['delivered']:
                     continue
                 if json.loads(row['result_json']) != pending['packet']:

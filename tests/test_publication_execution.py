@@ -174,6 +174,14 @@ class PublicationExecutionTests(unittest.TestCase):
         self.assertTrue(self.journal.register(other,snapshot()))
         _,events=self.run_execution(); self.assertEqual(events,[])
 
+    def test_same_cloud_url_aliases_cannot_bypass_the_replay_barrier(self):
+        self.journal.register(self.owner,snapshot())
+        alias=ExecutionIdentity('HTTP://CLOUD.TEST:8188/','3','9','1',self.owner.bit_profile_id)
+        self.assertFalse(self.journal.register(alias,snapshot()))
+        self.journal.save_result(self.owner,{'status':'uncertain'},report_seq=1)
+        self.assertEqual(len(self.journal.pending('HTTP://CLOUD.TEST:8188/','3')),1)
+        self.assertEqual(ExecutionIdentity('https://cloud.test:443/','3','9','1','p').environment,'https://cloud.test')
+
     def test_profile_reservation_is_physical_even_across_cloud_environments(self):
         self.journal.register(self.owner, snapshot())
         other=ExecutionIdentity('http://other.test','4','20','9',self.owner.bit_profile_id)
