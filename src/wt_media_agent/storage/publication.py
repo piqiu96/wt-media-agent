@@ -11,7 +11,7 @@ from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from wt_media_agent.storage.sqlite import connect
 from wt_media_agent.utils.time import utc_now_iso
@@ -83,7 +83,7 @@ def _validated_snapshot(value: dict) -> str:
 
 
 def _safe_result(value: dict) -> None:
-    if not isinstance(value, dict) or value.get('status') not in ('reviewing', 'published', 'failed', 'uncertain', 'awaiting_human', 'cancelled'):
+    if not isinstance(value, dict) or value.get('status') not in ('reviewing', 'failed', 'uncertain'):
         raise ValueError('an explicit observation is required')
     def visit(node):
         if isinstance(node, dict):
@@ -95,7 +95,12 @@ def _safe_result(value: dict) -> None:
             for child in node: visit(child)
         elif isinstance(node, str) and node.startswith(('https://', 'http://')):
             url = urlsplit(node)
-            if url.username or url.password or url.query or url.fragment:
+            public_id_query = False
+            if url.scheme == 'https' and url.netloc == 'baijiahao.baidu.com' and url.path == '/s':
+                query = parse_qs(url.query, keep_blank_values=True)
+                ids = query.get('id', [])
+                public_id_query = set(query) == {'id'} and len(ids) == 1 and ids[0].isascii() and ids[0].isdecimal()
+            if url.scheme != 'https' or url.username or url.password or (url.query and not public_id_query) or url.fragment:
                 raise ValueError('only public credential-free evidence URLs may be saved')
     visit(value)
 
@@ -173,7 +178,7 @@ class PublicationJournal:
         _safe_result(result)
         if type(report_seq) is not int or report_seq <= 0:
             raise JournalConflict('result sequence must advance')
-        # Hash and packet are private journal encoding. The provider adapter owns wire encoding.
+        # Provider-defined canonical UTF-8 hash. Persist and resend this exact packet.
         digest = hashlib.sha256(_json({'report_seq': report_seq, 'result': result}).encode()).hexdigest()
         packet = {'task_id': identity.task_id, 'attempt_id': identity.attempt_id, 'report_seq': report_seq, 'result_hash': digest, 'result': result}
         with self._transaction() as db:
