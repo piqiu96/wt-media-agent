@@ -5,6 +5,10 @@ This component does not create clients or declare a publication successful.
 """
 from __future__ import annotations
 from typing import Callable
+from wt_media_agent.runtime.constants import (
+    PublicationPhase,
+    PublicationStatus,
+)
 from wt_media_agent.storage.publication import ExecutionIdentity, PublicationJournal
 
 
@@ -22,13 +26,13 @@ class PublicationExecution:
             state = self.journal.get(identity)
             # Even a crash before preparation requires recovery, never automatic re-entry.
             # There is intentionally no saved "allowed" permission or lease expiry.
-            return {'status': 'uncertain', 'recovery_required': True, 'phase': state['phase']}
+            return {'status': PublicationStatus.UNCERTAIN, 'recovery_required': True, 'phase': state['phase']}
         prepare()
-        self.journal.advance(identity, 'prepared')
-        seq = self.journal.advance(identity, 'submitting')
+        self.journal.advance(identity, PublicationPhase.PREPARED)
+        seq = self.journal.advance(identity, PublicationPhase.SUBMITTING)
         if preflight(seq) is not True:
             raise SubmissionBlocked('fresh submit permission was not granted')
-        self.journal.advance(identity, 'click_started')
+        self.journal.advance(identity, PublicationPhase.CLICK_STARTED)
         submit()
         result = read_result()
         state = self.journal.get(identity)

@@ -8,6 +8,7 @@ import time
 from threading import Event
 
 from wt_media_agent.clients.cloud.errors import AgentAuthError
+from wt_media_agent.runtime.constants import DEFAULT_PUBLICATION_POLL_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def routing_user_id(token: str) -> str | None:
 
 
 class PublicationLoop:
-    def __init__(self, agent_token, preparation, job, *, interval=5.0):
+    def __init__(self, agent_token, preparation, job, *, interval=DEFAULT_PUBLICATION_POLL_SECONDS):
         if interval <= 0:
             raise ValueError('publication polling interval must be positive')
         self.agent_token = agent_token

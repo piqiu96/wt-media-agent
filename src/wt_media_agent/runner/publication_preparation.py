@@ -7,6 +7,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
+from wt_media_agent.runtime.constants import (
+    PublicationPhase,
+    PublicationReport,
+    PublicationStage,
+    PublicationStatus,
+)
 from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict
 from wt_media_agent.clients.publication import PublicationInputError,download_verified,live_baidu_identity
 
@@ -44,7 +50,7 @@ class PublicationPreparation:
         except (KeyError,TypeError,ValueError):
             raise PublicationInputError('invalid owner-bound claim input') from None
         self.claims.acknowledge(self.cloud.base_url,user_id,key)
-        if not fresh or value['replayed'] or task['status']!='running' or attempt['status']!='running' or attempt['stage']!='claimed':
+        if not fresh or value['replayed'] or task['status']!=PublicationStatus.RUNNING or attempt['status']!=PublicationStatus.RUNNING or attempt['stage']!=PublicationStage.CLAIMED:
             raise JournalConflict('original attempt requires verification; browser re-entry forbidden')
         self._fresh.add(identity.key)
         return value,identity
@@ -54,7 +60,7 @@ class PublicationPreparation:
             raise JournalConflict('preparation requires a fresh claim in this process')
         self._fresh.remove(identity.key)
         state=self.journal.get(identity)
-        if state['phase']!='claimed':
+        if state['phase']!=PublicationPhase.CLAIMED:
             raise JournalConflict('preparation cannot be replayed')
         task=claim['task'];i=claim['attempt']['input_snapshot']
         if task['platform']!='baidu': raise PublicationInputError('platform not implemented')
@@ -75,9 +81,9 @@ class PublicationPreparation:
         # Persist before reporting progress. Losing this response never reopens
         # the browser; this attempt then requires explicit reconciliation.
         with self.report_lock:
-            seq=self.journal.advance(identity,'prepared')
-            feedback=self.cloud.report_publication(token,task['id'],'progress',{
-                'attempt_id':identity.attempt_id,'report_seq':seq,'stage':'ready',
+            seq=self.journal.advance(identity,PublicationPhase.PREPARED)
+            feedback=self.cloud.report_publication(token,task['id'],PublicationReport.PROGRESS,{
+                'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,
                 'platform_uid':observed['platform_account_id'],'bit_profile_id':identity.bit_profile_id,
                 'video_sha256':i['video_sha256'],'cover_sha256':i['cover_sha256']})
         if feedback.get('stop_requested') is not False:
@@ -95,5 +101,5 @@ class PublicationPreparation:
     def flush(self, token: str, user_id: str):
         def send(packet):
             task_id=packet.pop('task_id')
-            return self.cloud.report_publication(token,task_id,'complete',packet)
+            return self.cloud.report_publication(token,task_id,PublicationReport.COMPLETE,packet)
         return self.journal.flush(self.cloud.base_url,user_id,send)
