@@ -124,6 +124,29 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.url.endswith('/builder/rc/home'))
         self.assertEqual(self.external,[])
 
+    def test_delayed_portrait_preview_uses_poll_budget_instead_of_action_timeout(self):
+        self.page.evaluate('window.fixtureDelayedPortrait=true')
+        self.page.set_default_timeout(200)
+        self.publisher.timeout=2
+        self.fill()
+        self.assertEqual(self.page.locator('[data-testid=cover-preview] img').count(),2)
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_stop_while_portrait_preview_is_missing_remains_responsive(self):
+        self.page.evaluate('window.fixtureDelayedPortrait=true')
+        self.page.set_default_timeout(200)
+        self.publisher.timeout=2
+        checks=0
+        def stopped():
+            nonlocal checks
+            if self.page.evaluate('Boolean(window.fixturePreviewWaiting)'):
+                checks+=1
+            return checks>=3
+        with self.assertRaises(PlatformFormError):
+            self.publisher.fill_fields(self.page,self.payload,stopped=stopped)
+        self.assertEqual(checks,3)
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
     def test_cover_failure_or_security_check_stops_without_submission(self):
         self.page.evaluate("document.querySelector('#dialogs').addEventListener('change',e=>e.stopPropagation(),true)")
         # An invalid image never decodes, so form completion must time out.

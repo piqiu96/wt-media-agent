@@ -186,7 +186,10 @@ class BaiduPublisher:
             dialog.get_by_role('button', name='确定', exact=True).click(timeout=5000)
             self._wait(lambda: dialog.count() == 0)
             preview = page.locator('[data-testid=cover-preview] img').nth(index)
-            value = self._wait(lambda: preview.evaluate('e => e.complete && e.naturalWidth > 0 ? e.src : null'))
+            # An absent preview must keep polling, not enter Playwright's
+            # implicit element wait and hide later stop signals.
+            value = self._wait(lambda: preview.evaluate_all(
+                '(es) => es.length === 1 && es[0].complete && es[0].naturalWidth > 0 ? es[0].src : null'))
             self._covers.append(value)
         self._ready = True
         self._assert_form()
