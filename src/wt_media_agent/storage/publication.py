@@ -174,6 +174,27 @@ class PublicationJournal:
             self._write(db, identity, state)
             return state['report_seq']
 
+    def reserve_report(self, identity: ExecutionIdentity) -> int:
+        """Reserve an observation sequence without changing the submit boundary."""
+        with self._transaction() as db:
+            _, state = self._state(db, identity)
+            if state['phase'] not in ('claimed', 'prepared'):
+                raise JournalConflict('new observations cannot reopen a submission')
+            state['report_seq'] += 1
+            self._write(db, identity, state)
+            return state['report_seq']
+
+    def unresolved_results(self, environment: str, user_id: str) -> list[dict]:
+        """Read original packets, including acknowledged-but-not-settled crashes."""
+        with self._transaction() as db:
+            rows = db.execute("""SELECT checkpoint_json,final_result_json FROM task_checkpoints
+                WHERE task_type='publication' AND checkpoint_status<>'publication_settled'
+                  AND agent_id=? AND json_extract(checkpoint_json,'$.identity.environment')=?
+                  AND final_result_json IS NOT NULL ORDER BY task_id""",
+                (user_id, _environment(environment))).fetchall()
+            return [{'identity': ExecutionIdentity(**json.loads(row['checkpoint_json'])['identity']),
+                     'packet': json.loads(row['final_result_json'])} for row in rows]
+
     def save_result(self, identity: ExecutionIdentity, result: dict, *, report_seq: int) -> dict:
         _safe_result(result)
         if type(report_seq) is not int or report_seq <= 0:
@@ -209,11 +230,13 @@ class PublicationJournal:
                 (user_id, _environment(environment))).fetchall()
             return [{'id': row['id'], 'packet': json.loads(row['result_json'])} for row in rows]
 
-    def flush(self, environment: str, user_id: str, send: Callable[[dict], dict]) -> int:
+    def flush(self, environment: str, user_id: str, send: Callable[[dict], dict], *, only_attempt: str | None = None) -> int:
         delivered = 0
         for pending in self.pending(environment, user_id):
             # Network is outside the transaction. A lost acknowledgement simply resends this packet.
             packet = pending['packet']
+            if only_attempt is not None and packet['attempt_id'] != only_attempt:
+                continue
             expected = (packet['attempt_id'], packet['result_hash'])
             try:
                 ack = send(json.loads(_json(packet)))

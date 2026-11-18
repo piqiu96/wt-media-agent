@@ -6,6 +6,7 @@ replayed claim or process restart is reconciliation work, never browser work.
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict
 from wt_media_agent.clients.publication import PublicationInputError,download_verified,live_baidu_identity
 
@@ -22,7 +23,7 @@ class PreparedPublication:
 
 class PublicationPreparation:
     def __init__(self, cloud, bitbrowser, journal, claims, directory):
-        self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set()
+        self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self.report_lock=RLock()
 
     def claim(self, token: str, user_id: str):
         key=self.claims.pending(self.cloud.base_url,user_id)
@@ -53,7 +54,7 @@ class PublicationPreparation:
             raise JournalConflict('preparation requires a fresh claim in this process')
         self._fresh.remove(identity.key)
         state=self.journal.get(identity)
-        if state['phase']!='claimed' or state['report_seq']!=0:
+        if state['phase']!='claimed':
             raise JournalConflict('preparation cannot be replayed')
         task=claim['task'];i=claim['attempt']['input_snapshot']
         if task['platform']!='baidu': raise PublicationInputError('platform not implemented')
@@ -73,14 +74,23 @@ class PublicationPreparation:
             raise PublicationInputError('live platform UID differs or login unavailable')
         # Persist before reporting progress. Losing this response never reopens
         # the browser; this attempt then requires explicit reconciliation.
-        seq=self.journal.advance(identity,'prepared')
-        feedback=self.cloud.report_publication(token,task['id'],'progress',{
-            'attempt_id':identity.attempt_id,'report_seq':seq,'stage':'ready',
-            'platform_uid':observed['platform_account_id'],'bit_profile_id':identity.bit_profile_id,
-            'video_sha256':i['video_sha256'],'cover_sha256':i['cover_sha256']})
+        with self.report_lock:
+            seq=self.journal.advance(identity,'prepared')
+            feedback=self.cloud.report_publication(token,task['id'],'progress',{
+                'attempt_id':identity.attempt_id,'report_seq':seq,'stage':'ready',
+                'platform_uid':observed['platform_account_id'],'bit_profile_id':identity.bit_profile_id,
+                'video_sha256':i['video_sha256'],'cover_sha256':i['cover_sha256']})
         if feedback.get('stop_requested') is not False:
             raise PublicationInputError('Cloud stopped this execution')
+        self._prepared.add(identity.key)
         return PreparedPublication(identity,video,cover,endpoint)
+
+    def consume_prepared(self, prepared: PreparedPublication):
+        # In-memory, one-use capability. A restarted process cannot turn an old
+        # prepared record into a new browser action or another submission.
+        if prepared.identity.key not in self._prepared:
+            raise JournalConflict('only fresh preparation may enter the platform')
+        self._prepared.remove(prepared.identity.key)
 
     def flush(self, token: str, user_id: str):
         def send(packet):

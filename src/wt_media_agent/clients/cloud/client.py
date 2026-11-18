@@ -96,6 +96,13 @@ class CloudAgentClient:
         return dict(_expect_data(self._transport('POST',
             f'/api/v1/cloud-agent/publication-tasks/{task_id}/{operation}', packet, _bearer(token))))
 
+    def original_publication_attempt(self, token: str, task_id: str, attempt_id: str):
+        for value in (task_id, attempt_id):
+            if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or int(value) <= 0:
+                raise ValueError('canonical publication identity required')
+        return dict(_expect_data(self._transport('GET',
+            f'/api/v1/cloud-agent/publication-tasks/{task_id}/attempts/{attempt_id}', None, _bearer(token))))
+
     # ---- 文件传输 ----
     #
     # 四个调用的身份都在 Bearer Token 上；已领取后还必须带 claim 返回的
@@ -229,10 +236,10 @@ class CloudAgentClient:
         self,
         method: str,
         path: str,
-        payload: Mapping[str, object],
+        payload: Mapping[str, object] | None,
         headers: Mapping[str, str],
     ) -> str:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        body = None if method == "GET" else json.dumps(payload, separators=(",", ":")).encode("utf-8")
         req = request.Request(
             f"{self.base_url}{path}",
             data=body,

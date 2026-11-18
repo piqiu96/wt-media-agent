@@ -95,6 +95,15 @@ class PublicationPreparationTests(unittest.TestCase):
    with self.assertRaises(JournalConflict):self.p.prepare('memory-token',value,i)
    self.assertEqual(browser.call_count,1)
   self.assertEqual(self.cloud.reports[0][2]['report_seq'],1)
+ def test_preparing_report_before_download_does_not_block_the_same_fresh_preparation(self):
+  value,i=self.p.claim('memory-token','3')
+  self.assertEqual(self.j.reserve_report(i),1)
+  with patch('wt_media_agent.runner.publication_preparation.download_verified'),patch('wt_media_agent.runner.publication_preparation.live_baidu_identity',return_value=('127.0.0.1:9999',{'login_status':'normal','platform_account_id':snapshot()['platform_uid']})):
+   prepared=self.p.prepare('memory-token',value,i)
+  self.assertEqual(self.j.get(i)['phase'],'prepared')
+  self.assertEqual(self.cloud.reports[-1][2]['report_seq'],2)
+  self.p.consume_prepared(prepared)
+  with self.assertRaises(JournalConflict):self.p.consume_prepared(prepared)
  def test_wrong_live_uid_never_reports_ready(self):
   value,i=self.p.claim('memory-token','3')
   with patch('wt_media_agent.runner.publication_preparation.download_verified'),patch('wt_media_agent.runner.publication_preparation.live_baidu_identity',return_value=('127.0.0.1:9999',{'login_status':'normal','platform_account_id':'wrong'})):
