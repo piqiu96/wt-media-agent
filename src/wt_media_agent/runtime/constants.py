@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+
+class PublishMethod(StrEnum):
+    BROWSER = "browser"
+
 # 下载与发布分别使用各自的领取协议，不使用通用任务领取接口。
 TASK_TYPE_MATERIAL_DOWNLOAD = "material_download_task"
 TASK_TYPE_PUBLICATION = "publication"

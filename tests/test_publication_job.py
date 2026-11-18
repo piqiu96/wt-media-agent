@@ -13,6 +13,7 @@ from wt_media_agent.storage.migration import apply_migrations
 from wt_media_agent.storage.publication import ExecutionIdentity, PublicationJournal, JournalConflict
 from test_publication_execution import identity, snapshot
 from wt_media_agent.runner.publication_job import PublicationJob
+from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
 
 class Cloud:
@@ -40,8 +41,9 @@ class Preparation:
     def __init__(self,journal,cloud,ident,root):
         self.journal=journal;self.cloud=cloud;self.report_lock=RLock();self.ident=ident;self.root=root;self.fresh=True
     def prepare(self,token,value,ident):
-        self.journal.advance(ident,'prepared')
         return SimpleNamespace(identity=ident,video=self.root/'video',cover=self.root/'cover',endpoint='127.0.0.1:9999')
+    def mark_ready(self, token, ident):
+        self.journal.advance(ident, 'prepared')
     def consume_prepared(self,prepared):
         if not self.fresh:raise JournalConflict('no fresh preparation')
         self.fresh=False
@@ -67,7 +69,7 @@ class Session:
 
 class PublicationJobTests(unittest.TestCase):
     def setUp(self):
-        self.live_identity=patch('wt_media_agent.runner.publication_job.read_baidu_identity').start()
+        self.live_identity=patch('wt_media_agent.platforms.baidu.publisher.read_baidu_identity').start()
         self.addCleanup(patch.stopall)
         self.live_identity.return_value={'login_status':'normal','platform_account_id':snapshot()['platform_uid']}
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);root=Path(self.tmp.name)
@@ -75,8 +77,9 @@ class PublicationJobTests(unittest.TestCase):
         self.cloud=Cloud(self.j,self.i);self.prep=Preparation(self.j,self.cloud,self.i,root);self.platform=Platform(self.j,self.i);self.closed=True
         self.bit=SimpleNamespace(close_profile_verified=lambda *a,**kw:self.closed)
         self.session=Session("127.0.0.1:9999")
-        self.job=PublicationJob(self.prep,self.bit,lambda platform:self.platform,
-            browser_session_factory=lambda endpoint:self.session,heartbeat_interval=0.02)
+        self.job=PublicationJob(self.prep,self.bit,lambda platform: lambda endpoint: BaiduPublisher(
+            endpoint, browser_session_factory=lambda endpoint:self.session, browser_factory=lambda:self.platform),
+            heartbeat_interval=0.02)
         s=snapshot();s.pop('platform')
         self.value={'task':{'id':self.i.task_id,'platform':'baidu'},'attempt':{'input_snapshot':dict(s,bit_profile_id=self.i.bit_profile_id)}}
     def run_job(self):return self.job.run('memory-only-token',self.value,self.i)
@@ -263,7 +266,7 @@ class PublicationJobTests(unittest.TestCase):
             page=session.page
             def __enter__(self): events.append('connect');return self
             def __exit__(self,*_): events.append('disconnect')
-        self.job.browser_session_factory=lambda endpoint:ObservedSession()
+        self.session=ObservedSession()
         def close(*_): events.append('profile-close');return True
         self.bit.close_profile_verified=close
         self.platform.fail_click=True
@@ -275,12 +278,12 @@ class PublicationJobTests(unittest.TestCase):
         def unsupported(platform): raise ValueError('unsupported')
         self.job.platform_factory=unsupported
         def forbidden(*_): self.fail('unsupported platform opened browser')
-        self.job.browser_session_factory=forbidden
+        self.prep.prepare=forbidden
         self.assertEqual(self.run_job()['status'],'uncertain')
         self.assertEqual(self.platform.fills,0)
 
     def test_changed_platform_account_after_upload_cannot_get_submit_permission(self):
-        self.live_identity.return_value={'login_status':'normal','platform_account_id':'different-account'}
+        self.live_identity.side_effect=[{'login_status':'normal','platform_account_id':snapshot()['platform_uid']}, {'login_status':'normal','platform_account_id':'different-account'}]
         result=self.run_job()
         self.assertEqual(result['status'],'uncertain')
         self.assertEqual(self.platform.fills,1);self.assertEqual(self.platform.clicks,0)

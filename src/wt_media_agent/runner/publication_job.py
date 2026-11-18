@@ -13,22 +13,21 @@ from wt_media_agent.runtime.constants import (
     PublicationReport,
     PublicationStage,
     PublicationStatus,
+    PublishMethod,
 )
 from wt_media_agent.storage.publication import JournalConflict
-from wt_media_agent.clients.publisher import PublishPayload
-from wt_media_agent.clients.publication import read_baidu_identity
+from wt_media_agent.platforms.publish import PublishControl, PublishPayload
 
 logger = logging.getLogger(__name__)
 
 
 class PublicationJob:
-    def __init__(self, preparation, bitbrowser, platform_factory, *, browser_session_factory, heartbeat_interval=DEFAULT_PUBLICATION_HEARTBEAT_SECONDS):
+    def __init__(self, preparation, bitbrowser, platform_factory, *, heartbeat_interval=DEFAULT_PUBLICATION_HEARTBEAT_SECONDS):
         self.preparation = preparation
         self.cloud = preparation.cloud
         self.journal = preparation.journal
         self.bitbrowser = bitbrowser
         self.platform_factory = platform_factory
-        self.browser_session_factory = browser_session_factory
         self.heartbeat_interval = heartbeat_interval
 
     def run(self, token, claim, identity, *, current=lambda: True):
@@ -47,6 +46,21 @@ class PublicationJob:
 
         def should_stop():
             return stopped.is_set() or not current()
+
+        def on_prepared():
+            self.preparation.mark_ready(token, identity)
+            with self.preparation.report_lock:
+                feedback = progress(PublicationStage.READY, self.journal.reserve_report(identity))
+            if feedback.get('stop_requested') is not False:
+                raise JournalConflict('Cloud stopped the upload')
+
+        def before_submit():
+            with self.preparation.report_lock:
+                seq = self.journal.advance(identity, PublicationPhase.SUBMITTING)
+                feedback = progress(PublicationStage.SUBMITTING, seq)
+                if feedback.get('allow_submit') is not True or feedback.get('stop_requested') is not False:
+                    raise JournalConflict('no fresh submit permission')
+                self.journal.advance(identity, PublicationPhase.CLICK_STARTED)
 
         def heartbeat():
             while not done.wait(self.heartbeat_interval):
@@ -73,38 +87,17 @@ class PublicationJob:
                 raise JournalConflict('Cloud stopped the preparation')
             pulse = Thread(target=heartbeat, name='publication-heartbeat', daemon=True)
             pulse.start()
+            # Reject unsupported platforms before resource preparation opens a Profile.
+            publisher_factory = self.platform_factory(claim['task']['platform'])
             prepared = self.preparation.prepare(token, claim, identity)
             self.preparation.consume_prepared(prepared)
             if should_stop():
                 raise JournalConflict('execution is no longer current')
-            # Re-check the current session immediately before starting upload.
-            with self.preparation.report_lock:
-                feedback = progress(PublicationStage.READY, self.journal.reserve_report(identity))
-            if feedback.get('stop_requested') is not False:
-                raise JournalConflict('Cloud stopped the upload')
-            platform = self.platform_factory(claim['task']['platform'])
-            with self.browser_session_factory(prepared.endpoint) as session:
-                platform.fill_form(session.page, PublishPayload(prepared.video, prepared.cover, source['content']), stopped=should_stop)
-                if should_stop():
-                    raise JournalConflict('execution stopped during upload')
-                # Upload may take minutes. Re-read the active browser account
-                # before requesting permission for this frozen identity.
-                observed = read_baidu_identity(prepared.endpoint)
-                if observed.get('login_status') != 'normal' or observed.get('platform_account_id') != source['platform_uid']:
-                    raise JournalConflict('platform account changed before submit')
-                if should_stop():
-                    raise JournalConflict('execution stopped during identity check')
-                with self.preparation.report_lock:
-                    seq = self.journal.advance(identity, PublicationPhase.SUBMITTING)
-                    feedback = progress(PublicationStage.SUBMITTING, seq)
-                    if feedback.get('allow_submit') is not True or feedback.get('stop_requested') is not False:
-                        raise JournalConflict('no fresh submit permission')
-                    self.journal.advance(identity, PublicationPhase.CLICK_STARTED)
-                # This call is deliberately outside any retry or transaction.
-                if should_stop():
-                    raise JournalConflict('execution credentials changed before submit')
-                platform.submit()
-                receipt = platform.read_receipt()
+            publisher = publisher_factory(prepared.endpoint)
+            receipt = publisher.publish(
+                PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid']),
+                PublishControl(stopped=should_stop, on_prepared=on_prepared, before_submit=before_submit),
+                method=PublishMethod.BROWSER)
             work_id = receipt.get('platform_work_id', '')
             if not isinstance(work_id, str) or not work_id.isascii() or not work_id.isdecimal() or len(work_id) > 255 or int(work_id) <= 0 or str(int(work_id)) != work_id:
                 raise JournalConflict('no credible platform receipt')

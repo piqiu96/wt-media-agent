@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 
 class BrowserSessionTests(unittest.TestCase):
     def session_class(self):
-        name = 'wt_media_agent.clients.browser'
+        name = 'wt_media_agent.services.browser.session'
         self.assertIsNotNone(importlib.util.find_spec(name), 'Playwright local session is missing')
-        from wt_media_agent.clients.browser import BrowserSession
+        from wt_media_agent.services.browser.session import BrowserSession
         return BrowserSession
 
     def test_attaches_to_same_host_with_path_optimization_and_disconnects_only(self):

@@ -47,8 +47,7 @@ from wt_media_agent.storage.publication_claim import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
 from wt_media_agent.runner.publication_job import PublicationJob
 from wt_media_agent.runner.publication_loop import PublicationLoop
-from wt_media_agent.clients.publisher import publisher_for
-from wt_media_agent.clients.browser import BrowserSession
+from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
 
 @dataclass(frozen=True)
@@ -182,6 +181,12 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # 11. Observable state for the local API surface.
     state = LocalAgentState(agent_id=config.agent_id)
 
+    def publisher_factory(platform):
+        # Explicit assembly: capabilities are not registered by import side effects.
+        if platform != 'baidu':
+            raise ValueError('platform publisher is not available')
+        return BaiduPublisher
+
     return Components(
         config=config,
         state=state,
@@ -195,5 +200,5 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_execution=publication_execution,
         publication_preparation=publication_preparation,
         publications=PublicationLoop(agent_token, publication_preparation,
-            PublicationJob(publication_preparation, bitbrowser, publisher_for, browser_session_factory=BrowserSession)),
+            PublicationJob(publication_preparation, bitbrowser, publisher_factory)),
     )

@@ -8,7 +8,14 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-class PlatformFormError(RuntimeError):
+from wt_media_agent.clients.baidu.identity import identify_baidu
+from wt_media_agent.platforms.publish import PublicationInputError, PublishControl, PublishPayload, PublishReceipt
+from wt_media_agent.runtime.constants import PublishMethod
+from wt_media_agent.services.browser.cdp import read_live_cookies
+from wt_media_agent.services.browser.session import BrowserSession
+
+
+class PlatformFormError(PublicationInputError):
     pass
 
 
@@ -64,7 +71,7 @@ def accepted_receipt(capture, expected_description):
         raise PlatformFormError('no credible accepted video receipt') from None
 
 
-class BaiduPublisher:
+class BrowserPublisher:
     def __init__(self, *, timeout=900.0):
         self.page = None
         self.timeout = timeout
@@ -283,3 +290,56 @@ class BaiduPublisher:
                 break
             self.page.wait_for_timeout(100)
         raise PlatformFormError('platform receipt is unknown')
+
+
+
+def read_baidu_identity(endpoint):
+    """Compose local Cookie access and the existing basic identity API client."""
+    return identify_baidu(read_live_cookies(endpoint))
+
+
+class BaiduPublisher:
+    """One publication, with an explicit implementation and mandatory controls.
+
+    Browser details and Cloud task authority stay behind separate boundaries.
+    A used instance is not a restart/retry capability.
+    """
+
+    def __init__(self, endpoint, *, browser_session_factory=BrowserSession,
+                 identity_reader=None, browser_factory=None):
+        self.endpoint = endpoint
+        self.browser_session_factory = browser_session_factory
+        self.identity_reader = identity_reader or read_baidu_identity
+        self.browser_factory = browser_factory or BrowserPublisher
+        self._started = False
+
+    def _verify_identity(self, expected_uid):
+        observed = self.identity_reader(self.endpoint)
+        if (observed.get('login_status') != 'normal'
+                or observed.get('platform_account_id') != expected_uid):
+            raise PublicationInputError('live platform UID differs or login unavailable')
+
+    def publish(self, payload: PublishPayload, control: PublishControl, *,
+                method: PublishMethod = PublishMethod.BROWSER) -> PublishReceipt:
+        if method != PublishMethod.BROWSER:
+            raise PublicationInputError('publication implementation is not supported')
+        if self._started:
+            raise PublicationInputError('publication instance cannot be replayed')
+        if not isinstance(payload.platform_uid, str) or not payload.platform_uid:
+            raise PublicationInputError('expected platform UID is required')
+        self._started = True
+        control.check_stopped()
+        self._verify_identity(payload.platform_uid)
+        control.check_stopped()
+        control.on_prepared()
+        control.check_stopped()
+        implementation = self.browser_factory()
+        with self.browser_session_factory(self.endpoint) as session:
+            implementation.fill_form(session.page, payload, stopped=control.stopped)
+            control.check_stopped()
+            self._verify_identity(payload.platform_uid)
+            control.check_stopped()
+            control.before_submit()
+            control.check_stopped()
+            implementation.submit()
+            return implementation.read_receipt()

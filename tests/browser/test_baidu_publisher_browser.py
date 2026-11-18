@@ -7,15 +7,15 @@ import time
 import unittest
 from pathlib import Path
 
-from wt_media_agent.clients.baidu.publisher import BaiduPublisher, PlatformFormError
-from wt_media_agent.clients.publisher import PublishPayload
-from wt_media_agent.clients.browser import BrowserSession
+from wt_media_agent.platforms.baidu.publisher import BrowserPublisher, PlatformFormError
+from wt_media_agent.platforms.publish import PublishPayload
+from wt_media_agent.services.browser.session import BrowserSession
 
 CHROME = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
 FIXTURE = Path(__file__).with_name('baidu-editor.html').read_text()
 
 
-class BaiduPublisherBrowserTests(unittest.TestCase):
+class BrowserPublisherBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not CHROME.is_file():
@@ -47,7 +47,7 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         self.cover.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aoykAAAAASUVORK5CYII='))
         self.video=self.folder/'video.mp4'
         self.video.write_bytes(b'fixture video; not a real platform upload')
-        self.payload=PublishPayload(self.video,self.cover,{'description':'确认描述','topics':'#测试话题','declaration':'无需声明'})
+        self.payload=PublishPayload(self.video,self.cover,{'description':'确认描述','topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid')
         self.session=BrowserSession(self.endpoint).__enter__()
         self.addCleanup(self.session.close)
         self.page=self.session.page
@@ -67,7 +67,7 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         self.page.route('**/*',isolated)
         self.page.goto('https://baijiahao.baidu.com/builder/rc/edit')
         self.page.evaluate('window.fixtureEditor()')
-        self.publisher=BaiduPublisher(timeout=.5)
+        self.publisher=BrowserPublisher(timeout=.5)
 
     def fill(self):
         self.publisher.fill_fields(self.page,self.payload,stopped=lambda:False)
@@ -211,7 +211,7 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
     def test_publication_text_is_not_treated_as_video_upload_status(self):
         self.payload=PublishPayload(self.video,self.cover,{
             'description':'上传中也能剪辑：胜率提升25%的游戏复盘',
-            'topics':'#测试话题','declaration':'无需声明'})
+            'topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid')
         self.fill()
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),
                          '上传中也能剪辑：胜率提升25%的游戏复盘 #测试话题')

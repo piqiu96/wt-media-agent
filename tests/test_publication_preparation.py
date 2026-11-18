@@ -31,7 +31,8 @@ from unittest.mock import patch
 from wt_media_agent.storage.publication import JournalConflict
 from wt_media_agent.storage.publication_claim import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
-from wt_media_agent.clients.publication import PublicationInputError
+from wt_media_agent.platforms.publish import PublicationInputError, PublishPayload, PublishControl
+from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
 def cloud_claim(replayed=False, owner='3'):
  s=snapshot();content=dict(s['content'],cover_file_id='1',confirmed=True)
@@ -55,6 +56,7 @@ class FakeCloud:
 class FakeBit:
  def __init__(self):self.scans=0
  def scan_profiles(self):self.scans+=1;return SimpleNamespace(profiles=[SimpleNamespace(bit_profile_id='actual-bit-profile',main_user_id='main-3')])
+ def open_profile_with_devtools(self, profile):return '127.0.0.1:9999'
 
 class PublicationPreparationTests(unittest.TestCase):
  def setUp(self):
@@ -83,14 +85,19 @@ class PublicationPreparationTests(unittest.TestCase):
   self.assertEqual(self.bit.scans,0)
  def test_wrong_digest_grant_is_rejected_before_browser_open(self):
   value,i=self.p.claim('memory-token','3');value['files']['video']['sha256']='c'*64
-  with patch('wt_media_agent.runner.publication_preparation.live_baidu_identity') as browser:
+  with patch.object(self.bit, 'open_profile_with_devtools') as browser:
    with self.assertRaises(PublicationInputError):self.p.prepare('memory-token',value,i)
    browser.assert_not_called()
   self.assertEqual(self.cloud.reports,[])
  def test_lost_ready_response_remains_durable_and_never_reenters(self):
   value,i=self.p.claim('memory-token','3');self.cloud.fail_report=True
-  with patch('wt_media_agent.runner.publication_preparation.download_verified'),patch('wt_media_agent.runner.publication_preparation.live_baidu_identity',return_value=('127.0.0.1:9999',{'login_status':'normal','platform_account_id':snapshot()['platform_uid']})) as browser:
-   with self.assertRaises(ConnectionError):self.p.prepare('memory-token',value,i)
+  with patch('wt_media_agent.runner.publication_preparation.download_verified'), patch.object(self.bit, 'open_profile_with_devtools', return_value='127.0.0.1:9999') as browser:
+   prepared=self.p.prepare('memory-token',value,i)
+   self.p.consume_prepared(prepared)
+   publisher=BaiduPublisher(prepared.endpoint, identity_reader=lambda endpoint: {'login_status':'normal','platform_account_id':snapshot()['platform_uid']})
+   payload=PublishPayload(prepared.video, prepared.cover, snapshot()['content'], snapshot()['platform_uid'])
+   control=PublishControl(stopped=lambda:False, on_prepared=lambda:self.p.mark_ready('memory-token',i), before_submit=lambda:self.fail('cannot submit'))
+   with self.assertRaises(ConnectionError):publisher.publish(payload,control)
    self.assertEqual(self.j.get(i)['phase'],'prepared')
    with self.assertRaises(JournalConflict):self.p.prepare('memory-token',value,i)
    self.assertEqual(browser.call_count,1)
@@ -98,14 +105,20 @@ class PublicationPreparationTests(unittest.TestCase):
  def test_preparing_report_before_download_does_not_block_the_same_fresh_preparation(self):
   value,i=self.p.claim('memory-token','3')
   self.assertEqual(self.j.reserve_report(i),1)
-  with patch('wt_media_agent.runner.publication_preparation.download_verified'),patch('wt_media_agent.runner.publication_preparation.live_baidu_identity',return_value=('127.0.0.1:9999',{'login_status':'normal','platform_account_id':snapshot()['platform_uid']})):
+  with patch('wt_media_agent.runner.publication_preparation.download_verified'):
    prepared=self.p.prepare('memory-token',value,i)
+  self.p.mark_ready('memory-token',i)
   self.assertEqual(self.j.get(i)['phase'],'prepared')
   self.assertEqual(self.cloud.reports[-1][2]['report_seq'],2)
   self.p.consume_prepared(prepared)
   with self.assertRaises(JournalConflict):self.p.consume_prepared(prepared)
  def test_wrong_live_uid_never_reports_ready(self):
   value,i=self.p.claim('memory-token','3')
-  with patch('wt_media_agent.runner.publication_preparation.download_verified'),patch('wt_media_agent.runner.publication_preparation.live_baidu_identity',return_value=('127.0.0.1:9999',{'login_status':'normal','platform_account_id':'wrong'})):
-   with self.assertRaises(PublicationInputError):self.p.prepare('memory-token',value,i)
+  with patch('wt_media_agent.runner.publication_preparation.download_verified'):
+   prepared=self.p.prepare('memory-token',value,i)
+  self.p.consume_prepared(prepared)
+  publisher=BaiduPublisher(prepared.endpoint, identity_reader=lambda endpoint: {'login_status':'normal','platform_account_id':'wrong'})
+  payload=PublishPayload(prepared.video,prepared.cover,snapshot()['content'],snapshot()['platform_uid'])
+  control=PublishControl(stopped=lambda:False,on_prepared=lambda:self.p.mark_ready('memory-token',i),before_submit=lambda:self.fail('cannot submit'))
+  with self.assertRaises(PublicationInputError):publisher.publish(payload,control)
   self.assertEqual(self.cloud.reports,[])

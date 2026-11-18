@@ -58,7 +58,7 @@ def main():
     if bool(args.endpoint) != bool(args.file):
         parser.error('--endpoint and --file go together')
     if args.endpoint:
-        from wt_media_agent.clients.browser import BrowserSession
+        from wt_media_agent.services.browser.session import BrowserSession
         BrowserSession(args.endpoint)  # validate loopback endpoint before connecting
     probe(args.binary, args.endpoint, args.file)
 
