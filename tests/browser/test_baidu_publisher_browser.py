@@ -167,3 +167,27 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         self.assertIsNone(self.page.evaluate('window.selectedVideoSize'))
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'default filename')
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_new_video_with_empty_covers_can_upload_and_fill_both_covers(self):
+        self.page.add_init_script('window.fixtureBlankCovers=true')
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.locator('[data-testid=select-cover]').count(),0)
+        self.assertEqual(self.page.locator('[data-testid=cover-preview] img').count(),2)
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_topic_confirmation_preserves_literal_text_and_one_final_click(self):
+        self.fill()
+        self.page.evaluate('window.fixtureConfirmTopics=true')
+        self.publisher.submit()
+        self.assertEqual(self.page.locator('[role=dialog]:visible').count(),0)
+        self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
+    def test_changed_text_in_topic_confirmation_is_not_submitted(self):
+        self.fill()
+        self.page.evaluate('window.fixtureConfirmTopics=true;window.fixtureChangeTopicsText=true')
+        with self.assertRaises(PlatformFormError):self.publisher.submit()
+        self.assertEqual(self.page.locator('[role=dialog]:visible').count(),1)
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)

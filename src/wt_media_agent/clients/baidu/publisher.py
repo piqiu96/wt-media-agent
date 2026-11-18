@@ -131,7 +131,7 @@ class BaiduPublisher:
                 or any(int(pct) < 100 for pct in re.findall(r'(?<!\d)(\d{1,3})\s*%', body))):
             return False
         return (self.page.locator('[contenteditable=true]').count() == 1
-                and self.page.locator('[data-testid=cover-preview]').count() == 2
+                and self.page.locator('[data-testid=cover-preview], [data-testid=select-cover]').count() == 2
                 and self.page.get_by_role('button', name='发布', exact=True).is_enabled())
 
     def fill_fields(self, page, payload, *, stopped):
@@ -162,7 +162,7 @@ class BaiduPublisher:
         upload = image_upload_file(payload.cover)
         for index in range(2):
             self._check()
-            page.locator('[data-testid=cover-preview]').nth(index).click(timeout=5000)
+            page.locator('[data-testid=cover-preview], [data-testid=select-cover]').nth(index).click(timeout=5000)
             dialog.wait_for(state='visible', timeout=5000)
             file_input = dialog.locator('input[type=file][accept="image/*"]').last
             # The modal also creates blob thumbnails from the uploaded video.
@@ -184,16 +184,19 @@ class BaiduPublisher:
         self._assert_form()
         self._arm_receipt()
 
-    def _assert_form(self):
+    def _assert_form(self, *, expected_dialog=None):
         if not self._ready or self._check() != '/builder/rc/edit' or len(self._covers) != 2:
             raise PlatformFormError('form was not fully verified')
         if not self._upload_ready():
             raise PlatformFormError('platform video upload is not complete')
         page = self.page
+        dialogs = page.locator('[role=dialog]:visible')
+        dialog_changed = (dialogs.count() != 0 if expected_dialog is None
+                          else dialogs.count() != 1 or expected_dialog.count() != 1)
         if (page.locator('[contenteditable=true]').inner_text() != self._description
                 or page.get_by_placeholder('请选择创作声明', exact=True).input_value() != self._declaration
                 or page.locator('[data-testid=cover-preview] img').evaluate_all('(es) => es.map(e => e.src)') != self._covers
-                or page.locator('[role=dialog]:visible').count()):
+                or dialog_changed):
             raise PlatformFormError('confirmed form changed before submission')
 
     @staticmethod
@@ -245,6 +248,14 @@ class BaiduPublisher:
         self._assert_form()
         self._submitted = True
         self.page.get_by_role('button', name='发布', exact=True).click(timeout=5000)
+        confirmation = self.page.locator('[role=dialog]:visible').filter(
+            has=self.page.get_by_text('作品描述中存在未匹配的话题/@内容', exact=True))
+        self._wait(lambda: self._capture['count'] or confirmation.count() == 1, timeout=15)
+        if not self._capture['count']:
+            # Keep the confirmed literal text; automatic matching can replace
+            # topics or mentions. Continue this click, never click Publish again.
+            self._assert_form(expected_dialog=confirmation)
+            confirmation.get_by_role('button', name='不处理', exact=True).click(timeout=5000)
 
     def read_receipt(self):
         if not self._submitted:
