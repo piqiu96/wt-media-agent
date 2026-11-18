@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 import plistlib
 from pathlib import Path
 import importlib.util
@@ -52,6 +53,42 @@ class SidecarEntryTests(LoggingStateTestCase):
             ["codesign", "--force", "--sign", "-"],
         )
         self.assertEqual(module.python_library_resign_args("windows"), [])
+
+    def test_signing_preserves_loaded_library_and_restores_after_freeze_failure(self):
+        spec=importlib.util.spec_from_file_location('build_desktop_sidecar',ROOT/'scripts/build_desktop_sidecar.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        for fail in (False,True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as folder:
+                library=Path(folder)/'libpython.dylib';library.write_bytes(b'original-library')
+                library.chmod(0o755);original_mtime=library.stat().st_mtime_ns
+                def codesign(command,**kwargs):
+                    if '-d' not in command:Path(command[-1]).write_bytes(b'signed-library')
+                    return subprocess.CompletedProcess(command,0)
+                with library.open('rb') as loaded, mock.patch.object(module,'python_shared_library',return_value=library), mock.patch.object(module,'python_library_resign_args',return_value=['codesign','--force','--sign','-']), mock.patch.object(module.subprocess,'run',side_effect=codesign):
+                    with self.assertRaisesRegex(RuntimeError,'freeze failed') if fail else nullcontext():
+                        with module.unsigned_python_shared_library():
+                            self.assertEqual(library.read_bytes(),b'signed-library')
+                            self.assertEqual(loaded.read(),b'original-library','Signing must not mutate the inode used by running Python processes')
+                            if fail:raise RuntimeError('freeze failed')
+                self.assertEqual(library.read_bytes(),b'original-library')
+                self.assertEqual(library.stat().st_mode & 0o777,0o755)
+                self.assertEqual(library.stat().st_mtime_ns,original_mtime)
+
+    def test_temporary_signing_preserves_library_symlink(self):
+        spec=importlib.util.spec_from_file_location('build_desktop_sidecar',ROOT/'scripts/build_desktop_sidecar.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'libpython-real.dylib';target.write_bytes(b'original-library')
+            link=Path(folder)/'libpython.dylib';link.symlink_to(target.name)
+            def codesign(command,**kwargs):
+                if '-d' not in command:Path(command[-1]).write_bytes(b'signed-library')
+                return subprocess.CompletedProcess(command,0)
+            with mock.patch.object(module,'python_shared_library',return_value=link), mock.patch.object(module,'python_library_resign_args',return_value=['codesign','--force','--sign','-']), mock.patch.object(module.subprocess,'run',side_effect=codesign):
+                with module.unsigned_python_shared_library():
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(target.read_bytes(),b'signed-library')
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(target.read_bytes(),b'original-library')
 
     def test_the_sidecar_entry_delegates_to_the_bootstrap_surface(self) -> None:
         """The entry is a delegate; assembly lives in `bootstrap` (ADR-0016 §2).

@@ -104,18 +104,27 @@ def unsigned_python_shared_library():
     if library is None:
         yield
         return
-    with tempfile.TemporaryDirectory(prefix="wt-media-agent-python-lib-") as temporary:
-        backup = Path(temporary) / library.name
+    library = library.resolve()
+    has_signature = subprocess.run(
+        ["codesign", "-d", str(library)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode == 0
+    if not has_signature:
+        yield
+        return
+    # Never rewrite an inode mapped by running interpreters. macOS caches its
+    # signed pages; restoring bytes/mtime in place can make later launches die
+    # with SIGKILL. Stage and restore through atomic replacements on this volume.
+    with tempfile.TemporaryDirectory(prefix="wt-media-agent-python-lib-", dir=library.parent) as temporary:
+        backup = Path(temporary) / ("original-" + library.name)
+        staged = Path(temporary) / library.name
         shutil.copy2(library, backup)
-        has_signature = subprocess.run(
-            ["codesign", "-d", str(library)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ).returncode == 0
+        shutil.copy2(library, staged)
+        subprocess.run([*resign_args, str(staged)], check=True)
+        os.replace(staged, library)
         try:
-            if has_signature:
-                subprocess.run([*resign_args, str(library)], check=True)
             yield
         finally:
-            shutil.copy2(backup, library)
+            os.replace(backup, library)
 
 
 def sha256(path: Path) -> str:
