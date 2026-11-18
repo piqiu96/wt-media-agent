@@ -6,6 +6,7 @@ from threading import Event, Thread
 
 from wt_media_agent.storage.publication import JournalConflict
 from wt_media_agent.clients.publisher import PublishPayload
+from wt_media_agent.clients.publication import read_baidu_identity
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,13 @@ class PublicationJob:
                 platform.fill_form(session.page, PublishPayload(prepared.video, prepared.cover, source['content']), stopped=should_stop)
                 if should_stop():
                     raise JournalConflict('execution stopped during upload')
+                # Upload may take minutes. Re-read the active browser account
+                # before requesting permission for this frozen identity.
+                observed = read_baidu_identity(prepared.endpoint)
+                if observed.get('login_status') != 'normal' or observed.get('platform_account_id') != source['platform_uid']:
+                    raise JournalConflict('platform account changed before submit')
+                if should_stop():
+                    raise JournalConflict('execution stopped during identity check')
                 with self.preparation.report_lock:
                     seq = self.journal.advance(identity, 'submitting')
                     feedback = progress('submitting', seq)

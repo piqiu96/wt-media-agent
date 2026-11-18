@@ -34,4 +34,8 @@ def download_verified(grant: dict, target: Path):
 
 def live_baidu_identity(bitbrowser, profile_id):
     endpoint=bitbrowser.open_profile_with_devtools(profile_id)
-    return endpoint,identify_baidu(read_live_cookies(endpoint))
+    return endpoint,read_baidu_identity(endpoint)
+
+
+def read_baidu_identity(endpoint):
+    return identify_baidu(read_live_cookies(endpoint))

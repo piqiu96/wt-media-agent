@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
+from unittest.mock import patch
 from wt_media_agent.storage.migration import apply_migrations
 from wt_media_agent.storage.publication import PublicationJournal, JournalConflict
 from test_publication_execution import identity, snapshot
@@ -63,6 +64,9 @@ class Session:
 
 class PublicationJobTests(unittest.TestCase):
     def setUp(self):
+        self.live_identity=patch('wt_media_agent.runner.publication_job.read_baidu_identity').start()
+        self.addCleanup(patch.stopall)
+        self.live_identity.return_value={'login_status':'normal','platform_account_id':snapshot()['platform_uid']}
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);root=Path(self.tmp.name)
         db=root/'a.db';apply_migrations(db);self.j=PublicationJournal(db);self.i=identity();self.j.register(self.i,snapshot())
         self.cloud=Cloud(self.j,self.i);self.prep=Preparation(self.j,self.cloud,self.i,root);self.platform=Platform(self.j,self.i);self.closed=True
@@ -185,3 +189,17 @@ class PublicationJobTests(unittest.TestCase):
         self.job.browser_session_factory=forbidden
         self.assertEqual(self.run_job()['status'],'uncertain')
         self.assertEqual(self.platform.fills,0)
+
+    def test_changed_platform_account_after_upload_cannot_get_submit_permission(self):
+        self.live_identity.return_value={'login_status':'normal','platform_account_id':'different-account'}
+        result=self.run_job()
+        self.assertEqual(result['status'],'uncertain')
+        self.assertEqual(self.platform.fills,1);self.assertEqual(self.platform.clicks,0)
+        self.assertFalse(any(op=='progress' and packet['stage']=='submitting' for op,packet in self.cloud.reports))
+        self.assertTrue(result['evidence']['scene_closed'])
+
+    def test_unavailable_final_identity_check_cannot_submit(self):
+        self.live_identity.side_effect=ConnectionError('identity response unavailable')
+        self.assertEqual(self.run_job()['status'],'uncertain')
+        self.assertEqual(self.platform.clicks,0)
+        self.assertFalse(any(op=='progress' and packet['stage']=='submitting' for op,packet in self.cloud.reports))
