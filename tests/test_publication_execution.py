@@ -182,6 +182,31 @@ class PublicationExecutionTests(unittest.TestCase):
         self.assertEqual(len(self.journal.pending('HTTP://CLOUD.TEST:8188/','3')),1)
         self.assertEqual(ExecutionIdentity('https://cloud.test:443/','3','9','1','p').environment,'https://cloud.test')
 
+    def test_explicit_scene_resolution_preserves_missing_result_and_replay_barrier(self):
+        self.journal.register(self.owner, snapshot())
+        resolution = {'attempt_id': self.owner.attempt_id, 'result_hash': None,
+                      'scene_resolved': True, 'resolved_status': 'failed'}
+        self.journal.settle_resolved(self.owner, resolution)
+        reopened = PublicationJournal(self.db)
+        self.assertEqual(reopened.get(self.owner)['phase'], 'settled')
+        self.assertEqual(reopened.get(self.owner)['scene_resolution'], resolution)
+        self.assertFalse(reopened.register(self.owner, snapshot()))
+        with self.assertRaises(JournalConflict):
+            reopened.save_result(self.owner, {'status': 'uncertain'}, report_seq=1)
+        self.assertEqual(reopened.pending(self.owner.environment, self.owner.user_id), [])
+        with sqlite3.connect(self.db) as db:
+            self.assertIsNone(db.execute('SELECT final_result_json FROM task_checkpoints WHERE task_id=?', (self.owner.key,)).fetchone()[0])
+
+    def test_scene_resolution_cannot_hide_a_different_original_result(self):
+        self.journal.register(self.owner, snapshot())
+        self.journal.save_result(self.owner, {'status': 'uncertain'}, report_seq=1)
+        resolution = {'attempt_id': self.owner.attempt_id, 'result_hash': 'c' * 64,
+                      'scene_resolved': True, 'resolved_status': 'failed'}
+        with self.assertRaises(JournalConflict):
+            self.journal.settle_resolved(self.owner, resolution)
+        self.assertEqual(self.journal.get(self.owner)['phase'], 'result_saved')
+        self.assertEqual(len(self.journal.pending(self.owner.environment, self.owner.user_id)), 1)
+
     def test_profile_reservation_is_physical_even_across_cloud_environments(self):
         self.journal.register(self.owner, snapshot())
         other=ExecutionIdentity('http://other.test','4','20','9',self.owner.bit_profile_id)

@@ -184,16 +184,16 @@ class PublicationJournal:
             self._write(db, identity, state)
             return state['report_seq']
 
-    def unresolved_results(self, environment: str, user_id: str) -> list[dict]:
-        """Read original packets, including acknowledged-but-not-settled crashes."""
+    def unresolved_attempts(self, environment: str, user_id: str) -> list[dict]:
+        """Read open scenes, including exits before a result could be saved."""
         with self._transaction() as db:
             rows = db.execute("""SELECT checkpoint_json,final_result_json FROM task_checkpoints
                 WHERE task_type='publication' AND checkpoint_status<>'publication_settled'
                   AND agent_id=? AND json_extract(checkpoint_json,'$.identity.environment')=?
-                  AND final_result_json IS NOT NULL ORDER BY task_id""",
+                ORDER BY task_id""",
                 (user_id, _environment(environment))).fetchall()
             return [{'identity': ExecutionIdentity(**json.loads(row['checkpoint_json'])['identity']),
-                     'packet': json.loads(row['final_result_json'])} for row in rows]
+                     'packet': json.loads(row['final_result_json']) if row['final_result_json'] is not None else None} for row in rows]
 
     def save_result(self, identity: ExecutionIdentity, result: dict, *, report_seq: int) -> dict:
         _safe_result(result)
@@ -209,6 +209,8 @@ class PublicationJournal:
                 if prior != packet:
                     raise JournalConflict('saved execution result is immutable')
                 return prior
+            if row['checkpoint_status'] == 'publication_settled':
+                raise JournalConflict('resolved scene cannot acquire a new execution result')
             if report_seq <= state['report_seq']:
                 raise JournalConflict('result sequence is stale')
             state.update(phase='result_saved', report_seq=report_seq, result_hash=digest)
@@ -260,6 +262,32 @@ class PublicationJournal:
                 else:
                     db.execute('UPDATE offline_results SET delivery_attempts=delivery_attempts+1 WHERE id=?', (pending['id'],))
         return delivered
+
+    def settle_resolved(self, identity: ExecutionIdentity, original: dict):
+        """Release only an explicitly resolved original scene, without a report ack.
+
+        Cloud may have verified a hard exit before receiving any result. Keep
+        missing results missing and undelivered packets undelivered; neither is
+        permission to replay the browser. This is not a task status transition.
+        """
+        if (not isinstance(original, dict) or original.get('attempt_id') != identity.attempt_id
+                or original.get('scene_resolved') is not True
+                or original.get('resolved_status') != 'failed' or 'result_hash' not in original):
+            raise JournalConflict('Cloud has not explicitly resolved this original scene')
+        with self._transaction() as db:
+            row, state = self._state(db, identity)
+            cloud_hash = original['result_hash']
+            if cloud_hash is not None and cloud_hash != state.get('result_hash'):
+                raise JournalConflict('original result differs from the local record')
+            if row['final_result_json'] is not None and cloud_hash is None:
+                result = json.loads(row['final_result_json'])['result']
+                if result['status'] == 'reviewing':
+                    raise JournalConflict('manual failure conflicts with an unacknowledged receipt')
+            state['phase'] = 'settled'
+            state['scene_resolution'] = {key: original[key] for key in
+                                         ('attempt_id', 'result_hash', 'scene_resolved', 'resolved_status')}
+            self._write(db, identity, state)
+            db.execute("UPDATE task_checkpoints SET checkpoint_status='publication_settled' WHERE task_id=?", (identity.key,))
 
     def settle(self, identity: ExecutionIdentity, result_hash: str, *, task_status: str):
         """Called only after provider-confirmed resolution and safe browser cleanup.

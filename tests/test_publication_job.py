@@ -1,13 +1,16 @@
 """Coordinator fault checks use real SQLite; fixture receipts are not platform acceptance."""
 import copy
+import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
 from unittest.mock import patch
 from wt_media_agent.storage.migration import apply_migrations
-from wt_media_agent.storage.publication import PublicationJournal, JournalConflict
+from wt_media_agent.storage.publication import ExecutionIdentity, PublicationJournal, JournalConflict
 from test_publication_execution import identity, snapshot
 from wt_media_agent.runner.publication_job import PublicationJob
 
@@ -130,6 +133,92 @@ class PublicationJobTests(unittest.TestCase):
         self.j.settle=original
         self.assertEqual(self.job.recover('memory-only-token',self.i.user_id),1)
         self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.platform.clicks,1)
+
+    def test_hard_exit_without_a_result_waits_for_original_scene_resolution(self):
+        self.j.advance(self.i, 'prepared')
+        self.j.advance(self.i, 'submitting')
+        self.j.advance(self.i, 'click_started')
+        self.j = PublicationJournal(self.j.db_path)
+        self.job.journal = self.j
+        before = self.j.get(self.i)
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+        self.assertEqual(self.j.get(self.i), before)
+
+        self.cloud.resolved = True
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 1)
+        state = self.j.get(self.i)
+        self.assertEqual(state['phase'], 'settled')
+        self.assertEqual(state['report_seq'], before['report_seq'])
+        self.assertEqual(self.cloud.reports, [])  # No fabricated completion.
+        self.assertEqual(self.j.pending(self.i.environment, self.i.user_id), [])
+        self.assertEqual(self.platform.fills, 0)
+        self.assertEqual(self.platform.clicks, 0)
+        with self.assertRaises(JournalConflict):
+            self.run_job()
+        self.assertFalse(self.j.register(self.i, snapshot()))
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+        new = ExecutionIdentity(self.i.environment, self.i.user_id, self.i.task_id, '2', self.i.bit_profile_id)
+        self.assertTrue(self.j.register(new, snapshot()))
+
+    def test_manual_resolution_before_report_releases_scene_without_faking_delivery(self):
+        self.closed = False
+        self.cloud.lose_result = True
+        self.run_job()
+        pending = self.j.pending(self.i.environment, self.i.user_id)
+        self.assertEqual(len(pending), 1)
+        self.assertIsNone(self.cloud.stored_hash)
+        self.cloud.resolved = True
+
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 1)
+        self.assertEqual(self.j.get(self.i)['phase'], 'settled')
+        self.assertEqual(self.j.pending(self.i.environment, self.i.user_id), pending)
+        with closing(sqlite3.connect(self.j.db_path)) as db:
+            row = db.execute('SELECT final_result_json,report_pending FROM task_checkpoints WHERE task_id=?', (self.i.key,)).fetchone()
+            self.assertEqual(json.loads(row[0]), pending[0]['packet'])
+            self.assertEqual(row[1], 1)
+            self.assertEqual(db.execute('SELECT delivered FROM offline_results WHERE task_id=?', (self.i.key,)).fetchone()[0], 0)
+        self.assertEqual(self.platform.clicks, 1)
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+        new = ExecutionIdentity(self.i.environment, self.i.user_id, self.i.task_id, '2', self.i.bit_profile_id)
+        self.assertTrue(self.j.register(new, snapshot()))
+
+    def test_missing_result_recovery_is_scoped_to_current_environment_and_owner(self):
+        reads = []
+        original = self.cloud.original_publication_attempt
+        self.cloud.original_publication_attempt = lambda *args: (reads.append(args), original(*args))[1]
+        self.cloud.resolved = True
+        self.assertEqual(self.job.recover('memory-only-token', '4'), 0)
+        self.cloud.base_url = 'http://other.test'
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+        self.assertEqual(reads, [])
+        self.cloud.base_url = self.i.environment
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 1)
+        self.assertEqual(len(reads), 1)
+
+    def test_conflicting_or_incomplete_resolution_cannot_release_missing_result(self):
+        for change in ({'attempt_id': '99'}, {'scene_resolved': False},
+                       {'scene_resolved': 'true'}, {'resolved_status': 'uncertain'},
+                       {'resolved_status': 'reviewing'}, {'result_hash': 'invalid'}):
+            with self.subTest(change=change):
+                response = dict(attempt_id=self.i.attempt_id, result_hash=None,
+                                scene_resolved=True, resolved_status='failed')
+                response.update(change)
+                self.cloud.original_publication_attempt = lambda *args: response
+                self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+                self.assertEqual(self.j.get(self.i)['phase'], 'claimed')
+        self.cloud.original_publication_attempt = lambda *args: (_ for _ in ()).throw(ConnectionError('offline'))
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+        self.assertEqual(self.j.get(self.i)['phase'], 'claimed')
+
+    def test_conflicting_saved_result_cannot_be_released_by_manual_failure(self):
+        self.cloud.lose_result = True
+        self.run_job()  # A credible receipt conflicts with an unacknowledged failure.
+        self.cloud.resolved = True
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+        self.assertEqual(self.j.get(self.i)['phase'], 'result_saved')
+        self.cloud.stored_hash = 'c' * 64
+        self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
+        self.assertEqual(self.j.get(self.i)['phase'], 'result_saved')
 
     def test_zero_or_noncanonical_receipt_cannot_be_reported_as_reviewing(self):
         self.platform.read_receipt=lambda:{'platform_work_id':'0'}

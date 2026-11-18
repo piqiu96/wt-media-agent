@@ -135,19 +135,21 @@ class PublicationJob:
 
     def recover(self, token, user_id):
         confirmed = 0
-        for row in self.journal.unresolved_results(self.cloud.base_url, user_id):
+        for row in self.journal.unresolved_attempts(self.cloud.base_url, user_id):
             identity, packet = row['identity'], row['packet']
-            expected = (identity.attempt_id, packet['result_hash'])
+            expected = (identity.attempt_id, packet['result_hash']) if packet is not None else None
             acknowledgement = None
             resolved_status = ''
+            scene_resolution = None
             try:
-                wire = {key: value for key, value in packet.items() if key != 'task_id'}
-                with self.preparation.report_lock:
-                    feedback = self.cloud.report_publication(token, identity.task_id, 'complete', wire)
-                if (feedback.get('attempt_id'), feedback.get('result_hash')) == expected:
-                    acknowledgement = feedback
-                    if packet['result'].get('evidence', {}).get('scene_closed') is True and feedback.get('task_status') in ('reviewing', 'failed'):
-                        resolved_status = feedback['task_status']
+                if packet is not None:
+                    wire = {key: value for key, value in packet.items() if key != 'task_id'}
+                    with self.preparation.report_lock:
+                        feedback = self.cloud.report_publication(token, identity.task_id, 'complete', wire)
+                    if (feedback.get('attempt_id'), feedback.get('result_hash')) == expected:
+                        acknowledgement = feedback
+                        if packet['result'].get('evidence', {}).get('scene_closed') is True and feedback.get('task_status') in ('reviewing', 'failed'):
+                            resolved_status = feedback['task_status']
             except Exception:
                 pass
             if not resolved_status:
@@ -155,21 +157,25 @@ class PublicationJob:
                     # The task may already have advanced. Read this exact old
                     # attempt, not the current task's success or authorization.
                     original = self.cloud.original_publication_attempt(token, identity.task_id, identity.attempt_id)
+                    scene_resolution = original
                     if (original.get('attempt_id'), original.get('result_hash')) == expected:
                         acknowledgement = original
                         if original.get('scene_resolved') is True and original.get('resolved_status') in ('reviewing', 'failed'):
                             resolved_status = original['resolved_status']
                 except Exception:
                     pass
-            if acknowledgement is None:
-                continue
             try:
-                self.journal.flush(identity.environment, user_id,
-                    lambda pending: acknowledgement if pending == packet else None,
-                    only_attempt=identity.attempt_id)
-                confirmed += 1
+                if acknowledgement is not None:
+                    self.journal.flush(identity.environment, user_id,
+                        lambda pending: acknowledgement if pending == packet else None,
+                        only_attempt=identity.attempt_id)
                 if resolved_status:
                     self.journal.settle(identity, packet['result_hash'], task_status=resolved_status)
+                elif acknowledgement is None and scene_resolution is not None:
+                    self.journal.settle_resolved(identity, scene_resolution)
+                elif acknowledgement is None:
+                    continue
+                confirmed += 1
             except Exception:
                 continue
         return confirmed
