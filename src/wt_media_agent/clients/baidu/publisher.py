@@ -108,7 +108,15 @@ class BaiduPublisher:
             raise PlatformFormError('publication stopped before editor')
         page.goto('https://baijiahao.baidu.com/builder/rc/home', wait_until='domcontentloaded')
         self._check()
-        page.get_by_text('发布视频', exact=True).click(timeout=15000)
+        video_entry = page.get_by_text('发布视频', exact=True)
+        publish_menu = page.locator('#home-publish-btn')
+        self._wait(lambda: video_entry.is_visible() or publish_menu.is_visible(), timeout=min(self.timeout, 15))
+        if not video_entry.is_visible():
+            self._check()
+            publish_menu.hover(timeout=5000)
+            self._wait(video_entry.is_visible, timeout=min(self.timeout, 15))
+        self._check()
+        video_entry.click(timeout=15000)
         self._wait(lambda: self._check() == '/builder/rc/edit'
                    and page.locator('input[type=file][accept*=".mp4"]').count())
         if page.locator('[contenteditable=true]').count():

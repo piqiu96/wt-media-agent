@@ -52,10 +52,11 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         self.addCleanup(self.session.close)
         self.page=self.session.page
         self.external=[]
+        self.home='<meta charset="utf-8"><a href="/builder/rc/edit">发布视频</a>'
         def isolated(route):
             request=route.request
             if request.url=='https://baijiahao.baidu.com/builder/rc/home':
-                route.fulfill(content_type='text/html',body='<meta charset="utf-8"><a href="/builder/rc/edit">发布视频</a>')
+                route.fulfill(content_type='text/html',body=self.home)
             elif request.url=='https://baijiahao.baidu.com/builder/rc/edit':
                 route.fulfill(content_type='text/html',body=FIXTURE)
             elif request.url=='https://baijiahao.baidu.com/pcui/article/publish?type=video' and request.method=='POST':
@@ -103,6 +104,25 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def collapsed_home(self):
+        self.home='''<meta charset="utf-8"><div id="home-publish-btn" onmouseenter="window.menuShown=true;document.querySelector('a').hidden=false">＋</div><a hidden href="/builder/rc/edit">发布视频</a>'''
+
+    def test_collapsed_home_menu_is_opened_before_upload(self):
+        self.collapsed_home()
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+        self.assertEqual(self.external,[])
+
+    def test_stop_after_opening_home_menu_never_enters_editor(self):
+        self.collapsed_home()
+        with self.assertRaises(PlatformFormError):
+            self.publisher.fill_form(self.page,self.payload,stopped=lambda:self.page.evaluate('Boolean(window.menuShown)'))
+        self.assertTrue(self.page.evaluate('window.menuShown'))
+        self.assertTrue(self.page.url.endswith('/builder/rc/home'))
+        self.assertEqual(self.external,[])
 
     def test_cover_failure_or_security_check_stops_without_submission(self):
         self.page.evaluate("document.querySelector('#dialogs').addEventListener('change',e=>e.stopPropagation(),true)")
