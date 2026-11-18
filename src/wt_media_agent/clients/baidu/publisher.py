@@ -119,7 +119,12 @@ class BaiduPublisher:
         self.fill_fields(page, payload, stopped=stopped)
 
     def _upload_ready(self):
-        body = self.page.locator('body').inner_text()
+        upload = self.page.locator('#cover-tabs-container')
+        if upload.count() != 1:
+            return False
+        # Descriptions and their preview may legitimately contain percentages
+        # or phrases such as "上传中". Read only the observed video upload area.
+        body = upload.inner_text()
         if '上传失败' in body or '转码失败' in body:
             raise PlatformFormError('platform video upload failed')
         if ('上传中' in body or '转码中' in body
@@ -159,10 +164,15 @@ class BaiduPublisher:
             self._check()
             page.locator('[data-testid=cover-preview]').nth(index).click(timeout=5000)
             dialog.wait_for(state='visible', timeout=5000)
-            previous = dialog.locator('img').evaluate_all('(es) => es.map(e => e.src)')
+            file_input = dialog.locator('input[type=file][accept="image/*"]').last
+            # The modal also creates blob thumbnails from the uploaded video.
+            # Only a decoded image in this file input's upload control proves
+            # that the selected local cover was read successfully.
+            upload_control = file_input.locator('..')
+            previous = upload_control.locator('img').evaluate_all('(es) => es.map(e => e.src)')
             self._check()
-            dialog.locator('input[type=file][accept="image/*"]').last.set_input_files(str(upload.resolve()))
-            self._wait(lambda: dialog.locator('img').evaluate_all(
+            file_input.set_input_files(str(upload.resolve()))
+            self._wait(lambda: upload_control.locator('img').evaluate_all(
                 '(es, previous) => es.some(e => e.src.startsWith("blob:") && !previous.includes(e.src) && e.complete && e.naturalWidth > 0)', previous))
             self._check()
             dialog.get_by_role('button', name='确定', exact=True).click(timeout=5000)
@@ -177,6 +187,8 @@ class BaiduPublisher:
     def _assert_form(self):
         if not self._ready or self._check() != '/builder/rc/edit' or len(self._covers) != 2:
             raise PlatformFormError('form was not fully verified')
+        if not self._upload_ready():
+            raise PlatformFormError('platform video upload is not complete')
         page = self.page
         if (page.locator('[contenteditable=true]').inner_text() != self._description
                 or page.get_by_placeholder('请选择创作声明', exact=True).input_value() != self._declaration

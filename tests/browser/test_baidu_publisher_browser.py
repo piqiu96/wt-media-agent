@@ -130,3 +130,40 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         with self.assertRaises(PlatformFormError):
             self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_video_thumbnail_cannot_mask_failed_local_cover_decode(self):
+        # The real modal also creates fresh blob images for video-frame choices.
+        # A failed local cover must not become ready merely because those decode.
+        self.page.evaluate('''() => document.querySelector('#dialogs').addEventListener('change', e => {
+            const thumbnail=document.createElement('img');
+            thumbnail.src=URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"/>'], {type:'image/svg+xml'}));
+            e.target.closest('[role=dialog]').append(thumbnail);
+        })''')
+        self.cover.write_bytes(b'\xff\xd8\xffinvalid cover image')
+        with self.assertRaises(PlatformFormError):self.fill()
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_upload_restart_after_form_fill_blocks_final_click(self):
+        self.fill()
+        self.page.evaluate("document.querySelector('#cover-tabs-container').insertAdjacentHTML('beforeend','<p>上传中 25%</p>')")
+        with self.assertRaises(PlatformFormError):self.publisher.submit()
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_publication_text_is_not_treated_as_video_upload_status(self):
+        self.payload=PublishPayload(self.video,self.cover,{
+            'description':'上传中也能剪辑：胜率提升25%的游戏复盘',
+            'topics':'#测试话题','declaration':'无需声明'})
+        self.fill()
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),
+                         '上传中也能剪辑：胜率提升25%的游戏复盘 #测试话题')
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
+    def test_recovered_editor_is_preserved_without_reupload_or_submit(self):
+        self.page.add_init_script('window.fixtureRestoreEditor=true')
+        with self.assertRaisesRegex(PlatformFormError,'prior video'):
+            self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertIsNone(self.page.evaluate('window.selectedVideoSize'))
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'default filename')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
