@@ -147,6 +147,22 @@ class BaiduPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(checks,3)
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
 
+    def test_existing_preview_waits_for_the_selected_cover_replacement(self):
+        self.page.evaluate('window.fixtureStalePreview=true')
+        previous=self.page.locator('[data-testid=cover-preview] img').first.get_attribute('src')
+        self.publisher.timeout=3
+        self.fill()
+        self.page.wait_for_function('old=>document.querySelector(\'[data-testid=cover-preview] img\').src!==old',arg=previous)
+        actual=self.page.locator('[data-testid=cover-preview] img').evaluate_all('(es)=>es.map(e=>e.src)')
+        self.assertEqual(self.publisher._covers,actual)
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_unchanged_existing_preview_cannot_confirm_a_new_cover(self):
+        self.page.evaluate('window.fixtureNeverPreview=true')
+        self.publisher.timeout=.3
+        with self.assertRaises(PlatformFormError):self.fill()
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
     def test_cover_failure_or_security_check_stops_without_submission(self):
         self.page.evaluate("document.querySelector('#dialogs').addEventListener('change',e=>e.stopPropagation(),true)")
         # An invalid image never decodes, so form completion must time out.

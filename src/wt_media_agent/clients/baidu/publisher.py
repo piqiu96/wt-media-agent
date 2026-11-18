@@ -170,7 +170,9 @@ class BaiduPublisher:
         upload = image_upload_file(payload.cover)
         for index in range(2):
             self._check()
-            page.locator('[data-testid=cover-preview], [data-testid=select-cover]').nth(index).click(timeout=5000)
+            cover_control = page.locator('[data-testid=cover-preview], [data-testid=select-cover]').nth(index)
+            previous_preview = cover_control.locator('img').evaluate_all('(es) => es.map(e => e.src)')
+            cover_control.click(timeout=5000)
             dialog.wait_for(state='visible', timeout=5000)
             file_input = dialog.locator('input[type=file][accept="image/*"]').last
             # The modal also creates blob thumbnails from the uploaded video.
@@ -185,11 +187,13 @@ class BaiduPublisher:
             self._check()
             dialog.get_by_role('button', name='确定', exact=True).click(timeout=5000)
             self._wait(lambda: dialog.count() == 0)
-            preview = page.locator('[data-testid=cover-preview] img').nth(index)
-            # An absent preview must keep polling, not enter Playwright's
-            # implicit element wait and hide later stop signals.
+            preview = cover_control.locator('img')
+            # The old thumbnail can remain decoded while Baidu processes the
+            # selected cover. Require its replacement in this exact slot.
+            # Missing images keep polling without hiding later stop signals.
             value = self._wait(lambda: preview.evaluate_all(
-                '(es) => es.length === 1 && es[0].complete && es[0].naturalWidth > 0 ? es[0].src : null'))
+                '(es, previous) => es.length === 1 && es[0].complete && es[0].naturalWidth > 0 && !previous.includes(es[0].src) ? es[0].src : null',
+                previous_preview))
             self._covers.append(value)
         self._ready = True
         self._assert_form()
