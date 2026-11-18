@@ -10,8 +10,10 @@
 | `src/wt_media_agent/runtime/` | 配置、路径、日志和运行环境 | 共用 | 配置、日志、发布环境 |
 | `src/wt_media_agent/clients/cloud/` | Cloud 通信与兼容检查 | 共用 | Agent Token、绑定、file-transfer 租约 |
 | `src/wt_media_agent/clients/bitbrowser/` | BitBrowser 客户端 | Local | Profile 与浏览器窗口 |
-| `src/wt_media_agent/clients/` | 其他平台客户端与身份适配 | 主要为 Local | 平台接入、出站调用 |
+| `src/wt_media_agent/clients/` | 平台基础 API 与身份适配 | 主要为 Local | 出站请求与响应处理 |
+| `src/wt_media_agent/platforms/` | 独立平台业务能力；`publish.py` 公共协议，`baidu/publisher.py` 发布实现 | 主要为 Local | 组合 API／浏览器的业务执行；一期发布方式仅 browser |
 | `src/wt_media_agent/services/` | 浏览器、Cookie、代理等执行辅助能力 | 主要为 Local | 本机执行细节 |
+| `src/wt_media_agent/services/files/` | 文件准备、大小与摘要校验 | 共用 | 已授权资源完整性 |
 | `src/wt_media_agent/executors/` | file-transfer 执行 | 共用 | 下载、校验和恢复结果 |
 | `src/wt_media_agent/runner/` | file-transfer 租约循环与恢复 | 共用 | 下载租约语义 |
 | `src/wt_media_agent/storage/` | 本进程状态与检查点 | 共用 | 恢复、本地持久化 |

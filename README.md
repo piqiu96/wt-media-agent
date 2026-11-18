@@ -61,3 +61,12 @@ The storage migration command initializes `local-agent.sqlite3` under `--db-path
 The default moved in CHG-056 T-03; it used to be `~/.wt-media-agent` for every deployment shape. A development database left there is not migrated — pass `--db-path ~/.wt-media-agent/local-agent.sqlite3` to reach it.
 
 Runtime configuration lives in `config/agent.toml`, overridden per key by environment variables (see `config/README.md`). `config/` is what the runtime reads and `config_online/` is the release replacement source: shipping copies that directory over this one wholesale, so a release artifact carries the production values while no runtime code ever names `config_online/`. A frozen Agent finds its configuration by where its executable sits rather than by an environment variable, and warns before falling back to the built-in defaults. Credentials are never read from either directory (see `AGENTS.md`).
+
+## Browser publishing dependencies
+
+Install the Local Agent extra with `uv pip install --python .venv/bin/python -e ".[local]"`.
+Publishing attaches Playwright to the existing local BitBrowser Profile; it does not launch a separate Chromium or require `playwright install`. The Desktop Sidecar build must use this same environment so Playwright and its bundled driver are included. Cloud mode does not start the browser driver.
+
+Run the isolated browser checks with `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests/browser -p "test_*.py"`. They require local Google Chrome, block external requests and are not real-platform acceptance.
+
+Validate a built Sidecar with `PYTHONPATH=src .venv/bin/python scripts/verify/smoke_frozen_browser.py --binary <packaged-sidecar>`. Adding `--endpoint <local-host:port> --file <test-file>` opens only an isolated network-blocked file input tab; it does not post to a platform. On macOS, the build retains only the JIT entitlement required by the bundled Node driver.

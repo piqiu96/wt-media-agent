@@ -45,6 +45,9 @@ from wt_media_agent.storage.publication import PublicationJournal
 from wt_media_agent.runner.publication import PublicationExecution
 from wt_media_agent.storage.publication_claim import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
+from wt_media_agent.runner.publication_job import PublicationJob
+from wt_media_agent.runner.publication_loop import PublicationLoop
+from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class Components:
     publication_journal: PublicationJournal
     publication_execution: PublicationExecution
     publication_preparation: PublicationPreparation
+    publications: PublicationLoop
 
 
 def start_transfer_loop(components: Components) -> list[threading.Thread]:
@@ -78,6 +82,14 @@ def start_transfer_loop(components: Components) -> list[threading.Thread]:
     )
     loop.start()
     return [loop]
+
+def start_publication_loop(components: Components) -> list[threading.Thread]:
+    """Explicitly called by Local/Sidecar only; Cloud stays transfer-only."""
+    loop = threading.Thread(target=components.publications.start,
+                            name='agent-publications', daemon=True)
+    loop.start()
+    return [loop]
+
 
 def database_path(config: AgentConfig) -> Path:
     """The Agent's SQLite file, under the configured data directory."""
@@ -169,6 +181,12 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # 11. Observable state for the local API surface.
     state = LocalAgentState(agent_id=config.agent_id)
 
+    def publisher_factory(platform):
+        # Explicit assembly: capabilities are not registered by import side effects.
+        if platform != 'baidu':
+            raise ValueError('platform publisher is not available')
+        return BaiduPublisher
+
     return Components(
         config=config,
         state=state,
@@ -181,4 +199,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_journal=publication_journal,
         publication_execution=publication_execution,
         publication_preparation=publication_preparation,
+        publications=PublicationLoop(agent_token, publication_preparation,
+            PublicationJob(publication_preparation, bitbrowser, publisher_factory)),
     )

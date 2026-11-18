@@ -7,7 +7,7 @@ dependencies = []
 
 [project.optional-dependencies]
 core = []
-local = []
+local = ["playwright==1.58.0"]
 cloud = []
 dev = []
 test = []

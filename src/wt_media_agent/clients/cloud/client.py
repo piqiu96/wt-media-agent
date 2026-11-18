@@ -12,6 +12,7 @@ from typing import Callable, Mapping, Optional
 from urllib import error as urlerror
 from urllib import request
 
+from wt_media_agent.runtime.constants import PUBLICATION_REPORT_OPERATIONS
 from wt_media_agent.clients.cloud.errors import (
     AgentAuthError,
     CloudUnavailableError,
@@ -89,7 +90,7 @@ class CloudAgentClient:
         return dict(data)
 
     def report_publication(self, token: str, task_id: str, operation: str, packet: dict):
-        if operation not in ('heartbeat', 'progress', 'complete'):
+        if operation not in PUBLICATION_REPORT_OPERATIONS:
             raise ValueError('invalid publication report operation')
         if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdecimal() or str(int(task_id)) != task_id or int(task_id) <= 0:
             raise ValueError('canonical task identity required')

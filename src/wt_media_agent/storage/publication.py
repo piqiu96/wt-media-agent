@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit, parse_qs
 
+from wt_media_agent.runtime.constants import (
+    PUBLICATION_RESULT_STATUSES,
+    PUBLICATION_SETTLED_STATUSES,
+    PublicationCheckpointStatus,
+    PublicationPhase,
+    PublicationStatus,
+    TASK_TYPE_PUBLICATION,
+)
 from wt_media_agent.storage.sqlite import connect
 from wt_media_agent.utils.time import utc_now_iso
 
@@ -83,7 +91,7 @@ def _validated_snapshot(value: dict) -> str:
 
 
 def _safe_result(value: dict) -> None:
-    if not isinstance(value, dict) or value.get('status') not in ('reviewing', 'failed', 'uncertain'):
+    if not isinstance(value, dict) or value.get('status') not in PUBLICATION_RESULT_STATUSES:
         raise ValueError('an explicit observation is required')
     def visit(node):
         if isinstance(node, dict):
@@ -120,7 +128,7 @@ class PublicationJournal:
 
     @staticmethod
     def _state(db, identity):
-        row = db.execute('SELECT * FROM task_checkpoints WHERE task_id=? AND task_type=?', (identity.key, 'publication')).fetchone()
+        row = db.execute('SELECT * FROM task_checkpoints WHERE task_id=? AND task_type=?', (identity.key, TASK_TYPE_PUBLICATION)).fetchone()
         if row is None:
             raise JournalConflict('no durable publication claim')
         state = json.loads(row['checkpoint_json'])
@@ -143,17 +151,18 @@ class PublicationJournal:
                     raise JournalConflict('attempt input differs')
                 return False
             busy = db.execute("""SELECT 1 FROM task_checkpoints
-                WHERE task_type='publication' AND checkpoint_status<>'publication_settled'
+                WHERE task_type=? AND checkpoint_status<>?
                   AND json_extract(checkpoint_json,'$.identity.bit_profile_id')=? LIMIT 1""",
-                (identity.bit_profile_id,)).fetchone()
+                (TASK_TYPE_PUBLICATION, PublicationCheckpointStatus.SETTLED, identity.bit_profile_id)).fetchone()
             if busy:
                 raise JournalConflict('profile has an unresolved publication scene')
-            state = {'identity': asdict(identity), 'input': json.loads(encoded), 'phase': 'claimed', 'report_seq': 0}
+            state = {'identity': asdict(identity), 'input': json.loads(encoded), 'phase': PublicationPhase.CLAIMED, 'report_seq': 0}
             now = utc_now_iso()
             db.execute("""INSERT INTO task_checkpoints(task_id,task_type,agent_id,checkpoint_status,
                 attempt_id,task_payload_json,checkpoint_json,last_stage,external_side_effect,created_at,updated_at)
-                VALUES(?,'publication',?,'publication_open',?,?,?,'claimed',1,?,?)""",
-                (identity.key, identity.user_id, identity.attempt_id, encoded, _json(state), now, now))
+                VALUES(?,?,?,?,?,?,?,?,1,?,?)""",
+                (identity.key, TASK_TYPE_PUBLICATION, identity.user_id, PublicationCheckpointStatus.OPEN,
+                 identity.attempt_id, encoded, _json(state), PublicationPhase.CLAIMED, now, now))
             return True
 
     def get(self, identity: ExecutionIdentity) -> dict:
@@ -162,7 +171,11 @@ class PublicationJournal:
             return state
 
     def advance(self, identity: ExecutionIdentity, phase: str) -> int:
-        previous = {'prepared': 'claimed', 'submitting': 'prepared', 'click_started': 'submitting'}
+        previous = {
+            PublicationPhase.PREPARED: PublicationPhase.CLAIMED,
+            PublicationPhase.SUBMITTING: PublicationPhase.PREPARED,
+            PublicationPhase.CLICK_STARTED: PublicationPhase.SUBMITTING,
+        }
         if phase not in previous:
             raise ValueError('unsupported local submit phase')
         with self._transaction() as db:
@@ -178,22 +191,22 @@ class PublicationJournal:
         """Reserve an observation sequence without changing the submit boundary."""
         with self._transaction() as db:
             _, state = self._state(db, identity)
-            if state['phase'] not in ('claimed', 'prepared'):
+            if state['phase'] not in (PublicationPhase.CLAIMED, PublicationPhase.PREPARED):
                 raise JournalConflict('new observations cannot reopen a submission')
             state['report_seq'] += 1
             self._write(db, identity, state)
             return state['report_seq']
 
-    def unresolved_results(self, environment: str, user_id: str) -> list[dict]:
-        """Read original packets, including acknowledged-but-not-settled crashes."""
+    def unresolved_attempts(self, environment: str, user_id: str) -> list[dict]:
+        """Read open scenes, including exits before a result could be saved."""
         with self._transaction() as db:
             rows = db.execute("""SELECT checkpoint_json,final_result_json FROM task_checkpoints
-                WHERE task_type='publication' AND checkpoint_status<>'publication_settled'
+                WHERE task_type=? AND checkpoint_status<>?
                   AND agent_id=? AND json_extract(checkpoint_json,'$.identity.environment')=?
-                  AND final_result_json IS NOT NULL ORDER BY task_id""",
-                (user_id, _environment(environment))).fetchall()
+                ORDER BY task_id""",
+                (TASK_TYPE_PUBLICATION, PublicationCheckpointStatus.SETTLED, user_id, _environment(environment))).fetchall()
             return [{'identity': ExecutionIdentity(**json.loads(row['checkpoint_json'])['identity']),
-                     'packet': json.loads(row['final_result_json'])} for row in rows]
+                     'packet': json.loads(row['final_result_json']) if row['final_result_json'] is not None else None} for row in rows]
 
     def save_result(self, identity: ExecutionIdentity, result: dict, *, report_seq: int) -> dict:
         _safe_result(result)
@@ -209,14 +222,16 @@ class PublicationJournal:
                 if prior != packet:
                     raise JournalConflict('saved execution result is immutable')
                 return prior
+            if row['checkpoint_status'] == PublicationCheckpointStatus.SETTLED:
+                raise JournalConflict('resolved scene cannot acquire a new execution result')
             if report_seq <= state['report_seq']:
                 raise JournalConflict('result sequence is stale')
-            state.update(phase='result_saved', report_seq=report_seq, result_hash=digest)
+            state.update(phase=PublicationPhase.RESULT_SAVED, report_seq=report_seq, result_hash=digest)
             self._write(db, identity, state)
             now = utc_now_iso()
-            db.execute("""UPDATE task_checkpoints SET checkpoint_status='publication_result',
+            db.execute("""UPDATE task_checkpoints SET checkpoint_status=?,
                 final_status=?,final_result_json=?,report_pending=1,finished_at=? WHERE task_id=?""",
-                (result['status'], _json(packet), now, identity.key))
+                (PublicationCheckpointStatus.RESULT, result['status'], _json(packet), now, identity.key))
             db.execute("""INSERT INTO offline_results(task_id,agent_id,attempt_id,status,result_json,queued_at)
                 VALUES(?,?,?,?,?,?)""", (identity.key, identity.user_id, identity.attempt_id, result['status'], _json(packet), now))
         return packet
@@ -225,9 +240,9 @@ class PublicationJournal:
         with self._transaction() as db:
             rows = db.execute("""SELECT r.id,r.result_json FROM offline_results r
                 JOIN task_checkpoints c ON c.task_id=r.task_id
-                WHERE c.task_type='publication' AND r.delivered=0 AND c.agent_id=?
+                WHERE c.task_type=? AND r.delivered=0 AND c.agent_id=?
                   AND json_extract(c.checkpoint_json,'$.identity.environment')=? ORDER BY r.id""",
-                (user_id, _environment(environment))).fetchall()
+                (TASK_TYPE_PUBLICATION, user_id, _environment(environment))).fetchall()
             return [{'id': row['id'], 'packet': json.loads(row['result_json'])} for row in rows]
 
     def flush(self, environment: str, user_id: str, send: Callable[[dict], dict], *, only_attempt: str | None = None) -> int:
@@ -246,9 +261,9 @@ class PublicationJournal:
             with self._transaction() as db:
                 row = db.execute("""SELECT r.task_id,r.delivered,r.result_json FROM offline_results r
                     JOIN task_checkpoints c ON c.task_id=r.task_id
-                    WHERE r.id=? AND c.task_type='publication' AND c.agent_id=?
+                    WHERE r.id=? AND c.task_type=? AND c.agent_id=?
                       AND json_extract(c.checkpoint_json,'$.identity.environment')=?""",
-                    (pending['id'], user_id, _environment(environment))).fetchone()
+                    (pending['id'], TASK_TYPE_PUBLICATION, user_id, _environment(environment))).fetchone()
                 if row is None or row['delivered']:
                     continue
                 if json.loads(row['result_json']) != pending['packet']:
@@ -261,18 +276,46 @@ class PublicationJournal:
                     db.execute('UPDATE offline_results SET delivery_attempts=delivery_attempts+1 WHERE id=?', (pending['id'],))
         return delivered
 
+    def settle_resolved(self, identity: ExecutionIdentity, original: dict):
+        """Release only an explicitly resolved original scene, without a report ack.
+
+        Cloud may have verified a hard exit before receiving any result. Keep
+        missing results missing and undelivered packets undelivered; neither is
+        permission to replay the browser. This is not a task status transition.
+        """
+        if (not isinstance(original, dict) or original.get('attempt_id') != identity.attempt_id
+                or original.get('scene_resolved') is not True
+                or original.get('resolved_status') != PublicationStatus.FAILED or 'result_hash' not in original):
+            raise JournalConflict('Cloud has not explicitly resolved this original scene')
+        with self._transaction() as db:
+            row, state = self._state(db, identity)
+            cloud_hash = original['result_hash']
+            if cloud_hash is not None and cloud_hash != state.get('result_hash'):
+                raise JournalConflict('original result differs from the local record')
+            if row['final_result_json'] is not None and cloud_hash is None:
+                result = json.loads(row['final_result_json'])['result']
+                if result['status'] == PublicationStatus.REVIEWING:
+                    raise JournalConflict('manual failure conflicts with an unacknowledged receipt')
+            state['phase'] = PublicationPhase.SETTLED
+            state['scene_resolution'] = {key: original[key] for key in
+                                         ('attempt_id', 'result_hash', 'scene_resolved', 'resolved_status')}
+            self._write(db, identity, state)
+            db.execute('UPDATE task_checkpoints SET checkpoint_status=? WHERE task_id=?',
+                       (PublicationCheckpointStatus.SETTLED, identity.key))
+
     def settle(self, identity: ExecutionIdentity, result_hash: str, *, task_status: str):
         """Called only after provider-confirmed resolution and safe browser cleanup.
 
         No clock, successful report, or local observation can invoke this implicitly.
         The frozen attempt remains as a replay barrier after releasing its Profile.
         """
-        if task_status not in ('published', 'reviewing', 'failed', 'cancelled', 'abandoned'):
+        if task_status not in PUBLICATION_SETTLED_STATUSES:
             raise JournalConflict('Cloud has not resolved this execution')
         with self._transaction() as db:
             row, state = self._state(db, identity)
             if not state.get('result_hash') or state['result_hash'] != result_hash or row['report_pending']:
                 raise JournalConflict('result must be durably acknowledged before resolution')
-            state['phase'] = 'settled'
+            state['phase'] = PublicationPhase.SETTLED
             self._write(db, identity, state)
-            db.execute("UPDATE task_checkpoints SET checkpoint_status='publication_settled' WHERE task_id=?", (identity.key,))
+            db.execute('UPDATE task_checkpoints SET checkpoint_status=? WHERE task_id=?',
+                       (PublicationCheckpointStatus.SETTLED, identity.key))
