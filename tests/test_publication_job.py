@@ -45,14 +45,20 @@ class Preparation:
 
 class Platform:
     def __init__(self,journal,ident): self.journal=journal;self.ident=ident;self.fills=0;self.clicks=0;self.fail_click=False
-    def fill(self,prepared,content,*,stopped):
+    def fill_form(self,page,payload,*,stopped):
         self.fills+=1
         assert not stopped()
     def submit(self):
         assert self.journal.get(self.ident)['phase']=='click_started'
         self.clicks+=1
         if self.fail_click:raise ConnectionError('lost click acknowledgement')
-    def receipt(self):return {'platform_work_id':'1834567890123456789'}
+    def read_receipt(self):return {'platform_work_id':'1834567890123456789'}
+
+
+class Session:
+    def __init__(self, endpoint): self.page=object(); self.disconnected=False
+    def __enter__(self): return self
+    def __exit__(self, *_): self.disconnected=True
 
 
 class PublicationJobTests(unittest.TestCase):
@@ -61,8 +67,11 @@ class PublicationJobTests(unittest.TestCase):
         db=root/'a.db';apply_migrations(db);self.j=PublicationJournal(db);self.i=identity();self.j.register(self.i,snapshot())
         self.cloud=Cloud(self.j,self.i);self.prep=Preparation(self.j,self.cloud,self.i,root);self.platform=Platform(self.j,self.i);self.closed=True
         self.bit=SimpleNamespace(close_profile_verified=lambda *a,**kw:self.closed)
-        self.job=PublicationJob(self.prep,self.bit,lambda:self.platform,heartbeat_interval=0.02)
-        s=snapshot();self.value={'task':{'id':self.i.task_id},'attempt':{'input_snapshot':dict(s,bit_profile_id=self.i.bit_profile_id)}}
+        self.session=Session("127.0.0.1:9999")
+        self.job=PublicationJob(self.prep,self.bit,lambda platform:self.platform,
+            browser_session_factory=lambda endpoint:self.session,heartbeat_interval=0.02)
+        s=snapshot();s.pop('platform')
+        self.value={'task':{'id':self.i.task_id,'platform':'baidu'},'attempt':{'input_snapshot':dict(s,bit_profile_id=self.i.bit_profile_id)}}
     def run_job(self):return self.job.run('memory-only-token',self.value,self.i)
     def test_click_requires_both_durable_barriers_and_only_receipt_means_reviewing(self):
         result=self.run_job()
@@ -119,7 +128,7 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.platform.clicks,1)
 
     def test_zero_or_noncanonical_receipt_cannot_be_reported_as_reviewing(self):
-        self.platform.receipt=lambda:{'platform_work_id':'0'}
+        self.platform.read_receipt=lambda:{'platform_work_id':'0'}
         result=self.run_job()
         self.assertEqual(result['status'],'uncertain')
         self.assertNotIn('platform_work_id',result)
@@ -137,3 +146,42 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(result['status'],'uncertain')
         self.assertEqual(self.platform.fills,0)
         self.assertEqual(self.platform.clicks,0)
+
+    def test_changed_session_before_preparation_never_opens_browser(self):
+        result=self.job.run('memory-only-token',self.value,self.i,current=lambda:False)
+        self.assertEqual(result['status'],'uncertain');self.assertEqual(self.platform.fills,0);self.assertEqual(self.platform.clicks,0)
+        self.assertEqual(self.j.get(self.i)['phase'],'result_saved')
+
+    def test_session_replaced_after_submit_permission_never_clicks(self):
+        live=[True];report=self.cloud.report_publication
+        def replace(token,task,operation,packet):
+            value=report(token,task,operation,packet)
+            if operation=='progress' and packet['stage']=='submitting':live[0]=False
+            return value
+        self.cloud.report_publication=replace
+        result=self.job.run('memory-only-token',self.value,self.i,current=lambda:live[0])
+        self.assertEqual(result['status'],'uncertain');self.assertEqual(self.platform.fills,1);self.assertEqual(self.platform.clicks,0)
+        self.assertEqual(self.j.get(self.i)['phase'],'result_saved')
+
+    def test_driver_disconnects_before_profile_close_even_on_lost_click(self):
+        events=[]
+        session=self.session
+        class ObservedSession:
+            page=session.page
+            def __enter__(self): events.append('connect');return self
+            def __exit__(self,*_): events.append('disconnect')
+        self.job.browser_session_factory=lambda endpoint:ObservedSession()
+        def close(*_): events.append('profile-close');return True
+        self.bit.close_profile_verified=close
+        self.platform.fail_click=True
+        self.run_job()
+        self.assertEqual(events,['connect','disconnect','profile-close'])
+        self.assertEqual(self.platform.clicks,1)
+
+    def test_platform_dispatch_rejects_before_opening_browser(self):
+        def unsupported(platform): raise ValueError('unsupported')
+        self.job.platform_factory=unsupported
+        def forbidden(*_): self.fail('unsupported platform opened browser')
+        self.job.browser_session_factory=forbidden
+        self.assertEqual(self.run_job()['status'],'uncertain')
+        self.assertEqual(self.platform.fills,0)

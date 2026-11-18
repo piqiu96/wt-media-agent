@@ -56,7 +56,12 @@ def binary_name(target: str) -> str:
 
 def pyinstaller_signing_args(system: str | None = None) -> list[str]:
     """Ad-hoc sign embedded Mach-O libraries for macOS runtime loading."""
-    return ["--codesign-identity", "-"] if (system or platform.system()).lower() == "darwin" else []
+    if (system or platform.system()).lower() != "darwin":
+        return []
+    # PyInstaller re-signs Playwright's bundled Node with hardened runtime.
+    # Without JIT permission V8 aborts before the driver can start.
+    return ["--codesign-identity", "-", "--osx-entitlements-file",
+            str(ROOT / "resources" / "sidecar-macos.entitlements.plist")]
 
 
 def python_library_resign_args(system: str | None = None) -> list[str]:

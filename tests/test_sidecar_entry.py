@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import plistlib
 from pathlib import Path
 import importlib.util
 import inspect
@@ -39,7 +40,13 @@ class SidecarEntryTests(LoggingStateTestCase):
         assert spec.loader is not None
         spec.loader.exec_module(module)
 
-        self.assertEqual(module.pyinstaller_signing_args("darwin"), ["--codesign-identity", "-"])
+        self.assertEqual(module.pyinstaller_signing_args("darwin"), [
+            "--codesign-identity", "-", "--osx-entitlements-file",
+            str(ROOT / "resources" / "sidecar-macos.entitlements.plist"),
+        ])
+        with (ROOT / "resources" / "sidecar-macos.entitlements.plist").open('rb') as source:
+            self.assertEqual(plistlib.load(source), {"com.apple.security.cs.allow-jit": True})
+        self.assertEqual(module.pyinstaller_signing_args("windows"), [])
         self.assertEqual(
             module.python_library_resign_args("darwin"),
             ["codesign", "--force", "--sign", "-"],

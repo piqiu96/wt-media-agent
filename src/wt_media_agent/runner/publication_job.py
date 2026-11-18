@@ -5,20 +5,22 @@ import logging
 from threading import Event, Thread
 
 from wt_media_agent.storage.publication import JournalConflict
+from wt_media_agent.clients.publisher import PublishPayload
 
 logger = logging.getLogger(__name__)
 
 
 class PublicationJob:
-    def __init__(self, preparation, bitbrowser, platform_factory, *, heartbeat_interval=15.0):
+    def __init__(self, preparation, bitbrowser, platform_factory, *, browser_session_factory, heartbeat_interval=15.0):
         self.preparation = preparation
         self.cloud = preparation.cloud
         self.journal = preparation.journal
         self.bitbrowser = bitbrowser
         self.platform_factory = platform_factory
+        self.browser_session_factory = browser_session_factory
         self.heartbeat_interval = heartbeat_interval
 
-    def run(self, token, claim, identity):
+    def run(self, token, claim, identity, *, current=lambda: True):
         if self.journal.get(identity)['phase'] != 'claimed':
             raise JournalConflict('recovered attempts cannot enter the browser')
         done, stopped = Event(), Event()
@@ -32,8 +34,14 @@ class PublicationJob:
             return self.cloud.report_publication(token, identity.task_id, 'progress',
                 dict(evidence, attempt_id=identity.attempt_id, report_seq=seq, stage=stage))
 
+        def should_stop():
+            return stopped.is_set() or not current()
+
         def heartbeat():
             while not done.wait(self.heartbeat_interval):
+                if not current():
+                    stopped.set()
+                    return
                 try:
                     with self.preparation.report_lock:
                         seq = self.journal.get(identity)['report_seq']
@@ -46,6 +54,8 @@ class PublicationJob:
 
         pulse = None
         try:
+            if should_stop():
+                raise JournalConflict('execution credentials changed')
             with self.preparation.report_lock:
                 feedback = progress('preparing', self.journal.reserve_report(identity))
             if feedback.get('stop_requested') is not False:
@@ -54,26 +64,29 @@ class PublicationJob:
             pulse.start()
             prepared = self.preparation.prepare(token, claim, identity)
             self.preparation.consume_prepared(prepared)
-            if stopped.is_set():
+            if should_stop():
                 raise JournalConflict('execution is no longer current')
             # Re-check the current session immediately before starting upload.
             with self.preparation.report_lock:
                 feedback = progress('ready', self.journal.reserve_report(identity))
             if feedback.get('stop_requested') is not False:
                 raise JournalConflict('Cloud stopped the upload')
-            platform = self.platform_factory()
-            platform.fill(prepared, source['content'], stopped=stopped.is_set)
-            if stopped.is_set():
-                raise JournalConflict('execution stopped during upload')
-            with self.preparation.report_lock:
-                seq = self.journal.advance(identity, 'submitting')
-                feedback = progress('submitting', seq)
-                if feedback.get('allow_submit') is not True or feedback.get('stop_requested') is not False:
-                    raise JournalConflict('no fresh submit permission')
-                self.journal.advance(identity, 'click_started')
-            # This call is deliberately outside any retry or transaction.
-            platform.submit()
-            receipt = platform.receipt()
+            platform = self.platform_factory(claim['task']['platform'])
+            with self.browser_session_factory(prepared.endpoint) as session:
+                platform.fill_form(session.page, PublishPayload(prepared.video, prepared.cover, source['content']), stopped=should_stop)
+                if should_stop():
+                    raise JournalConflict('execution stopped during upload')
+                with self.preparation.report_lock:
+                    seq = self.journal.advance(identity, 'submitting')
+                    feedback = progress('submitting', seq)
+                    if feedback.get('allow_submit') is not True or feedback.get('stop_requested') is not False:
+                        raise JournalConflict('no fresh submit permission')
+                    self.journal.advance(identity, 'click_started')
+                # This call is deliberately outside any retry or transaction.
+                if should_stop():
+                    raise JournalConflict('execution credentials changed before submit')
+                platform.submit()
+                receipt = platform.read_receipt()
             work_id = receipt.get('platform_work_id', '')
             if not isinstance(work_id, str) or not work_id.isascii() or not work_id.isdecimal() or len(work_id) > 255 or int(work_id) <= 0 or str(int(work_id)) != work_id:
                 raise JournalConflict('no credible platform receipt')
