@@ -109,7 +109,7 @@ class AssemblyTests(ComponentTestCase):
         journal=self.components.publication_journal
         self.assertEqual(journal.db_path,database_path(self.config))
         self.assertIs(self.components.publication_execution.journal,journal)
-        self.assertEqual(journal.pending(self.config.cloud_base_url,"3"),[])
+        self.assertEqual(journal.pending(self.config.cloud_env,"3"),[])
 
     def test_the_database_lives_under_the_configured_data_directory(self):
         path = database_path(self.config)

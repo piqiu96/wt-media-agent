@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import closing, contextmanager
+from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.exc import OperationalError
+from wt_media_agent.runtime.constants import CLOUD_ENVS, TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, PublicationPhase, PUBLICATION_LOCAL_RESULT_STATUSES, PUBLICATION_SETTLED_STATUSES
+from wt_media_agent.storage.database import Database
+from wt_media_agent.storage.models import TaskCheckpointModel as Checkpoint, TaskResultModel as Result
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
-from wt_media_agent.storage.sqlite import connect
 from wt_media_agent.utils.time import utc_now_iso
 
 
@@ -26,31 +30,22 @@ def _json(value: object) -> str:
 
 
 def _environment(value: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError('a credential-free Cloud environment URL is required')
-    host = parsed.hostname.lower()
-    if ':' in host:
-        host = '[' + host + ']'
-    port = parsed.port
-    if port is not None and (parsed.scheme, port) not in (('http', 80), ('https', 443)):
-        host += ':' + str(port)
-    if any(part in ('.', '..') for part in parsed.path.split('/')):
-        raise ValueError('ambiguous environment path')
-    return parsed.scheme + '://' + host + parsed.path.rstrip('/')
+    if value not in CLOUD_ENVS:
+        raise ValueError('explicit Cloud environment required: dev/test/pre/prod')
+    return value
 
 
 
 @dataclass(frozen=True)
 class ExecutionIdentity:
-    environment: str
+    cloud_env: str
     user_id: str
     task_id: str
     attempt_id: str
     bit_profile_id: str
 
     def __post_init__(self):
-        object.__setattr__(self, 'environment', _environment(self.environment))
+        object.__setattr__(self, 'cloud_env', _environment(self.cloud_env))
         for value in (self.user_id, self.task_id, self.attempt_id):
             if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or not 0 < int(value) < 2**64:
                 raise ValueError('positive canonical decimal identities are required')
@@ -59,8 +54,9 @@ class ExecutionIdentity:
 
     @property
     def key(self) -> str:
-        # Attempt is the local unit. Task ids can overlap downloads and other Clouds.
-        return 'publication:' + hashlib.sha256(_json([self.environment, self.user_id, self.attempt_id]).encode()).hexdigest()
+        # Only an in-process/filesystem identifier; the database stores separate columns.
+        return f'{self.cloud_env}-{self.user_id}-{self.task_id}-{self.attempt_id}'
+
 
 
 def _validated_snapshot(value: dict) -> str:
@@ -83,7 +79,7 @@ def _validated_snapshot(value: dict) -> str:
 
 
 def _safe_result(value: dict) -> None:
-    if not isinstance(value, dict) or value.get('status') not in ('reviewing', 'published', 'failed', 'uncertain', 'awaiting_human', 'cancelled'):
+    if not isinstance(value, dict) or value.get('status') not in PUBLICATION_LOCAL_RESULT_STATUSES:
         raise ValueError('an explicit observation is required')
     def visit(node):
         if isinstance(node, dict):
@@ -101,150 +97,134 @@ def _safe_result(value: dict) -> None:
 
 
 class PublicationJournal:
-    def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
-
-    @contextmanager
-    def _transaction(self):
-        with closing(connect(self.db_path)) as db:
-            # The submit barrier must be durable before an external side effect.
-            db.execute('PRAGMA synchronous=FULL')
-            db.execute('BEGIN IMMEDIATE')
-            with db:
-                yield db
+    def __init__(self, database: Database, *, agent_id: str = ''):
+        self.database = database
+        self.db_path = database.path
+        self.agent_id = agent_id
 
     @staticmethod
-    def _state(db, identity):
-        row = db.execute('SELECT * FROM task_checkpoints WHERE task_id=? AND task_type=?', (identity.key, 'publication')).fetchone()
+    def _scope(identity):
+        return (Checkpoint.cloud_env==identity.cloud_env,Checkpoint.user_id==identity.user_id,
+            Checkpoint.task_type==TASK_TYPE_PUBLICATION,Checkpoint.task_id==identity.task_id,Checkpoint.attempt_id==identity.attempt_id)
+
+    @classmethod
+    def _state(cls, session, identity):
+        row=session.scalar(select(Checkpoint).where(*cls._scope(identity)))
         if row is None:
             raise JournalConflict('no durable publication claim')
-        state = json.loads(row['checkpoint_json'])
+        state=json.loads(row.checkpoint_json)
         if state['identity'] != asdict(identity):
             raise JournalConflict('attempt identity differs')
-        return row, state
+        return row,state
 
     @staticmethod
-    def _write(db, identity, state):
-        db.execute('UPDATE task_checkpoints SET checkpoint_json=?,last_stage=?,updated_at=? WHERE task_id=?',
-                   (_json(state), state['phase'], utc_now_iso(), identity.key))
+    def _write(session, row, state, **values):
+        original=row.checkpoint_json
+        result=session.execute(update(Checkpoint).where(Checkpoint.id==row.id,Checkpoint.checkpoint_json==original).values(
+            checkpoint_json=_json(state),last_stage=state['phase'],updated_at=utc_now_iso(),**values),execution_options={'synchronize_session':False})
+        if result.rowcount != 1:
+            raise JournalConflict('execution state changed concurrently')
 
     def register(self, identity: ExecutionIdentity, frozen_input: dict) -> bool:
-        encoded = _validated_snapshot(frozen_input)
-        with self._transaction() as db:
-            old = db.execute('SELECT * FROM task_checkpoints WHERE task_id=?', (identity.key,)).fetchone()
-            if old is not None:
-                _, state = self._state(db, identity)
-                if _json(state['input']) != encoded:
-                    raise JournalConflict('attempt input differs')
-                return False
-            busy = db.execute("""SELECT 1 FROM task_checkpoints
-                WHERE task_type='publication' AND checkpoint_status<>'publication_settled'
-                  AND json_extract(checkpoint_json,'$.identity.bit_profile_id')=? LIMIT 1""",
-                (identity.bit_profile_id,)).fetchone()
-            if busy:
+        encoded=_validated_snapshot(frozen_input)
+        digest=hashlib.sha256(encoded.encode()).hexdigest()
+        state={'identity':asdict(identity),'input':json.loads(encoded),'phase':PublicationPhase.CLAIMED,'report_seq':0}
+        now=utc_now_iso()
+        # Insert first: uniqueness is the arbiter, even with deferred transactions.
+        with self.database.session.begin() as session:
+            inserted=session.execute(insert(Checkpoint).values(cloud_env=identity.cloud_env,user_id=identity.user_id,
+                task_id=identity.task_id,task_type=TASK_TYPE_PUBLICATION,agent_id=self.agent_id,attempt_id=identity.attempt_id,
+                bit_profile_id=identity.bit_profile_id,checkpoint_status=PublicationCheckpointStatus.OPEN,input_hash=digest,
+                task_payload_json=encoded,checkpoint_json=_json(state),last_stage=PublicationPhase.CLAIMED,external_side_effect=1,
+                created_at=now,updated_at=now).on_conflict_do_nothing())
+            if inserted.rowcount == 1:
+                return True
+            old=session.scalar(select(Checkpoint).where(*self._scope(identity)))
+            if old is None:
                 raise JournalConflict('profile has an unresolved publication scene')
-            state = {'identity': asdict(identity), 'input': json.loads(encoded), 'phase': 'claimed', 'report_seq': 0}
-            now = utc_now_iso()
-            db.execute("""INSERT INTO task_checkpoints(task_id,task_type,agent_id,checkpoint_status,
-                attempt_id,task_payload_json,checkpoint_json,last_stage,external_side_effect,created_at,updated_at)
-                VALUES(?,'publication',?,'publication_open',?,?,?,'claimed',1,?,?)""",
-                (identity.key, identity.user_id, identity.attempt_id, encoded, _json(state), now, now))
-            return True
+            self._state(session,identity)
+            if old.input_hash != digest:
+                raise JournalConflict('attempt input differs')
+            return False
 
     def get(self, identity: ExecutionIdentity) -> dict:
-        with self._transaction() as db:
-            _, state = self._state(db, identity)
-            return state
+        with self.database.session() as session:
+            return self._state(session,identity)[1]
 
     def advance(self, identity: ExecutionIdentity, phase: str) -> int:
-        previous = {'prepared': 'claimed', 'submitting': 'prepared', 'click_started': 'submitting'}
+        previous={PublicationPhase.PREPARED:PublicationPhase.CLAIMED,PublicationPhase.SUBMITTING:PublicationPhase.PREPARED,PublicationPhase.CLICK_STARTED:PublicationPhase.SUBMITTING}
         if phase not in previous:
             raise ValueError('unsupported local submit phase')
-        with self._transaction() as db:
-            _, state = self._state(db, identity)
-            if state['phase'] != previous[phase]:
-                raise JournalConflict('submit boundary cannot be replayed or reversed')
-            state['phase'] = phase
-            state['report_seq'] += 1
-            self._write(db, identity, state)
-            return state['report_seq']
+        try:
+            with self.database.session.begin() as session:
+                row,state=self._state(session,identity)
+                if state['phase'] != previous[phase]:
+                    raise JournalConflict('submit boundary cannot be replayed or reversed')
+                state.update(phase=phase,report_seq=state['report_seq']+1)
+                self._write(session,row,state)
+                return state['report_seq']
+        except OperationalError as error:
+            raise JournalConflict('execution state could not be advanced') from error
 
     def save_result(self, identity: ExecutionIdentity, result: dict, *, report_seq: int) -> dict:
         _safe_result(result)
         if type(report_seq) is not int or report_seq <= 0:
             raise JournalConflict('result sequence must advance')
-        # Hash and packet are private journal encoding. The provider adapter owns wire encoding.
-        digest = hashlib.sha256(_json({'report_seq': report_seq, 'result': result}).encode()).hexdigest()
-        packet = {'task_id': identity.task_id, 'attempt_id': identity.attempt_id, 'report_seq': report_seq, 'result_hash': digest, 'result': result}
-        with self._transaction() as db:
-            row, state = self._state(db, identity)
-            if row['final_result_json'] is not None:
-                prior = json.loads(row['final_result_json'])
-                if prior != packet:
+        digest=hashlib.sha256(_json({'report_seq':report_seq,'result':result}).encode()).hexdigest()
+        packet={'task_id':identity.task_id,'attempt_id':identity.attempt_id,'report_seq':report_seq,'result_hash':digest,'result':result}
+        with self.database.session.begin() as session:
+            row,state=self._state(session,identity)
+            prior=session.scalar(select(Result).where(Result.checkpoint_id==row.id))
+            if prior:
+                if json.loads(prior.result_json) != packet:
                     raise JournalConflict('saved execution result is immutable')
-                return prior
-            if report_seq <= state['report_seq']:
+                return packet
+            if report_seq <= state['report_seq'] or state['phase']==PublicationPhase.SETTLED:
                 raise JournalConflict('result sequence is stale')
-            state.update(phase='result_saved', report_seq=report_seq, result_hash=digest)
-            self._write(db, identity, state)
-            now = utc_now_iso()
-            db.execute("""UPDATE task_checkpoints SET checkpoint_status='publication_result',
-                final_status=?,final_result_json=?,report_pending=1,finished_at=? WHERE task_id=?""",
-                (result['status'], _json(packet), now, identity.key))
-            db.execute("""INSERT INTO offline_results(task_id,agent_id,attempt_id,status,result_json,queued_at)
-                VALUES(?,?,?,?,?,?)""", (identity.key, identity.user_id, identity.attempt_id, result['status'], _json(packet), now))
+            state.update(phase=PublicationPhase.RESULT_SAVED,report_seq=report_seq,result_hash=digest)
+            self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.RESULT,final_status=result['status'],report_pending=1,finished_at=utc_now_iso())
+            session.add(Result(checkpoint_id=row.id,status=result['status'],result_json=_json(packet),result_hash=digest,queued_at=utc_now_iso()))
         return packet
 
-    def pending(self, environment: str, user_id: str) -> list[dict]:
-        with self._transaction() as db:
-            rows = db.execute("""SELECT r.id,r.result_json FROM offline_results r
-                JOIN task_checkpoints c ON c.task_id=r.task_id
-                WHERE c.task_type='publication' AND r.delivered=0 AND c.agent_id=?
-                  AND json_extract(c.checkpoint_json,'$.identity.environment')=? ORDER BY r.id""",
-                (user_id, _environment(environment))).fetchall()
-            return [{'id': row['id'], 'packet': json.loads(row['result_json'])} for row in rows]
+    def pending(self, cloud_env: str, user_id: str) -> list[dict]:
+        with self.database.session() as session:
+            rows=session.scalars(select(Result).join(Checkpoint,Checkpoint.id==Result.checkpoint_id).where(
+                Checkpoint.task_type==TASK_TYPE_PUBLICATION,Checkpoint.cloud_env==_environment(cloud_env),
+                Checkpoint.user_id==user_id,Result.delivered.is_(False)).order_by(Result.id)).all()
+            return [{'id':r.id,'packet':json.loads(r.result_json)} for r in rows]
 
-    def flush(self, environment: str, user_id: str, send: Callable[[dict], dict]) -> int:
-        delivered = 0
-        for pending in self.pending(environment, user_id):
-            # Network is outside the transaction. A lost acknowledgement simply resends this packet.
-            packet = pending['packet']
-            expected = (packet['attempt_id'], packet['result_hash'])
+    def flush(self, cloud_env: str, user_id: str, send: Callable[[dict],dict]) -> int:
+        delivered=0
+        for pending in self.pending(cloud_env,user_id):
+            packet=pending['packet']
             try:
-                ack = send(json.loads(_json(packet)))
+                ack=send(json.loads(_json(packet)))
             except Exception:
-                ack = None
-            accepted = isinstance(ack, dict) and (ack.get('attempt_id'), ack.get('result_hash')) == expected
-            with self._transaction() as db:
-                row = db.execute("""SELECT r.task_id,r.delivered,r.result_json FROM offline_results r
-                    JOIN task_checkpoints c ON c.task_id=r.task_id
-                    WHERE r.id=? AND c.task_type='publication' AND c.agent_id=?
-                      AND json_extract(c.checkpoint_json,'$.identity.environment')=?""",
-                    (pending['id'], user_id, _environment(environment))).fetchone()
-                if row is None or row['delivered']:
+                ack=None
+            accepted=isinstance(ack,dict) and (ack.get('attempt_id'),ack.get('result_hash'))==(packet['attempt_id'],packet['result_hash'])
+            with self.database.session.begin() as session:
+                row=session.scalar(select(Result).join(Checkpoint,Checkpoint.id==Result.checkpoint_id).where(
+                    Result.id==pending['id'],Result.delivered.is_(False),Checkpoint.cloud_env==_environment(cloud_env),
+                    Checkpoint.user_id==user_id,Checkpoint.task_type==TASK_TYPE_PUBLICATION))
+                if row is None:
                     continue
-                if json.loads(row['result_json']) != pending['packet']:
+                if json.loads(row.result_json) != packet:
                     raise JournalConflict('pending result differs')
+                row.delivery_attempts+=1
                 if accepted:
-                    db.execute('UPDATE offline_results SET delivered=1,delivered_at=? WHERE id=?', (utc_now_iso(), pending['id']))
-                    db.execute('UPDATE task_checkpoints SET report_pending=0 WHERE task_id=?', (row['task_id'],))
-                    delivered += 1
-                else:
-                    db.execute('UPDATE offline_results SET delivery_attempts=delivery_attempts+1 WHERE id=?', (pending['id'],))
+                    row.delivered=True
+                    row.delivered_at=utc_now_iso()
+                    session.execute(update(Checkpoint).where(Checkpoint.id==row.checkpoint_id).values(report_pending=0))
+                    delivered+=1
         return delivered
 
     def settle(self, identity: ExecutionIdentity, result_hash: str, *, task_status: str):
-        """Called only after provider-confirmed resolution and safe browser cleanup.
-
-        No clock, successful report, or local observation can invoke this implicitly.
-        The frozen attempt remains as a replay barrier after releasing its Profile.
-        """
-        if task_status not in ('published', 'reviewing', 'failed', 'cancelled', 'abandoned'):
+        if task_status not in PUBLICATION_SETTLED_STATUSES:
             raise JournalConflict('Cloud has not resolved this execution')
-        with self._transaction() as db:
-            row, state = self._state(db, identity)
-            if not state.get('result_hash') or state['result_hash'] != result_hash or row['report_pending']:
+        with self.database.session.begin() as session:
+            row,state=self._state(session,identity)
+            if not state.get('result_hash') or state['result_hash']!=result_hash or row.report_pending:
                 raise JournalConflict('result must be durably acknowledged before resolution')
-            state['phase'] = 'settled'
-            self._write(db, identity, state)
-            db.execute("UPDATE task_checkpoints SET checkpoint_status='publication_settled' WHERE task_id=?", (identity.key,))
+            state['phase']=PublicationPhase.SETTLED
+            state.pop('input',None)
+            self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.SETTLED,task_payload_json=None)

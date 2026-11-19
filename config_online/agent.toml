@@ -15,6 +15,7 @@
 environment = "production"
 
 [cloud]
+cloud_env = "prod"
 # The source checkout retains a loopback default for local development. Tagged
 # release builds inject the Manifest's public HTTPS Cloud origin before freezing
 # the Agent and bundling this file; the bundled value is verified again later.
@@ -63,3 +64,7 @@ file = ""
 # wants a smaller line cap or a shorter window.
 # max_record_bytes = 1048576
 # retention_days = 14
+
+[database]
+synchronous = "FULL"
+timeout_seconds = 5.0

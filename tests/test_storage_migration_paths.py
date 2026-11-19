@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import sqlite3.dbapi2 as dbapi
 import tempfile
 import unittest
 from pathlib import Path
@@ -139,7 +140,7 @@ class ConnectionLifetimeTest(unittest.TestCase):
             return connection
 
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(migration.sqlite3, "connect", spy):
+            with mock.patch.object(dbapi, "connect", spy):
                 apply_migrations(Path(tmp) / "leak-check.sqlite3")
 
         self.assertTrue(created, "apply_migrations opened no connection at all")

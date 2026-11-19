@@ -22,6 +22,7 @@ accepts the connection and reports **zero bytes received**.
 """
 
 from __future__ import annotations
+from wt_media_agent.storage.database import Database
 
 import ast
 import json
@@ -155,7 +156,7 @@ def healthy_report(**overrides) -> dict[str, object]:
 class AggregateShapeTest(unittest.TestCase):
     def test_the_aggregate_reports_version_agent_status_and_three_dependencies(self) -> None:
         with isolated_paths() as paths:
-            store = CheckpointStore(paths.data / "agent.db")
+            store = CheckpointStore(Database(paths.data / "agent.db"))
             apply_migrations(paths.data / "agent.db")
 
             body = healthy_report(store=store)
@@ -187,7 +188,7 @@ class AggregateShapeTest(unittest.TestCase):
 
             body = healthy_report(
                 state=LocalAgentState(status="running"),
-                store=CheckpointStore(paths.data / "agent.db"),
+                store=CheckpointStore(Database(paths.data / "agent.db")),
             )
 
         self.assertEqual(body["agent_status"], "running")
@@ -225,7 +226,7 @@ class DegradedDependencyTest(unittest.TestCase):
 
     def test_storage_that_cannot_be_read_degrades_to_abnormal(self) -> None:
         with isolated_paths() as paths:
-            store = CheckpointStore(paths.data / "absent.db")
+            store = CheckpointStore(Database(paths.data / "absent.db"))
 
             body = healthy_report(store=store)
 
@@ -237,7 +238,7 @@ class DegradedDependencyTest(unittest.TestCase):
             apply_migrations(paths.data / "agent.db")
 
             body = healthy_report(
-                store=CheckpointStore(paths.data / "agent.db"),
+                store=CheckpointStore(Database(paths.data / "agent.db")),
                 bitbrowser=UnreachableBrowser(),
             )
 
@@ -323,14 +324,14 @@ class StorageProbeTest(unittest.TestCase):
     def test_a_migrated_database_probes_clean(self) -> None:
         with isolated_paths() as paths:
             apply_migrations(paths.data / "agent.db")
-            store = CheckpointStore(paths.data / "agent.db")
+            store = CheckpointStore(Database(paths.data / "agent.db"))
 
             store.probe()
 
     def test_a_missing_database_fails_and_is_not_created(self) -> None:
         with isolated_paths() as paths:
             db_path = paths.data / "absent.db"
-            store = CheckpointStore(db_path)
+            store = CheckpointStore(Database(db_path))
 
             with self.assertRaises(FileNotFoundError):
                 store.probe()
@@ -341,7 +342,7 @@ class StorageProbeTest(unittest.TestCase):
         with isolated_paths() as paths:
             db_path = paths.data / "empty.db"
             db_path.touch()
-            store = CheckpointStore(db_path)
+            store = CheckpointStore(Database(db_path))
 
             with self.assertRaises(Exception):
                 store.probe()
@@ -349,7 +350,7 @@ class StorageProbeTest(unittest.TestCase):
     def test_a_probe_leaves_no_row_behind(self) -> None:
         with isolated_paths() as paths:
             apply_migrations(paths.data / "agent.db")
-            store = CheckpointStore(paths.data / "agent.db")
+            store = CheckpointStore(Database(paths.data / "agent.db"))
 
             store.probe()
 
@@ -379,7 +380,7 @@ class RouteTest(unittest.TestCase):
             api = LocalApiServer(
                 LocalAgentState(agent_id="local-agent-dev", status="idle"),
                 bitbrowser=HealthyBrowser(),
-                checkpoint_store=CheckpointStore(paths.data / "agent.db"),
+                checkpoint_store=CheckpointStore(Database(paths.data / "agent.db")),
                 cloud_base_url=cloud.url,
             )
 
@@ -404,7 +405,7 @@ class RouteTest(unittest.TestCase):
             api = LocalApiServer(
                 LocalAgentState(),
                 bitbrowser=UnreachableBrowser(),
-                checkpoint_store=CheckpointStore(paths.data / "absent.db"),
+                checkpoint_store=CheckpointStore(Database(paths.data / "absent.db")),
                 cloud_base_url="http://127.0.0.1:1",
             )
 
