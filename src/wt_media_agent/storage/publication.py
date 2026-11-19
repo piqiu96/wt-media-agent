@@ -10,7 +10,7 @@ from wt_media_agent.runtime.profile_operation import ProfileOperations
 import hashlib
 import json
 from sqlalchemy import select, update, delete
-from wt_media_agent.runtime.constants import CLOUD_ENVS, TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, PublicationPhase, PublicationStatus, PUBLICATION_RESULT_STATUSES, PUBLICATION_LOCAL_RESULT_STATUSES, PUBLICATION_SETTLED_STATUSES
+from wt_media_agent.runtime.constants import CLOUD_ENVS, TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, PublicationPhase, PublicationStatus, PUBLICATION_RESULT_STATUSES, PUBLICATION_SETTLED_STATUSES
 from wt_media_agent.storage.database import Database, retry_write
 from wt_media_agent.storage.models import TaskCheckpointModel as Checkpoint, TaskResultModel as Result, AgentMetadata
 from dataclasses import asdict, dataclass
@@ -194,33 +194,21 @@ class PublicationJournal:
             self._write(session,row,state)
             return state['report_seq']
 
-    def unresolved_attempts(self, cloud_env: str, user_id: str) -> list[dict]:
+    def _attempts(self, cloud_env: str, user_id: str, *, pending: bool):
         with self.database.session() as session:
-            rows=session.execute(select(Checkpoint,Result).outerjoin(Result,Result.checkpoint_id==Checkpoint.id).where(
-                Checkpoint.task_type==TASK_TYPE_PUBLICATION,Checkpoint.checkpoint_status!=PublicationCheckpointStatus.SETTLED,
-                Checkpoint.cloud_env==_environment(cloud_env),Checkpoint.user_id==user_id).order_by(Checkpoint.id)).all()
-            return [{'identity':ExecutionIdentity(**json.loads(row.checkpoint_json)['identity']),
-                     'packet':json.loads(result.result_json) if result is not None else None} for row,result in rows]
+            query=select(Checkpoint,Result).outerjoin(Result,Result.checkpoint_id==Checkpoint.id).where(
+                Checkpoint.cloud_env==_environment(cloud_env),Checkpoint.user_id==user_id,Checkpoint.task_type==TASK_TYPE_PUBLICATION)
+            query=query.where(Result.delivered.is_(False)) if pending else query.where(Checkpoint.checkpoint_status!=PublicationCheckpointStatus.SETTLED)
+            return [{'identity':ExecutionIdentity(**json.loads(cp.checkpoint_json)['identity']),
+                     'packet':json.loads(result.result_json) if result else None}
+                    for cp,result in session.execute(query.order_by(Checkpoint.id)).all()]
 
-    @retry_write
-    def settle_resolved(self, identity: ExecutionIdentity, original: dict):
-        """Release only a Cloud-resolved scene; preserve missing or undelivered results."""
-        if (not isinstance(original,dict) or original.get('attempt_id')!=identity.attempt_id
-                or original.get('scene_resolved') is not True
-                or original.get('resolved_status')!=PublicationStatus.FAILED or 'result_hash' not in original):
-            raise JournalConflict('Cloud has not explicitly resolved this original scene')
-        with self.database.session.begin() as session:
-            row,state=self._state(session,identity)
-            cloud_hash=original['result_hash']
-            if cloud_hash is not None and cloud_hash!=state.get('result_hash'):
-                raise JournalConflict('original result differs from the local record')
-            result=session.scalar(select(Result).where(Result.checkpoint_id==row.id))
-            if result is not None and cloud_hash is None and result.status==PublicationStatus.REVIEWING:
-                raise JournalConflict('manual failure conflicts with an unacknowledged receipt')
-            state['phase']=PublicationPhase.SETTLED
-            state['scene_resolution']={key:original[key] for key in ('attempt_id','result_hash','scene_resolved','resolved_status')}
-            state.pop('input',None)
-            self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.SETTLED,task_payload_json=None)
+    def unresolved_attempts(self, cloud_env: str, user_id: str) -> list[dict]:
+        return self._attempts(cloud_env,user_id,pending=False)
+
+    def pending_attempts(self, cloud_env: str, user_id: str) -> list[dict]:
+        # A resolved browser scene must not hide a result that has not reached Cloud.
+        return self._attempts(cloud_env,user_id,pending=True)
 
     @retry_write
     def save_result(self, identity: ExecutionIdentity, result: dict, *, report_seq: int) -> dict:
@@ -268,6 +256,27 @@ class PublicationJournal:
                 session.execute(update(Checkpoint).where(Checkpoint.id==row.checkpoint_id).values(report_pending=0))
                 return True
         return False
+
+    @retry_write
+    def settle_resolved(self, identity: ExecutionIdentity, original: dict):
+        if (not isinstance(original,dict) or original.get('attempt_id')!=identity.attempt_id
+                or original.get('scene_resolved') is not True
+                or original.get('resolved_status')!=PublicationStatus.FAILED or 'result_hash' not in original):
+            raise JournalConflict('Cloud has not explicitly resolved this original scene')
+        with self.database.session.begin() as session:
+            row,state=self._state(session,identity)
+            cloud_hash=original['result_hash']
+            if cloud_hash is not None and cloud_hash!=state.get('result_hash'):
+                raise JournalConflict('original result differs from the local record')
+            saved=session.scalar(select(Result).where(Result.checkpoint_id==row.id))
+            if saved is not None and cloud_hash is None and json.loads(saved.result_json)['result']['status']==PublicationStatus.REVIEWING:
+                raise JournalConflict('manual failure conflicts with an unacknowledged receipt')
+            state['phase']=PublicationPhase.SETTLED
+            state['scene_resolution']={key:original[key] for key in ('attempt_id','result_hash','scene_resolved','resolved_status')}
+            if not row.report_pending:
+                state.pop('input',None)
+            self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.SETTLED,
+                task_payload_json=row.task_payload_json if row.report_pending else None)
 
     @retry_write
     def settle(self, identity: ExecutionIdentity, result_hash: str, *, task_status: str):

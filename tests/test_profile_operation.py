@@ -36,9 +36,31 @@ class ProfileOperationTests(unittest.TestCase):
         for method,body in [(api.profile_close_response,{"id":"busy"}),
                             (api.profile_update_response,{"id":"busy"}),
                             (api.profile_delete_response,{"id":"busy"}),
-                            (api.account_cookie_response,{"profile_id":"busy","stage":"apply"}),
                             (api.proxy_mutation_response,{"profile_id":"busy","operation":"unbind"})]:
             status,response=method(body)
             self.assertEqual(status,409)
             self.assertEqual(response["error"]["code"],"profile_operation_busy")
+        self.assertEqual(browser.mock_calls,[])
+
+    def test_cookie_stages_accept_real_handler_arguments_and_block_busy_profile(self):
+        from wt_media_agent.local_api.server import LocalApiServer
+        from wt_media_agent.local_api.state import LocalAgentState
+        from unittest.mock import Mock
+        browser=Mock()
+        api=LocalApiServer(LocalAgentState(),bitbrowser=browser,
+            profile_operations=ProfileOperations(occupied=lambda _:True))
+        for stage in ('prepare','apply','inspect'):
+            status,_=api.account_cookie_response(stage,{'profile_id':'busy','platform':'baidu'})
+            self.assertEqual(status,409)
+        self.assertEqual(browser.mock_calls,[])
+
+    def test_cookie_read_respects_unresolved_profile(self):
+        from wt_media_agent.local_api.server import LocalApiServer
+        from wt_media_agent.local_api.state import LocalAgentState
+        from unittest.mock import Mock
+        browser=Mock()
+        api=LocalApiServer(LocalAgentState(),bitbrowser=browser,
+            profile_operations=ProfileOperations(occupied=lambda _:True))
+        status,_=api.cookie_read_response({'profile_id':'busy','platform':'baidu'})
+        self.assertEqual(status,409)
         self.assertEqual(browser.mock_calls,[])

@@ -677,6 +677,7 @@ class LocalApiServer:
         except Exception:
             return 502, {"error": {"code": "account_cookie_live_read_failed", "message": "无法读取窗口状态，请核实后继续"}}
 
+    @profile_operation("profile_id")
     def cookie_read_response(self, body):
         profile_id = str(body.get("profile_id", "")).strip()
         platform = str(body.get("platform", "")).strip()

@@ -19,6 +19,12 @@ from wt_media_agent.platforms.publish import PublicationInputError
 from wt_media_agent.services.files.verified_download import download_verified
 
 
+class CloudExecutionStopped(PublicationInputError):
+    def __init__(self, reason):
+        super().__init__('Cloud stopped this execution')
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class PreparedPublication:
     identity: ExecutionIdentity
@@ -93,7 +99,8 @@ class PublicationPreparation:
                 'platform_uid':source['platform_uid'],'bit_profile_id':identity.bit_profile_id,
                 'video_sha256':source['video_sha256'],'cover_sha256':source['cover_sha256']})
         if feedback.get('stop_requested') is not False:
-            raise PublicationInputError('Cloud stopped this execution')
+            raise CloudExecutionStopped(feedback.get('stop_reason'))
+        return feedback
 
     def consume_prepared(self, prepared: PreparedPublication):
         # In-memory, one-use capability. A restarted process cannot turn an old

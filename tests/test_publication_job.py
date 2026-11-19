@@ -1,3 +1,4 @@
+from wt_media_agent.storage.database import Database
 """Coordinator fault checks use real SQLite; fixture receipts are not platform acceptance."""
 import copy
 import json
@@ -40,11 +41,12 @@ class Cloud:
 
 class Preparation:
     def __init__(self,journal,cloud,ident,root):
-        self.journal=journal;self.cloud=cloud;self.cloud_env=ident.cloud_env;self.report_lock=RLock();self.ident=ident;self.root=root;self.fresh=True
+        self.journal=journal;self.cloud_env=ident.cloud_env;self.cloud=cloud;self.report_lock=RLock();self.ident=ident;self.root=root;self.fresh=True
     def prepare(self,token,value,ident):
         return SimpleNamespace(identity=ident,video=self.root/'video',cover=self.root/'cover',endpoint='127.0.0.1:9999')
     def mark_ready(self, token, ident):
-        self.journal.advance(ident, 'prepared')
+        from wt_media_agent.runner.publication_preparation import PublicationPreparation
+        return PublicationPreparation.mark_ready(self,token,ident)
     def consume_prepared(self,prepared):
         if not self.fresh:raise JournalConflict('no fresh preparation')
         self.fresh=False
@@ -84,6 +86,29 @@ class PublicationJobTests(unittest.TestCase):
         s=snapshot();s.pop('platform')
         self.value={'task':{'id':self.i.task_id,'platform':'baidu'},'attempt':{'input_snapshot':dict(s,bit_profile_id=self.i.bit_profile_id)}}
     def run_job(self):return self.job.run('memory-only-token',self.value,self.i)
+    def test_settled_scene_keeps_original_result_visible_after_restart_and_network_restore(self):
+        self.closed=False
+        self.cloud.lose_result=True
+        self.run_job()
+        self.cloud.resolved=True
+        self.job.recover('token','3')
+        self.cloud.lose_result=False
+        original=self.cloud.report_publication
+        def reject_late_result(token,task,operation,packet):
+            if operation=='complete':
+                self.cloud.reports.append((operation,copy.deepcopy(packet)))
+                raise ValueError('Cloud rejects a result after manual resolution')
+            return original(token,task,operation,packet)
+        self.cloud.report_publication=reject_late_result
+        before=sum(operation=='complete' for operation,_ in self.cloud.reports)
+        self.job.journal=PublicationJournal(Database(self.j.database.path))
+        self.job.recover('token','3')
+        after=sum(operation=='complete' for operation,_ in self.cloud.reports)
+        self.assertEqual(after-before,1)
+        self.assertEqual(self.platform.clicks,1)
+        self.assertEqual(len(self.job.journal.pending(self.i.cloud_env,'3')),1)
+        self.assertEqual(self.job.journal.get(self.i)['phase'],'settled')
+
     def test_click_requires_both_durable_barriers_and_only_receipt_means_reviewing(self):
         result=self.run_job()
         self.assertEqual(result['status'],'reviewing');self.assertEqual(self.platform.clicks,1)
@@ -177,10 +202,10 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(self.j.get(self.i)['phase'], 'settled')
         self.assertEqual(self.j.pending(self.i.cloud_env, self.i.user_id), pending)
         with closing(sqlite3.connect(self.j.database.path)) as db:
-            row = db.execute('SELECT r.result_json,c.report_pending FROM task_checkpoint c JOIN task_result r ON r.checkpoint_id=c.id WHERE c.task_id=? AND c.attempt_id=?', (self.i.task_id,self.i.attempt_id)).fetchone()
+            row = db.execute('SELECT r.result_json,c.report_pending FROM task_result r JOIN task_checkpoint c ON c.id=r.checkpoint_id WHERE c.task_id=?', (self.i.task_id,)).fetchone()
             self.assertEqual(json.loads(row[0]), pending[0]['packet'])
             self.assertEqual(row[1], 1)
-            self.assertEqual(db.execute('SELECT r.delivered FROM task_result r JOIN task_checkpoint c ON c.id=r.checkpoint_id WHERE c.task_id=? AND c.attempt_id=?', (self.i.task_id,self.i.attempt_id)).fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT r.delivered FROM task_result r JOIN task_checkpoint c ON c.id=r.checkpoint_id WHERE c.task_id=?', (self.i.task_id,)).fetchone()[0], 0)
         self.assertEqual(self.platform.clicks, 1)
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
         new = ExecutionIdentity(self.i.cloud_env, self.i.user_id, self.i.task_id, '2', self.i.bit_profile_id)
@@ -299,6 +324,8 @@ class PublicationJobTests(unittest.TestCase):
 
 
     def test_input_change_before_permission_fails_only_after_verified_close(self):
+        from wt_media_agent.runner.publication_preparation import PublicationPreparation
+        self.prep.mark_ready=lambda token,ident: PublicationPreparation.mark_ready(self.prep,token,ident)
         original=self.cloud.report_publication
         def stop(token,task,op,packet):
             if op=='report' and packet.get('stage')=='ready':

@@ -14,7 +14,7 @@ the revision it is at.
 Agent consumes the Cloud-owned Cloud-Agent API. M1-C1 locks the expected Cloud-Agent contract major version and revision in Agent source code, without copying the provider's formal OpenAPI definition.
 
 
-Publication execution consumes Cloud contract revision `2026.11.20.1`:
+Publication execution consumes Cloud contract revision `2026.11.20.2`:
 `/api/v1/cloud-agent/publication-task/claim`, `/{id}/report`, and `/{id}/complete`.
 Keepalive omits `stage`; progress and the pre-submit check supply it. These reports
 share increasing sequence numbers, while completion keeps the saved original

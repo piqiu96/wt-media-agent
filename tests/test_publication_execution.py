@@ -214,8 +214,8 @@ class PublicationExecutionTests(unittest.TestCase):
         with self.assertRaises(JournalConflict):
             reopened.save_result(self.owner, {'status': 'uncertain'}, report_seq=1)
         self.assertEqual(reopened.pending(self.owner.cloud_env, self.owner.user_id), [])
-        with sqlite3.connect(self.db) as db:
-            self.assertIsNone(db.execute('SELECT final_result_json FROM task_checkpoint WHERE cloud_env=? AND user_id=? AND task_id=? AND attempt_id=?', (self.owner.cloud_env,self.owner.user_id,self.owner.task_id,self.owner.attempt_id)).fetchone()[0])
+        with closing(sqlite3.connect(self.db)) as db, db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM task_result').fetchone()[0],0)
 
     def test_scene_resolution_cannot_hide_a_different_original_result(self):
         self.journal.register(self.owner, snapshot())

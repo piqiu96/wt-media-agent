@@ -1,40 +1,16 @@
 """Serial Local Agent publication polling. Signed authority stays with Cloud."""
 from __future__ import annotations
 
-import base64
-import json
 import logging
-import time
 from threading import Event
 
+from wt_media_agent.runtime.agent_token import routing_user_id
 from wt_media_agent.clients.cloud.errors import AgentAuthError
 from wt_media_agent.runtime.constants import DEFAULT_PUBLICATION_POLL_SECONDS
 
 logger = logging.getLogger(__name__)
 
 
-def routing_user_id(token: str) -> str | None:
-    """Decode an untrusted routing hint, never an authorization decision.
-
-    The v1 envelope belongs to Cloud's Agent Token contract. Every operation is
-    still sent with the original token for signature/session/ownership checks.
-    """
-    try:
-        if not isinstance(token, str) or len(token) > 8192:
-            return None
-        version, payload, signature = token.split('.')
-        if version != 'v1' or not signature:
-            return None
-        claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
-        user = claims['sub']
-        if (claims.get('ver') != 1 or claims.get('scope') != 'agent'
-                or not isinstance(claims.get('sid'), str) or not claims['sid']
-                or type(user) is not int or not 0 < user <= 9223372036854775807
-                or type(claims.get('exp')) is not int or claims['exp'] <= time.time()):
-            return None
-        return str(user)
-    except (ValueError, TypeError, KeyError, UnicodeError):
-        return None
 
 
 class PublicationLoop:

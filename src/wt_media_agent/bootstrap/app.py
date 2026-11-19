@@ -192,7 +192,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
     state = LocalAgentState(agent_id=config.agent_id)
 
     def publisher_factory(platform):
-        # Explicit assembly: capabilities are not registered by import side effects.
         if platform != 'baidu':
             raise ValueError('platform publisher is not available')
         return BaiduPublisher
@@ -209,7 +208,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_journal=publication_journal,
         publication_execution=publication_execution,
         database=database,
-        publication_preparation=publication_preparation,
         publications=PublicationLoop(agent_token, publication_preparation,
             PublicationJob(publication_preparation, bitbrowser, publisher_factory)),
+        publication_preparation=publication_preparation,
     )

@@ -17,6 +17,7 @@ from wt_media_agent.runtime.constants import (
     PublicationStatus,
     PublishMethod,
 )
+from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
 from wt_media_agent.storage.publication import JournalConflict
 from wt_media_agent.platforms.publish import PublishControl, PublishPayload
 
@@ -55,9 +56,10 @@ class PublicationJob:
             return stopped.is_set() or not current()
 
         def on_prepared():
-            self.preparation.mark_ready(token, identity)
-            with self.preparation.report_lock:
-                feedback = progress(PublicationStage.READY, self.journal.reserve_report(identity))
+            nonlocal stop_reason
+            feedback = self.preparation.mark_ready(token, identity)
+            if feedback.get('stop_reason') == PUBLICATION_INPUT_CHANGED:
+                stop_reason = PUBLICATION_INPUT_CHANGED
             if feedback.get('stop_requested') is not False:
                 raise JournalConflict('Cloud stopped the upload')
 
@@ -109,6 +111,8 @@ class PublicationJob:
             if not isinstance(work_id, str) or not work_id.isascii() or not work_id.isdecimal() or len(work_id) > 255 or int(work_id) <= 0 or str(int(work_id)) != work_id:
                 raise JournalConflict('no credible platform receipt')
         except Exception as error:
+            if isinstance(error, CloudExecutionStopped) and error.reason == PUBLICATION_INPUT_CHANGED:
+                stop_reason = PUBLICATION_INPUT_CHANGED
             logger.warning("publication stopped before a credible result: phase=%s error_type=%s",
                 self.journal.get(identity)['phase'], type(error).__name__)
             # Do not persist exception text: platform errors may contain private
@@ -151,8 +155,12 @@ class PublicationJob:
 
     def recover(self, token, user_id):
         confirmed = 0
-        for row in self.journal.unresolved_attempts(self.preparation.cloud_env, user_id):
+        pending=self.journal.pending_attempts(self.preparation.cloud_env,user_id)
+        attempts={row['identity'].key:row for row in self.journal.unresolved_attempts(self.preparation.cloud_env,user_id)}
+        attempts.update({row['identity'].key:row for row in pending})
+        for row in attempts.values():
             identity, packet = row['identity'], row['packet']
+            was_settled=self.journal.get(identity)['phase']==PublicationPhase.SETTLED
             expected = (identity.attempt_id, packet['result_hash']) if packet is not None else None
             acknowledgement = None
             resolved_status = ''
@@ -185,7 +193,7 @@ class PublicationJob:
                     self.journal.record_delivery(identity.cloud_env, user_id, packet, accepted=True)
                 if resolved_status:
                     self.journal.settle(identity, packet['result_hash'], task_status=resolved_status)
-                elif acknowledgement is None and scene_resolution is not None:
+                elif acknowledgement is None and scene_resolution is not None and not was_settled:
                     self.journal.settle_resolved(identity, scene_resolution)
                 elif acknowledgement is None:
                     continue
