@@ -53,8 +53,9 @@ class SQLiteContentionTests(unittest.TestCase):
         with self.assertRaises(sqlite3.ProgrammingError): connection.execute('SELECT 1')
 
     def test_non_contention_open_failure_is_not_retried(self):
-        database=Database('/private/tmp/invalid-chg102-test/agent.db')
-        self.addCleanup(database.close)
-        with mock.patch.object(dbapi,'connect',side_effect=sqlite3.OperationalError('not usable')) as opening:
-            with self.assertRaises(OperationalError): database.engine.connect()
-            opening.assert_called_once()
+        with tempfile.TemporaryDirectory() as tmp:
+            database=Database(Path(tmp)/'agent.db')
+            self.addCleanup(database.close)
+            with mock.patch.object(dbapi,'connect',side_effect=sqlite3.OperationalError('not usable')) as opening:
+                with self.assertRaises(OperationalError): database.engine.connect()
+                opening.assert_called_once()
