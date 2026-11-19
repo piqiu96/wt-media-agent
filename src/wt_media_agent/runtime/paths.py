@@ -8,7 +8,7 @@ states, decided in this order:
    `WT_MEDIA_AGENT_DATA_DIR` to a bundled sidecar.
 2. **dev** -- not frozen and not production: the repository's `.local/`. A
    developer run never touches the installed locations.
-3. **installed** -- frozen (PyInstaller) or `environment == "production"`:
+3. **installed** -- frozen (PyInstaller) or `environment == "prod"`:
    `~/Library/Application Support/WTMedia/Agent` for data and
    `~/Library/Logs/WTMedia/Agent` for logs, per ADR-0016 §5.8.
 
@@ -22,11 +22,10 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from wt_media_agent.runtime.constants import Environment, DEFAULT_ENVIRONMENT
 
 INSTALLED_DATA_DIR = ("Library", "Application Support", "WTMedia", "Agent")
 INSTALLED_LOGS_DIR = ("Library", "Logs", "WTMedia", "Agent")
-
-PRODUCTION_ENVIRONMENTS = frozenset({"production"})
 
 
 def is_frozen() -> bool:
@@ -62,7 +61,7 @@ class RuntimePaths:
         cls,
         *,
         data_dir: str | None = None,
-        environment: str = "development",
+        environment: str = DEFAULT_ENVIRONMENT,
         frozen: bool | None = None,
         home: Path | None = None,
         repo_root: Path | None = None,
@@ -79,7 +78,7 @@ class RuntimePaths:
             )
 
         frozen = is_frozen() if frozen is None else frozen
-        installed = frozen or environment.strip().lower() in PRODUCTION_ENVIRONMENTS
+        installed = frozen or environment.strip().lower() == Environment.PROD
         if installed:
             root = (home or Path.home()).expanduser()
             data = root.joinpath(*INSTALLED_DATA_DIR)

@@ -113,8 +113,16 @@ DEFAULT_LOG_MAX_RECORD_BYTES = 1024 * 1024
 DEFAULT_LOG_RETENTION_DAYS = 14
 
 # Storage and Cloud routing. These are separate from the application's build mode.
-CLOUD_ENVS = frozenset({'dev', 'test', 'pre', 'prod'})
-DEFAULT_CLOUD_ENV = 'dev'
+class Environment(StrEnum):
+    DEV = 'dev'
+    TEST = 'test'
+    PRE = 'pre'
+    PROD = 'prod'
+
+ENVIRONMENTS = frozenset(Environment)
+CLOUD_ENVS = ENVIRONMENTS
+DEFAULT_ENVIRONMENT = Environment.DEV
+DEFAULT_CLOUD_ENV = Environment.DEV
 DEFAULT_DB_NAME = 'local-agent.sqlite3'
 DEFAULT_DATABASE_SYNCHRONOUS = 'FULL'
 DEFAULT_DATABASE_TIMEOUT_SECONDS = 5.0

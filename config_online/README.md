@@ -19,7 +19,7 @@ wholesale, so that the release artifact carries the production configuration.
 
 
 Cloud 连接使用 `[cloud].cloud_env`（`dev/test/pre/prod`，环境变量 `WT_MEDIA_CLOUD_ENV`）。
-它与应用的 development/production、debug/release 分开；开发版连接正式 Cloud 时应显式配置 `prod`。
+应用运行环境 `environment` 同样只接受 `dev/test/pre/prod`，默认开发配置为 `dev`、发布配置为 `prod`；两者独立，例如 `environment=dev` 可连接 `cloud_env=prod`。debug/release 是构建模式。旧的 development/production/staging 配置值需改为 dev/prod/pre。
 地址和环境必须对应；更换地址别名不改变环境身份。发布替换源为 prod，开发配置为 dev。
 
 `[database].synchronous` 默认 `FULL`，`timeout_seconds` 默认 `5.0`；新连接统一设置持久化策略、外键与 WAL。

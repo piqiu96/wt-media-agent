@@ -42,7 +42,7 @@ class DefaultsTest(unittest.TestCase):
     def test_defaults_when_nothing_is_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = load(config_dir=Path(tmp))
-        self.assertEqual(cfg.environment, "development")
+        self.assertEqual(cfg.environment, "dev")
         self.assertEqual(cfg.cloud_base_url, "http://127.0.0.1:8188")
         self.assertEqual(cfg.cloud_timeout_seconds, 10.0)
         self.assertEqual(cfg.local_api_host, "127.0.0.1")
@@ -80,7 +80,7 @@ class FileLayerTest(unittest.TestCase):
             write_config(
                 Path(tmp),
                 """
-environment = "staging"
+environment = "pre"
 [cloud]
 base_url = "http://cloud.example:9443"
 timeout_seconds = 2.5
@@ -91,7 +91,7 @@ level = "DEBUG"
 """,
             )
             cfg = load(config_dir=Path(tmp))
-        self.assertEqual(cfg.environment, "staging")
+        self.assertEqual(cfg.environment, "pre")
         self.assertEqual(cfg.cloud_base_url, "http://cloud.example:9443")
         self.assertEqual(cfg.cloud_timeout_seconds, 2.5)
         self.assertEqual(cfg.local_api_port, 9999)
@@ -114,7 +114,7 @@ level = "DEBUG"
     def test_the_shipped_development_config_parses(self):
         """The file that actually ships in the repo, not a fixture."""
         cfg = load(config_dir=default_config_dir())
-        self.assertEqual(cfg.environment, "development")
+        self.assertEqual(cfg.environment, "dev")
         self.assertEqual(cfg.local_api_port, 8765)
         self.assertEqual(cfg.bitbrowser_api_url, "http://127.0.0.1:54345")
         self.assertEqual(cfg.paths.origin, "dev")
@@ -170,7 +170,7 @@ class EnvLayerTest(unittest.TestCase):
 
     def test_a_blank_override_means_unset_for_a_file_key(self):
         """`WT_MEDIA_LOG_FILE=` must not pin the log to a file named ''."""
-        cfg = load(env={"WT_MEDIA_ENV": "production", "WT_MEDIA_LOG_FILE": ""})
+        cfg = load(env={"WT_MEDIA_ENV": "prod", "WT_MEDIA_LOG_FILE": ""})
         self.assertEqual(cfg.log_file, str(cfg.paths.logs_dir / "agent.log"))
 
 
@@ -317,7 +317,7 @@ class PathsIntegrationTest(unittest.TestCase):
         self.assertEqual(cfg.paths.data_dir, Path("/tmp/wt-pinned"))
 
     def test_production_environment_selects_installed_paths(self):
-        cfg = load(env={"WT_MEDIA_ENV": "production"})
+        cfg = load(env={"WT_MEDIA_ENV": "prod"})
         self.assertTrue(cfg.is_production)
         self.assertEqual(cfg.paths.origin, "installed")
         self.assertEqual(
@@ -497,6 +497,24 @@ def _key_paths(document: dict, prefix: str = "") -> list[str]:
         else:
             found.append(path)
     return sorted(found)
+
+
+
+class EnvironmentNamesTest(unittest.TestCase):
+    def test_runtime_names_are_independent_of_the_cloud_target(self):
+        for name in ('dev', 'test', 'pre', 'prod'):
+            with self.subTest(environment=name):
+                cfg = load(env={'WT_MEDIA_ENV': name, 'WT_MEDIA_CLOUD_ENV': 'prod'})
+                self.assertEqual(cfg.environment, name)
+                self.assertEqual(cfg.cloud_env, 'prod')
+                self.assertEqual(cfg.is_production, name == 'prod')
+                self.assertEqual(cfg.paths.origin, 'installed' if name == 'prod' else 'dev')
+
+    def test_old_or_unknown_runtime_environment_names_are_rejected(self):
+        for name in ('development', 'production', 'staging', '', 'unknown'):
+            with self.subTest(environment=name):
+                with self.assertRaises(ConfigError):
+                    load(env={'WT_MEDIA_ENV': name})
 
 
 if __name__ == "__main__":

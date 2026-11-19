@@ -23,7 +23,7 @@ class OrmStorageTests(unittest.TestCase):
         return db
 
     def test_explicit_cloud_environment_is_independent_of_build_and_url(self):
-        config = load_config(config_dir=Path(self.tmp.name), env={'WT_MEDIA_ENV':'development', 'WT_MEDIA_CLOUD_ENV':'prod', 'WT_MEDIA_CLOUD_BASE_URL':'https://real-cloud.example'})
+        config = load_config(config_dir=Path(self.tmp.name), env={'WT_MEDIA_ENV':'dev', 'WT_MEDIA_CLOUD_ENV':'prod', 'WT_MEDIA_CLOUD_BASE_URL':'https://real-cloud.example'})
         self.assertEqual(config.cloud_env, 'prod')
         with self.assertRaises(ConfigError):
             load_config(config_dir=Path(self.tmp.name), env={'WT_MEDIA_CLOUD_ENV':'https://cloud.example'})
