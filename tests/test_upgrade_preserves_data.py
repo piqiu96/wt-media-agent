@@ -40,6 +40,7 @@ from contextlib import closing
 from pathlib import Path
 
 from wt_media_agent.storage import migration
+from wt_media_agent.storage.dialect import SQLiteDialect
 
 from support import isolated_paths
 
@@ -72,21 +73,21 @@ class UpgradePreservesDataTest(unittest.TestCase):
             )
             db.execute(
                 """
-                INSERT INTO task_checkpoints (
-                    task_id, task_type, agent_id, checkpoint_status, progress,
+                INSERT INTO task_checkpoint (
+                    cloud_env,user_id,task_id, task_type, agent_id, checkpoint_status, progress,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES ('dev','3',?, ?, ?, ?, ?, ?, ?)
                 """,
                 ("task-1", "publish", "agent-1", "running", 40,
                  "2026-09-01T00:01:00Z", "2026-09-01T00:01:00Z"),
             )
             db.execute(
                 """
-                INSERT INTO offline_results (
-                    task_id, agent_id, status, progress, queued_at, delivered
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO task_result (
+                    checkpoint_id, status, progress, queued_at, delivered
+                ) VALUES ((SELECT id FROM task_checkpoint WHERE task_id='task-1'), ?, ?, ?, ?)
                 """,
-                ("task-2", "agent-1", "pending", 0, "2026-09-01T00:02:00Z", 0),
+                ( "pending", 0, "2026-09-01T00:02:00Z", 0),
             )
 
     def test_the_database_is_the_declared_path_under_the_data_directory(self) -> None:
@@ -115,7 +116,7 @@ class UpgradePreservesDataTest(unittest.TestCase):
             self._planted(db_path)
             before = {
                 table: _rows(db_path, table)
-                for table in ("agent_metadata", "task_checkpoints", "offline_results")
+                for table in ("agent_metadata", "task_checkpoint", "task_result")
             }
             self.assertTrue(all(before.values()), "the planting must be visible")
 
@@ -131,12 +132,12 @@ class UpgradePreservesDataTest(unittest.TestCase):
                     """,
                 ),
             )
-            real = migration.MIGRATIONS
-            migration.MIGRATIONS = (*real, extra)
+            real = SQLiteDialect.migrations
+            SQLiteDialect.migrations = (*real, extra)
             try:
                 applied = migration.apply_migrations(db_path)
             finally:
-                migration.MIGRATIONS = real
+                SQLiteDialect.migrations = real
 
             self.assertEqual(
                 [item.version for item in applied],
@@ -225,7 +226,7 @@ class UpgradePreservesDataTest(unittest.TestCase):
         with isolated_paths() as paths:
             db_path = migration.default_db_path()
             self._planted(db_path)
-            before = _rows(db_path, "task_checkpoints")
+            before = _rows(db_path, "task_checkpoint")
             before_paths = _paths_under(paths.data)
 
             printed = io.StringIO()
@@ -233,7 +234,7 @@ class UpgradePreservesDataTest(unittest.TestCase):
                 code = migration.main(["--db-path", str(db_path)])
 
             self.assertEqual(code, 0)
-            self.assertEqual(_rows(db_path, "task_checkpoints"), before)
+            self.assertEqual(_rows(db_path, "task_checkpoint"), before)
             self.assertEqual(_paths_under(paths.data), before_paths)
             self.assertIn(str(db_path), printed.getvalue())
 

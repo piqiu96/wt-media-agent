@@ -20,21 +20,24 @@ def run() -> int:
         # runs the file-transfer loop while the API keeps serving health/status.
         start_transfer_loop(components)
         start_publication_loop(components)
-    serve(
-        config.local_api_host,
-        config.local_api_port,
-        bitbrowser=components.bitbrowser,
-        checkpoint_store=components.store,
-        # Both of these were missing here until CHG-061's assembly step, and the
-        # save-directory one was missing in silence: `serve` defaults the store
-        # to `None`, the two save-directory routes answered "no directory chosen"
-        # for a machine that had one, and the Desktop renders exactly that. The
-        # 503 a missing store produces is what made it visible at all.
-        save_directory_store=components.save_directories,
-        agent_token=components.agent_token,
-        cloud_agent=components.cloud,
-        state=components.state,
-        auth_token=config.runtime_token,
-        cloud_base_url=config.cloud_base_url,
-    )
+    try:
+        serve(
+            config.local_api_host,
+            config.local_api_port,
+            bitbrowser=components.bitbrowser,
+            checkpoint_store=components.store,
+            # Both of these were missing here until CHG-061's assembly step, and the
+            # save-directory one was missing in silence: `serve` defaults the store
+            # to `None`, the two save-directory routes answered "no directory chosen"
+            # for a machine that had one, and the Desktop renders exactly that. The
+            # 503 a missing store produces is what made it visible at all.
+            save_directory_store=components.save_directories,
+            agent_token=components.agent_token,
+            cloud_agent=components.cloud,
+            state=components.state,
+            auth_token=config.runtime_token,
+            cloud_base_url=config.cloud_base_url,
+        )
+    finally:
+        components.close()
     return 0

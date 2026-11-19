@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 
-from wt_media_agent.bootstrap.app import build_components, database_path, start_transfer_loop
+from wt_media_agent.bootstrap.app import build_components, start_transfer_loop
 from wt_media_agent.runtime.logging import redact
 from wt_media_agent.runtime.version import __version__
 
@@ -35,9 +35,10 @@ def environment_facts(components) -> dict[str, object]:
         "mode": "cloud",
         "version": __version__,
         "environment": config.environment,
+        "cloud_env": config.cloud_env,
         "agent_id": config.agent_id,
         "cloud_base_url": config.cloud_base_url,
-        "database_path": str(database_path(config)),
+        "database_path": str(components.database.path),
         "data_dir": str(config.paths.data_dir),
         "log_file": config.log_file,
         "run_runner": config.run_runner,
@@ -50,13 +51,16 @@ def environment_facts(components) -> dict[str, object]:
 
 def run() -> int:
     components = build_components()
-    print(json.dumps(environment_facts(components), ensure_ascii=False, sort_keys=True), flush=True)
-    if not components.config.run_runner:
-        return 0
-    loops = start_transfer_loop(components)
-    # Run mode blocks because this process is the Agent. Nothing binds it to
-    # Cloud in this mode, so the transfer loop will wait for a token rather than
-    # performing browser work; browser operations belong to the Local API modes.
-    for loop in loops:
-        loop.join()
+    try:
+        print(json.dumps(environment_facts(components), ensure_ascii=False, sort_keys=True), flush=True)
+        if not components.config.run_runner:
+            return 0
+        loops = start_transfer_loop(components)
+        # Run mode blocks because this process is the Agent. Nothing binds it to
+        # Cloud in this mode, so the transfer loop will wait for a token rather than
+        # performing browser work; browser operations belong to the Local API modes.
+        for loop in loops:
+            loop.join()
+    finally:
+        components.close()
     return 0

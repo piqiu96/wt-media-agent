@@ -179,7 +179,7 @@ class LocalApiServer:
                     base["current_task_id"] = cp.task_id
                     base["current_task_progress"] = cp.progress
                     base["current_task_status"] = cp.checkpoint_status
-                base["pending_result_count"] = len(self.store.get_undelivered_results())
+                base["pending_result_count"] = self.store.count_undelivered_results()
             logger.info(
                 "local_api.status.success duration_ms=%d bitbrowser_status=%s main_user_id=%s profile_count=%d",
                 _duration_ms(started_at),

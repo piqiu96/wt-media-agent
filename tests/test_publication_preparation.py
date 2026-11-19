@@ -1,3 +1,4 @@
+from wt_media_agent.storage.database import Database
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,28 +9,28 @@ from test_publication_execution import identity,snapshot
 class PublicationPublicURLTests(unittest.TestCase):
  def test_public_baidu_work_query_survives_outbox(self):
   with tempfile.TemporaryDirectory() as tmp:
-   db=Path(tmp)/'agent.db';apply_migrations(db);j=PublicationJournal(db);i=identity();j.register(i,snapshot())
+   db=Path(tmp)/'agent.db';apply_migrations(db);j=PublicationJournal(Database(db));i=identity();j.register(i,snapshot())
    packet=j.save_result(i,{'status':'reviewing','platform_work_id':'1834567890123456789','work_url':'https://baijiahao.baidu.com/s?id=1834567890123456789','evidence':{'receipt_id':'1834567890123456789'}},report_seq=1)
-   self.assertEqual(j.pending(i.environment,i.user_id)[0]['packet'],packet)
+   self.assertEqual(j.pending(i.cloud_env,i.user_id)[0]['packet'],packet)
  def test_agent_cannot_report_a_public_success_or_control_state(self):
   with tempfile.TemporaryDirectory() as tmp:
-   db=Path(tmp)/'agent.db';apply_migrations(db);j=PublicationJournal(db);i=identity();j.register(i,snapshot())
+   db=Path(tmp)/'agent.db';apply_migrations(db);j=PublicationJournal(Database(db));i=identity();j.register(i,snapshot())
    for status in ('published','cancelled','awaiting_human'):
     with self.assertRaises(ValueError):j.save_result(i,{'status':status,'evidence':{}},report_seq=1)
-   self.assertEqual(j.pending(i.environment,i.user_id),[])
+   self.assertEqual(j.pending(i.cloud_env,i.user_id),[])
  def test_private_grants_still_cannot_enter_outbox(self):
   with tempfile.TemporaryDirectory() as tmp:
-   db=Path(tmp)/'agent.db';apply_migrations(db);j=PublicationJournal(db);i=identity();j.register(i,snapshot())
+   db=Path(tmp)/'agent.db';apply_migrations(db);j=PublicationJournal(Database(db));i=identity();j.register(i,snapshot())
    for url in ['https://baijiahao.baidu.com/s?id=1&token=x','https://store.test/v?signature=x','https://baijiahao.baidu.com/s?id=1&id=2','http://baijiahao.baidu.com/s?id=123']:
     with self.assertRaises(ValueError):j.save_result(i,{'status':'uncertain','work_url':url},report_seq=1)
-   self.assertEqual(j.pending(i.environment,i.user_id),[])
+   self.assertEqual(j.pending(i.cloud_env,i.user_id),[])
 
 import copy
 import concurrent.futures
 from types import SimpleNamespace
 from unittest.mock import patch
 from wt_media_agent.storage.publication import JournalConflict
-from wt_media_agent.storage.publication_claim import PublicationClaimStore
+from wt_media_agent.storage.publication import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
 from wt_media_agent.platforms.publish import PublicationInputError, PublishPayload, PublishControl
 from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
@@ -61,24 +62,24 @@ class FakeBit:
 class PublicationPreparationTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.db=Path(self.tmp.name)/'a.db';apply_migrations(self.db)
-  self.j=PublicationJournal(self.db);self.keys=PublicationClaimStore(self.db);self.cloud=FakeCloud();self.bit=FakeBit();self.p=self.new_preparer()
- def new_preparer(self):return PublicationPreparation(self.cloud,self.bit,self.j,self.keys,Path(self.tmp.name)/'files')
+  self.j=PublicationJournal(Database(self.db));self.keys=PublicationClaimStore(Database(self.db));self.cloud=FakeCloud();self.bit=FakeBit();self.p=self.new_preparer()
+ def new_preparer(self):return PublicationPreparation(self.cloud,self.bit,self.j,self.keys,Path(self.tmp.name)/'files',cloud_env='dev')
  def test_parallel_request_key_is_one_durable_identity(self):
-  with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:values=list(pool.map(lambda _:PublicationClaimStore(self.db).pending(self.cloud.base_url,'3'),range(16)))
+  with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:values=list(pool.map(lambda _:PublicationClaimStore(Database(self.db)).pending('dev','3'),range(16)))
   self.assertEqual(len(set(values)),1)
-  self.assertNotEqual(self.keys.pending(self.cloud.base_url,'4'),values[0])
-  self.assertNotEqual(self.keys.pending('https://other.test','3'),values[0])
+  self.assertNotEqual(self.keys.pending('dev','4'),values[0])
+  self.assertNotEqual(self.keys.pending('prod','3'),values[0])
  def test_lost_claim_reuses_original_key_and_replay_never_enters_browser(self):
   self.cloud.fail_claim=True
   with self.assertRaises(ConnectionError):self.p.claim('memory-token','3')
   self.cloud.fail_claim=False;self.cloud.value['replayed']=True
   with self.assertRaises(JournalConflict):self.new_preparer().claim('memory-token','3')
   self.assertEqual(self.cloud.keys[0],self.cloud.keys[1]);self.assertEqual(self.bit.scans,0)
-  self.assertEqual(self.j.get(ExecutionIdentity(self.cloud.base_url,'3','9','1','actual-bit-profile'))['phase'],'claimed')
+  self.assertEqual(self.j.get(ExecutionIdentity('dev','3','9','1','actual-bit-profile'))['phase'],'claimed')
  def test_foreign_owner_and_malformed_claim_do_not_rotate_unknown_key(self):
-  before=self.keys.pending(self.cloud.base_url,'3');self.cloud.value=cloud_claim(owner='4')
+  before=self.keys.pending('dev','3');self.cloud.value=cloud_claim(owner='4')
   with self.assertRaises(PublicationInputError):self.p.claim('memory-token','3')
-  self.assertEqual(self.keys.pending(self.cloud.base_url,'3'),before);self.assertEqual(self.bit.scans,0)
+  self.assertEqual(self.keys.pending('dev','3'),before);self.assertEqual(self.bit.scans,0)
  def test_restart_cannot_prepare_an_old_claim(self):
   value,i=self.p.claim('memory-token','3')
   with self.assertRaises(JournalConflict):self.new_preparer().prepare('memory-token',value,i)

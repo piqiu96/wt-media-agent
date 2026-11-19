@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import logging
 import time
+from threading import Event
+from wt_media_agent.runtime.agent_token import routing_user_id
 from collections.abc import Mapping
 from typing import Callable, Optional
 
@@ -103,6 +105,9 @@ class TransferRunner:
     ) -> None:
         self.client = client
         self.store = store
+        self._checkpoint_store = store
+        self._claimed_user = None
+        self._stop = Event()
         # `TransferRunnerConfig` carries only the facts this loop needs: the
         # poll interval and the agent id written on a checkpoint row.
         self.config = config
@@ -137,15 +142,16 @@ class TransferRunner:
         lease expiry to act on -- there is nothing here to replay at start-up.
         """
         self._running = True
-        while self._running:
+        while self._running and not self._stop.is_set():
             try:
                 self._poll_once()
             except Exception as exc:
                 logger.error("transfer runner poll error: %s", exc)
-            time.sleep(self.config.poll_interval)
+            self._stop.wait(self.config.poll_interval)
 
     def stop(self) -> None:
         self._running = False
+        self._stop.set()
 
     # ---- Poll Loop ----
 
@@ -153,6 +159,7 @@ class TransferRunner:
         lease = self._claim()
         if lease is None:
             return
+        self._checkpoint_store = self.store.for_user(self._claimed_user) if self._claimed_user else self.store
         executor = self._executors.get(EXECUTORS_BY_ASSET_TYPE.get(lease.asset_type))
         if executor is None:
             # Not reported to Cloud, and that is a decision rather than an
@@ -200,10 +207,11 @@ class TransferRunner:
             return
 
         if result.get("status") == OUTCOME_SUCCESS:
-            self.store.remove_checkpoint(lease.task_id)
+            self._checkpoint_store.remove_checkpoint(lease.task_id)
 
     def _claim(self) -> Optional[TransferLease]:
         token = self._token()
+        self._claimed_user = routing_user_id(token)
         if not token:
             # An Agent without a token has nothing to claim with. The four
             # transfer calls are identified by the token alone -- `claim` carries
@@ -266,7 +274,7 @@ class TransferRunner:
         unreadable one answers "start from the beginning", which is always safe
         because the size and the digest are checked before anything is renamed.
         """
-        checkpoint = self.store.get_checkpoint(task_id)
+        checkpoint = self._checkpoint_store.get_checkpoint(task_id)
         if checkpoint is None:
             return None
         return TransferResume.decode(checkpoint.transfer_state_json)
@@ -278,12 +286,10 @@ class TransferRunner:
         task id: one factory is built for the whole process, so the call that has
         a task in hand is the only thing that can say which row the record goes on.
 
-        A row that already exists is updated and not replaced -- `save_checkpoint`
-        is an `INSERT OR REPLACE`, so a checkpoint built from scratch here would
-        drop the `created_at` the first attempt wrote.
+        Scoped ORM upsert preserves the original creation time across leases.
         """
         now = utc_now_iso()
-        checkpoint = self.store.get_checkpoint(task_id) or TaskCheckpoint(
+        checkpoint = self._checkpoint_store.get_checkpoint(task_id) or TaskCheckpoint(
             task_id=task_id,
             task_type=TASK_TYPE_MATERIAL_DOWNLOAD,
             agent_id=self.config.agent_id,
@@ -293,4 +299,4 @@ class TransferRunner:
         )
         checkpoint.transfer_state_json = resume.encode()
         checkpoint.updated_at = now
-        self.store.save_checkpoint(checkpoint)
+        self._checkpoint_store.save_checkpoint(checkpoint)

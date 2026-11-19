@@ -70,3 +70,4 @@ Publishing attaches Playwright to the existing local BitBrowser Profile; it does
 Run the isolated browser checks with `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests/browser -p "test_*.py"`. They require local Google Chrome, block external requests and are not real-platform acceptance.
 
 Validate a built Sidecar with `PYTHONPATH=src .venv/bin/python scripts/verify/smoke_frozen_browser.py --binary <packaged-sidecar>`. Adding `--endpoint <local-host:port> --file <test-file>` opens only an isolated network-blocked file input tab; it does not post to a platform. On macOS, the build retains only the JIT entitlement required by the bundled Node driver.
+运行环境 `environment` / `WT_MEDIA_ENV` 统一接受 `dev/test/pre/prod`（默认 dev，发布配置 prod），与 `cloud_env` 独立。原 development/production/staging 分别改用 dev/prod/pre；旧值和未知值会被配置校验拒绝。prod 或冻结包保持使用原安装数据/日志目录，显式数据目录仍优先。

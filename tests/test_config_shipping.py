@@ -144,7 +144,7 @@ class ConfigSyncTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "config"
             destination.mkdir()
-            (destination / "agent.toml").write_text('environment = "development"\n')
+            (destination / "agent.toml").write_text('environment = "dev"\n')
             (destination / "left-behind.toml").write_text('token = "stale"\n')
 
             copied = self.script.sync_config(ROOT, destination)
@@ -189,9 +189,9 @@ class ConfigSyncTest(unittest.TestCase):
             destination = Path(tmp) / "destination"
             source.mkdir()
             destination.mkdir()
-            (source / "agent.toml").write_text('environment = "production"\n')
+            (source / "agent.toml").write_text('environment = "prod"\n')
             (source / "README.md").write_text("shipping notes\n")
-            (destination / "agent.toml").write_text('environment = "production"\n')
+            (destination / "agent.toml").write_text('environment = "prod"\n')
 
             self.assertEqual(
                 self.script.mirror_differences(source, destination), ["missing README.md"]
@@ -202,14 +202,14 @@ class ConfigSyncTest(unittest.TestCase):
                 self.script.mirror_differences(source, destination), ["unexpected extra.toml"]
             )
             (destination / "extra.toml").unlink()
-            (destination / "agent.toml").write_text('environment = "development"\n')
+            (destination / "agent.toml").write_text('environment = "dev"\n')
             self.assertEqual(
                 self.script.mirror_differences(source, destination), ["changed agent.toml"]
             )
             # Control: identical directories are reported as identical, so the
             # three arms above are differences being found rather than a check
             # that always returns something.
-            (destination / "agent.toml").write_text('environment = "production"\n')
+            (destination / "agent.toml").write_text('environment = "prod"\n')
             self.assertEqual(self.script.mirror_differences(source, destination), [])
 
 

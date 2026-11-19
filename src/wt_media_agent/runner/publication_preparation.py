@@ -5,6 +5,7 @@ replayed claim or process restart is reconciliation work, never browser work.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from wt_media_agent.runner.publication import PublicationDelivery
 from pathlib import Path
 from threading import RLock
 from wt_media_agent.runtime.constants import (
@@ -13,7 +14,7 @@ from wt_media_agent.runtime.constants import (
     PublicationStage,
     PublicationStatus,
 )
-from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict
+from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict, _environment
 from wt_media_agent.platforms.publish import PublicationInputError
 from wt_media_agent.services.files.verified_download import download_verified
 
@@ -29,14 +30,15 @@ class PreparedPublication:
 
 
 class PublicationPreparation:
-    def __init__(self, cloud, bitbrowser, journal, claims, directory):
+    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str):
+        self.cloud_env=_environment(cloud_env)
         self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self.report_lock=RLock()
 
     def claim(self, token: str, user_id: str):
-        key=self.claims.pending(self.cloud.base_url,user_id)
+        key=self.claims.pending(self.cloud_env,user_id)
         value=self.cloud.claim_publication(token,key)
         if value is None:
-            self.claims.acknowledge(self.cloud.base_url,user_id,key)
+            self.claims.acknowledge(self.cloud_env,user_id,key)
             return None
         # No browser access or request-key rotation until the response has been
         # checked and the original input is durable.
@@ -44,13 +46,13 @@ class PublicationPreparation:
             task=value['task'];attempt=value['attempt'];source=attempt['input_snapshot']
             if task['operator_id']!=user_id or attempt['executor_user_id']!=user_id or attempt['publication_id']!=task['id'] or task['current_attempt_id']!=attempt['id'] or type(value['replayed']) is not bool:
                 raise ValueError('owner/attempt differs')
-            identity=ExecutionIdentity(self.cloud.base_url,user_id,task['id'],attempt['id'],source['bit_profile_id'])
+            identity=ExecutionIdentity(self.cloud_env,user_id,task['id'],attempt['id'],source['bit_profile_id'])
             snapshot={k:source[k] for k in ('platform_uid','video_sha256','video_size','cover_sha256','cover_size')}
             snapshot['platform']=task['platform'];snapshot['content']={k:source['content'][k] for k in ('description','topics','declaration')}
             fresh=self.journal.register(identity,snapshot)
         except (KeyError,TypeError,ValueError):
             raise PublicationInputError('invalid owner-bound claim input') from None
-        self.claims.acknowledge(self.cloud.base_url,user_id,key)
+        self.claims.acknowledge(self.cloud_env,user_id,key)
         if not fresh or value['replayed'] or task['status']!=PublicationStatus.RUNNING or attempt['status']!=PublicationStatus.RUNNING or attempt['stage']!=PublicationStage.CLAIMED:
             raise JournalConflict('original attempt requires verification; browser re-entry forbidden')
         self._fresh.add(identity.key)
@@ -104,4 +106,4 @@ class PublicationPreparation:
         def send(packet):
             task_id=packet.pop('task_id')
             return self.cloud.report_publication(token,task_id,PublicationReport.COMPLETE,packet)
-        return self.journal.flush(self.cloud.base_url,user_id,send)
+        return PublicationDelivery(self.journal).flush(self.cloud_env,user_id,send)
