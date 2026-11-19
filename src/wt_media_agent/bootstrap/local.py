@@ -24,6 +24,7 @@ def run() -> int:
             config.local_api_host,
             config.local_api_port,
             bitbrowser=components.bitbrowser,
+            profile_operations=components.publication_journal.profile_operations,
             checkpoint_store=components.store,
             save_directory_store=components.save_directories,
             agent_token=components.agent_token,

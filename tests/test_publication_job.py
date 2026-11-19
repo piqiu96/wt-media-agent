@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock
 from types import SimpleNamespace
 from unittest.mock import patch
 from wt_media_agent.storage.migration import apply_migrations
@@ -22,7 +22,7 @@ class Cloud:
         self.journal=journal; self.ident=ident; self.base_url=ident.cloud_env; self.reports=[]; self.permission=True; self.lose_permission=False; self.lose_result=False; self.resolved=False; self.stored_hash=None
     def report_publication(self, token, task, operation, packet):
         self.reports.append((operation,copy.deepcopy(packet)))
-        if operation=='progress' and packet['stage']=='submitting':
+        if operation=='report' and packet.get('stage')=='submitting':
             assert self.journal.get(self.ident)['phase']=='submitting'
             if self.lose_permission: raise ConnectionError('lost permission response')
             return {'stop_requested':False,'allow_submit':self.permission}
@@ -235,12 +235,12 @@ class PublicationJobTests(unittest.TestCase):
     def test_cloud_stop_before_upload_never_enters_platform(self):
         report=self.cloud.report_publication
         def stop(token,task,operation,packet):
-            if operation=='progress' and packet['stage']=='ready':
+            if operation=='report' and packet.get('stage')=='ready':
                 return {'stop_requested':True}
             return report(token,task,operation,packet)
         self.cloud.report_publication=stop
         result=self.run_job()
-        self.assertEqual(result['status'],'uncertain')
+        self.assertEqual(result['status'],'failed')
         self.assertEqual(self.platform.fills,0)
         self.assertEqual(self.platform.clicks,0)
 
@@ -253,7 +253,7 @@ class PublicationJobTests(unittest.TestCase):
         live=[True];report=self.cloud.report_publication
         def replace(token,task,operation,packet):
             value=report(token,task,operation,packet)
-            if operation=='progress' and packet['stage']=='submitting':live[0]=False
+            if operation=='report' and packet.get('stage')=='submitting':live[0]=False
             return value
         self.cloud.report_publication=replace
         result=self.job.run('memory-only-token',self.value,self.i,current=lambda:live[0])
@@ -286,13 +286,77 @@ class PublicationJobTests(unittest.TestCase):
     def test_changed_platform_account_after_upload_cannot_get_submit_permission(self):
         self.live_identity.side_effect=[{'login_status':'normal','platform_account_id':snapshot()['platform_uid']}, {'login_status':'normal','platform_account_id':'different-account'}]
         result=self.run_job()
-        self.assertEqual(result['status'],'uncertain')
+        self.assertEqual(result['status'],'failed')
         self.assertEqual(self.platform.fills,1);self.assertEqual(self.platform.clicks,0)
-        self.assertFalse(any(op=='progress' and packet['stage']=='submitting' for op,packet in self.cloud.reports))
+        self.assertFalse(any(op=='report' and packet.get('stage')=='submitting' for op,packet in self.cloud.reports))
         self.assertTrue(result['evidence']['scene_closed'])
 
     def test_unavailable_final_identity_check_cannot_submit(self):
         self.live_identity.side_effect=ConnectionError('identity response unavailable')
-        self.assertEqual(self.run_job()['status'],'uncertain')
+        self.assertEqual(self.run_job()['status'],'failed')
         self.assertEqual(self.platform.clicks,0)
-        self.assertFalse(any(op=='progress' and packet['stage']=='submitting' for op,packet in self.cloud.reports))
+        self.assertFalse(any(op=='report' and packet.get('stage')=='submitting' for op,packet in self.cloud.reports))
+
+
+    def test_input_change_before_permission_fails_only_after_verified_close(self):
+        original=self.cloud.report_publication
+        def stop(token,task,op,packet):
+            if op=='report' and packet.get('stage')=='ready':
+                return {'stop_requested':True,'stop_reason':'PUBLICATION_INPUT_CHANGED'}
+            return original(token,task,op,packet)
+        self.cloud.report_publication=stop
+        result=self.run_job()
+        self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['error_code'],'PUBLICATION_INPUT_CHANGED')
+        self.assertTrue(result['evidence']['scene_closed'])
+        self.assertTrue(result['evidence']['not_submitted'])
+        self.assertEqual(self.platform.clicks,0)
+
+    def test_input_change_with_unclosed_scene_keeps_uncertain_and_occupied(self):
+        original=self.cloud.report_publication
+        def stop(token,task,op,packet):
+            if op=='report' and packet.get('stage')=='ready':
+                return {'stop_requested':True,'stop_reason':'PUBLICATION_INPUT_CHANGED'}
+            return original(token,task,op,packet)
+        self.cloud.report_publication=stop
+        self.closed=False
+        result=self.run_job()
+        self.assertEqual(result['status'],'uncertain')
+        self.assertTrue(self.j.profile_in_use(self.i.bit_profile_id))
+        self.assertEqual(self.platform.clicks,0)
+
+    def test_keepalive_and_stages_share_report_with_increasing_sequences(self):
+        pulsed = Event()
+        submitted_pulse = Event()
+        report = self.cloud.report_publication
+        def observed_report(token, task, operation, packet):
+            value = report(token, task, operation, packet)
+            if 'stage' not in packet and operation != 'complete':
+                pulsed.set()
+                if self.j.get(self.i)['phase'] == 'click_started':
+                    submitted_pulse.set()
+            return value
+        self.cloud.report_publication = observed_report
+        fill = self.platform.fill_form
+        def wait_for_keepalive(page, payload, *, stopped):
+            fill(page, payload, stopped=stopped)
+            self.assertTrue(pulsed.wait(2), 'upload did not receive a keepalive')
+        self.platform.fill_form = wait_for_keepalive
+        receipt = self.platform.read_receipt
+        def wait_for_receipt_keepalive():
+            self.assertTrue(submitted_pulse.wait(2), 'submitted execution did not receive a keepalive')
+            return receipt()
+        self.platform.read_receipt = wait_for_receipt_keepalive
+        result = self.run_job()
+        self.assertEqual(result['status'], 'reviewing')
+        self.assertEqual(self.platform.clicks, 1)
+        self.assertTrue(pulsed.is_set())
+        self.assertTrue(all(op in ('report', 'complete') for op, _ in self.cloud.reports))
+        packets = [packet for op, packet in self.cloud.reports if op == 'report']
+        alive = [packet for packet in packets if 'stage' not in packet]
+        self.assertTrue(alive)
+        self.assertTrue(all(set(packet) == {'attempt_id', 'report_seq'} for packet in alive))
+        sequences = [packet['report_seq'] for packet in packets]
+        self.assertTrue(all(a < b for a, b in zip(sequences, sequences[1:])))
+        self.assertEqual([packet['stage'] for packet in packets if 'stage' in packet],
+                         ['preparing', 'ready', 'submitting'])

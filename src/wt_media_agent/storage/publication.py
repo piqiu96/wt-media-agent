@@ -5,6 +5,8 @@ A report acknowledgement never authorizes another platform click.
 """
 from __future__ import annotations
 
+from wt_media_agent.runtime.profile_operation import ProfileOperations
+
 import hashlib
 import json
 from sqlalchemy import select, update, delete
@@ -103,6 +105,7 @@ class PublicationJournal:
     def __init__(self, database: Database, *, agent_id: str = ''):
         self.database = database
         self.agent_id = agent_id
+        self.profile_operations = ProfileOperations(occupied=self.profile_in_use)
 
     @staticmethod
     def _scope(identity):
@@ -127,7 +130,18 @@ class PublicationJournal:
         if result.rowcount != 1:
             raise JournalConflict('execution state changed concurrently')
 
+    def profile_in_use(self, profile_id: str) -> bool:
+        with self.database.session() as session:
+            return session.scalar(select(Checkpoint.id).where(
+                Checkpoint.bit_profile_id==profile_id,
+                Checkpoint.task_type==TASK_TYPE_PUBLICATION,
+                Checkpoint.checkpoint_status!=PublicationCheckpointStatus.SETTLED).limit(1)) is not None
+
     def register(self, identity: ExecutionIdentity, frozen_input: dict) -> bool:
+        with self.profile_operations.registration(identity.bit_profile_id):
+            return self._register(identity, frozen_input)
+
+    def _register(self, identity: ExecutionIdentity, frozen_input: dict) -> bool:
         encoded=_validated_snapshot(frozen_input)
         digest=hashlib.sha256(encoded.encode()).hexdigest()
         state={'identity':asdict(identity),'input':json.loads(encoded),'phase':PublicationPhase.CLAIMED,'report_seq':0}
@@ -167,11 +181,14 @@ class PublicationJournal:
             return state['report_seq']
 
     @retry_write
-    def reserve_report(self, identity: ExecutionIdentity) -> int:
-        """Reserve an observation without reopening a submission."""
+    def reserve_report(self, identity: ExecutionIdentity, *, keepalive: bool = False) -> int:
+        """Reserve a report; keepalive may observe submission without reopening it."""
         with self.database.session.begin() as session:
             row,state=self._state(session,identity)
-            if state['phase'] not in (PublicationPhase.CLAIMED, PublicationPhase.PREPARED):
+            phases = (PublicationPhase.CLAIMED, PublicationPhase.PREPARED)
+            if keepalive:
+                phases += (PublicationPhase.SUBMITTING, PublicationPhase.CLICK_STARTED)
+            if state['phase'] not in phases:
                 raise JournalConflict('new observations cannot reopen a submission')
             state['report_seq'] += 1
             self._write(session,row,state)

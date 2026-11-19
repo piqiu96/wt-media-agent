@@ -77,7 +77,7 @@ class CloudAgentClient:
     # ---- 发布执行（独立于文件下载租约） ----
 
     def claim_publication(self, token: str, request_key: str):
-        response = self._transport('POST', '/api/v1/cloud-agent/publication-tasks/claim',
+        response = self._transport('POST', '/api/v1/cloud-agent/publication-task/claim',
                                    {'request_key': request_key}, _bearer(token))
         _raise_on_failure(response)
         if 'data' not in response:
@@ -95,14 +95,14 @@ class CloudAgentClient:
         if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdecimal() or str(int(task_id)) != task_id or int(task_id) <= 0:
             raise ValueError('canonical task identity required')
         return dict(_expect_data(self._transport('POST',
-            f'/api/v1/cloud-agent/publication-tasks/{task_id}/{operation}', packet, _bearer(token))))
+            f'/api/v1/cloud-agent/publication-task/{task_id}/{operation}', packet, _bearer(token))))
 
     def original_publication_attempt(self, token: str, task_id: str, attempt_id: str):
         for value in (task_id, attempt_id):
             if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or int(value) <= 0:
                 raise ValueError('canonical publication identity required')
         return dict(_expect_data(self._transport('GET',
-            f'/api/v1/cloud-agent/publication-tasks/{task_id}/attempts/{attempt_id}', None, _bearer(token))))
+            f'/api/v1/cloud-agent/publication-task/{task_id}/attempt/{attempt_id}', None, _bearer(token))))
 
     # ---- 文件传输 ----
     #

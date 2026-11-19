@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from wt_media_agent.local_api.profile_operation import ProfileOperations, profile_operation
+
 import argparse
 import json
 import logging
@@ -92,6 +94,7 @@ class LocalApiServer:
         cloud_agent: Optional[CloudAgentClient] = None,
         auth_token: str = "",
         cloud_base_url: str = "",
+        profile_operations: Optional[ProfileOperations] = None,
     ) -> None:
         # Mandatory, like `bitbrowser` below and for the same reason (T-09):
         # `state or LocalAgentState()` gave a caller that forgot the argument a
@@ -124,6 +127,7 @@ class LocalApiServer:
         # here could reach BitBrowser without anyone deciding it should. The
         # client comes from `bootstrap` (ADR-0016 §2).
         self.bitbrowser = bitbrowser
+        self.profile_operations = profile_operations or ProfileOperations()
         # Lives here rather than on the collector because the collector is built
         # per request; only `/api/v1/status?scan=reuse` passes it down.
         self._bitbrowser_scan = BitBrowserScanCache(
@@ -392,6 +396,7 @@ class LocalApiServer:
         logger.warning("local_api.save_directory.reject reason=no_store")
         return 503, {"error": {"code": "save_directory_unavailable"}}
 
+    @profile_operation("id")
     def profile_open_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         profile_id = body.get("id", "")
         if not profile_id:
@@ -419,6 +424,7 @@ class LocalApiServer:
             )
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
+    @profile_operation("id")
     def profile_close_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         profile_id = body.get("id", "")
         if not profile_id:
@@ -446,6 +452,7 @@ class LocalApiServer:
             )
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
+    @profile_operation("id")
     def profile_update_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         profile_id = body.get("id", "")
         if not profile_id:
@@ -458,6 +465,7 @@ class LocalApiServer:
         except BitBrowserResponseError as e:
             return 502, {"error": {"code": "bitbrowser_response_error", "message": str(e)}}
 
+    @profile_operation("id")
     def profile_delete_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         profile_id = body.get("id", "")
         if not profile_id:
@@ -488,6 +496,7 @@ class LocalApiServer:
             return 502, {"error": {"code": "proxy_extract_request_failed"}}
         return 200, {"data": address}
 
+    @profile_operation("profile_id")
     def proxy_assignment_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Apply a proxy and report only an explicit BitBrowser acknowledgement."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -511,6 +520,7 @@ class LocalApiServer:
             return 503, {"error": {"code": "proxy_assignment_unconfirmed"}}
         return 200, {"data": {"profile_id": profile_id, "accepted": True}}
 
+    @profile_operation("profile_id", readonly_verify=True)
     def proxy_write_response(self, body: dict[str, object], *, verify: bool = False) -> tuple[int, dict[str, object]]:
         """Acknowledge a write, or explicitly compare an uncertain write locally."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -543,6 +553,7 @@ class LocalApiServer:
             return 503, {"error": {"code": "proxy_operation_unconfirmed" if not verify else "proxy_verification_unavailable"}}
         return 200, {"data": {"accepted": True}}
 
+    @profile_operation("profile_id")
     def proxy_mutation_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Write or remove one Profile proxy, then return verified secret-free facts."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -609,6 +620,7 @@ class LocalApiServer:
             "readback": True,
         }}
 
+    @profile_operation("profile_id")
     def account_check_response(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         """Synchronously inspect one BitBrowser profile and return safe account identity facts."""
         profile_id = str(body.get("profile_id", "")).strip()
@@ -648,6 +660,7 @@ class LocalApiServer:
         result["check_items"] = _build_account_check_items(result, bool(expected_id))
         return 200, {"data": result}
 
+    @profile_operation("profile_id")
     def account_cookie_response(self, stage, body):
         def identify(platform, cookies, endpoint):
             if not cookies:
@@ -996,6 +1009,7 @@ def serve(
     state: LocalAgentState,
     auth_token: str = "",
     cloud_base_url: str = "",
+    profile_operations: Optional[ProfileOperations] = None,
 ) -> None:
     api = LocalApiServer(
         state,
@@ -1006,6 +1020,7 @@ def serve(
         cloud_agent=cloud_agent,
         auth_token=auth_token,
         cloud_base_url=cloud_base_url,
+        profile_operations=profile_operations,
     )
     httpd = ThreadingHTTPServer((host, port), make_handler(api))
     # **One line, and without it the join below is a no-op.** `ThreadingMixIn`

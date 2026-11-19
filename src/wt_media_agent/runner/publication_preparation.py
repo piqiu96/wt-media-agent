@@ -88,7 +88,7 @@ class PublicationPreparation:
         # the browser; this attempt then requires explicit reconciliation.
         with self.report_lock:
             seq=self.journal.advance(identity,PublicationPhase.PREPARED)
-            feedback=self.cloud.report_publication(token,identity.task_id,PublicationReport.PROGRESS,{
+            feedback=self.cloud.report_publication(token,identity.task_id,PublicationReport.REPORT,{
                 'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,
                 'platform_uid':source['platform_uid'],'bit_profile_id':identity.bit_profile_id,
                 'video_sha256':source['video_sha256'],'cover_sha256':source['cover_sha256']})

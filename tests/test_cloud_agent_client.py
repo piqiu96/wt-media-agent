@@ -111,10 +111,43 @@ class OriginalPublicationReadTests(unittest.TestCase):
             result=client.original_publication_attempt(TOKEN,'9','9007199254740993')
         req=open_url.call_args.args[0]
         self.assertEqual(req.get_method(),'GET')
-        self.assertTrue(req.full_url.endswith('/publication-tasks/9/attempts/9007199254740993'))
+        self.assertTrue(req.full_url.endswith('/publication-task/9/attempt/9007199254740993'))
         self.assertEqual(req.get_header('Authorization'),'Bearer '+TOKEN)
         self.assertIsNone(req.data)
         self.assertFalse(result['scene_resolved'])
+
+
+class PublicationReportRouteTests(unittest.TestCase):
+    def test_claim_report_and_completion_use_singular_resource(self):
+        transport = RecordingTransport({'errcode': 0, 'data': {}})
+        client = CloudAgentClient('http://cloud.test', transport=transport)
+        client.claim_publication(TOKEN, 'stable-claim')
+        alive = {'attempt_id': '9007199254740993', 'report_seq': 1}
+        ready = dict(alive, report_seq=2, stage='ready', platform_uid='real-uid',
+                     bit_profile_id='profile-1', video_sha256='a'*64, cover_sha256='b'*64)
+        completion = dict(alive, report_seq=3, result_hash='c'*64,
+                          result={'status': 'uncertain', 'evidence': {'scene_closed': False}})
+        client.report_publication(TOKEN, '9', 'report', alive)
+        client.report_publication(TOKEN, '9', 'report', ready)
+        client.report_publication(TOKEN, '9', 'complete', completion)
+        self.assertEqual([call[1] for call in transport.calls], [
+            '/api/v1/cloud-agent/publication-task/claim',
+            '/api/v1/cloud-agent/publication-task/9/report',
+            '/api/v1/cloud-agent/publication-task/9/report',
+            '/api/v1/cloud-agent/publication-task/9/complete',
+        ])
+        self.assertEqual([call[2] for call in transport.calls],
+                         [{'request_key': 'stable-claim'}, alive, ready, completion])
+        self.assertTrue(all(call[0] == 'POST' and call[3]['authorization'] == 'Bearer '+TOKEN
+                            for call in transport.calls))
+
+    def test_retired_report_operations_are_rejected_before_transport(self):
+        transport = RecordingTransport({'data': {}})
+        client = CloudAgentClient('http://cloud.test', transport=transport)
+        for operation in ('heartbeat', 'progress'):
+            with self.subTest(operation=operation), self.assertRaises(ValueError):
+                client.report_publication(TOKEN, '9', operation, {'attempt_id': '1', 'report_seq': 1})
+        self.assertEqual(transport.calls, [])
 
 
 if __name__ == "__main__":

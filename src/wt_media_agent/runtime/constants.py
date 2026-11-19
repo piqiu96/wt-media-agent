@@ -56,8 +56,7 @@ class PublicationCheckpointStatus(StrEnum):
 
 
 class PublicationReport(StrEnum):
-    HEARTBEAT = "heartbeat"
-    PROGRESS = "progress"
+    REPORT = "report"
     COMPLETE = "complete"
 
 
@@ -180,3 +179,6 @@ PUBLICATION_SETTLED_STATUSES = (PublicationStatus.PUBLISHED, PublicationStatus.R
 PUBLICATION_RESULT_STATUSES = (PublicationStatus.REVIEWING, PublicationStatus.FAILED, PublicationStatus.UNCERTAIN)
 DATABASE_RETRY_INTERVAL_SECONDS = 0.01
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300
+
+PUBLICATION_INPUT_CHANGED = "PUBLICATION_INPUT_CHANGED"
+PUBLICATION_NOT_SUBMITTED = "PUBLICATION_NOT_SUBMITTED"
