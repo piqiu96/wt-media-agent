@@ -13,7 +13,7 @@ from pathlib import Path
 
 from wt_media_agent.storage.migration import apply_migrations
 from wt_media_agent.storage.publication import PublicationJournal, ExecutionIdentity, JournalConflict
-from wt_media_agent.runner.publication import PublicationExecution, SubmissionBlocked
+from wt_media_agent.runner.publication import PublicationExecution, SubmissionBlocked, PublicationDelivery
 
 
 def identity(**changes):
@@ -146,13 +146,13 @@ class PublicationExecutionTests(unittest.TestCase):
         original=self.journal.pending(self.owner.cloud_env,'3')[0]
         sent=[]
         def unavailable(packet): sent.append(packet); raise ConnectionError('offline')
-        self.assertEqual(self.journal.flush(self.owner.cloud_env,'3',unavailable),0)
-        self.assertEqual(self.journal.flush(self.owner.cloud_env,'4',lambda _:self.fail('foreign user')),0)
-        self.assertEqual(self.journal.flush('prod','3',lambda _:self.fail('foreign environment')),0)
+        self.assertEqual(PublicationDelivery(self.journal).flush(self.owner.cloud_env,'3',unavailable),0)
+        self.assertEqual(PublicationDelivery(self.journal).flush(self.owner.cloud_env,'4',lambda _:self.fail('foreign user')),0)
+        self.assertEqual(PublicationDelivery(self.journal).flush('prod','3',lambda _:self.fail('foreign environment')),0)
         def accepted(packet):
             sent.append(packet)
             return {'attempt_id': self.owner.attempt_id, 'result_hash':packet['result_hash']}
-        self.assertEqual(PublicationJournal(Database(self.db)).flush(self.owner.cloud_env,'3',accepted),1)
+        self.assertEqual(PublicationDelivery(PublicationJournal(Database(self.db))).flush(self.owner.cloud_env,'3',accepted),1)
         self.assertEqual(sent,[original['packet'],original['packet']])
         self.assertEqual(self.journal.pending(self.owner.cloud_env,'3'),[])
         # Delivery ack is not proof the unknown browser scene is safe or a licence to rerun.
@@ -163,7 +163,7 @@ class PublicationExecutionTests(unittest.TestCase):
     def test_bad_ack_or_terminal_hash_keeps_result_pending(self):
         self.run_execution()
         for ack in ({}, {'attempt_id':'999','result_hash':'x'}, {'attempt_id':'1','result_hash':'x'}):
-            self.assertEqual(self.journal.flush(self.owner.cloud_env,'3',lambda _,a=ack:a),0)
+            self.assertEqual(PublicationDelivery(self.journal).flush(self.owner.cloud_env,'3',lambda _,a=ack:a),0)
         self.assertEqual(len(self.journal.pending(self.owner.cloud_env,'3')),1)
         with self.assertRaises(JournalConflict): self.journal.settle(self.owner,'x',task_status='published')
 
@@ -171,7 +171,7 @@ class PublicationExecutionTests(unittest.TestCase):
         self.run_execution()
         pending=self.journal.pending(self.owner.cloud_env,'3')[0]
         with self.assertRaises(JournalConflict): self.journal.settle(self.owner,pending['packet']['result_hash'],task_status='uncertain')
-        self.journal.flush(self.owner.cloud_env,'3',lambda packet:{'attempt_id':'1','result_hash':packet['result_hash']})
+        PublicationDelivery(self.journal).flush(self.owner.cloud_env,'3',lambda packet:{'attempt_id':'1','result_hash':packet['result_hash']})
         self.journal.settle(self.owner,pending['packet']['result_hash'],task_status='published')
         other=ExecutionIdentity(self.owner.cloud_env,'3','10','2',self.owner.bit_profile_id)
         self.assertTrue(self.journal.register(other,snapshot()))

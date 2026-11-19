@@ -173,9 +173,7 @@ class PublicationJob:
                     pass
             try:
                 if acknowledgement is not None:
-                    self.journal.flush(identity.cloud_env, user_id,
-                        lambda pending: acknowledgement if pending == packet else None,
-                        only_attempt=identity.attempt_id)
+                    self.journal.record_delivery(identity.cloud_env, user_id, packet, accepted=True)
                 if resolved_status:
                     self.journal.settle(identity, packet['result_hash'], task_status=resolved_status)
                 elif acknowledgement is None and scene_resolution is not None and not was_settled:

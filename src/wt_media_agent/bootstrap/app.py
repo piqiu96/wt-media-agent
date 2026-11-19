@@ -40,11 +40,11 @@ from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 from wt_media_agent.runtime.logging import configure_from
 from wt_media_agent.storage.database import Database
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
-from wt_media_agent.storage.migration import DEFAULT_DB_NAME, apply_migrations
+from wt_media_agent.storage.migration import apply_migrations
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
 from wt_media_agent.storage.publication import PublicationJournal
 from wt_media_agent.runner.publication import PublicationExecution
-from wt_media_agent.storage.publication_claim import PublicationClaimStore
+from wt_media_agent.storage.publication import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
 from wt_media_agent.runner.publication_job import PublicationJob
 from wt_media_agent.runner.publication_loop import PublicationLoop
@@ -103,11 +103,6 @@ def start_publication_loop(components: Components) -> list[threading.Thread]:
     return [loop]
 
 
-def database_path(config: AgentConfig) -> Path:
-    """The Agent's SQLite file, under the configured data directory."""
-    return config.paths.data_dir / DEFAULT_DB_NAME
-
-
 def build_components(config: AgentConfig | None = None) -> Components:
     """Assemble the Agent in the documented order.
 
@@ -132,7 +127,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # Configure the verified embedded trust store before constructing clients.
     configure_frozen_ca_bundle()
 
-    db_path = database_path(config)
 
     # 4. The BitBrowser client. Loopback HTTP with the configured timeouts.
     bitbrowser = bitbrowser_from_config(config)
@@ -145,7 +139,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # 6. Storage. The schema goes in before the store is used: a runner writing
     #    checkpoints into a database with no tables would fail on its first
     #    claim, and `apply_migrations` is idempotent.
-    database = Database(db_path, synchronous=config.database_synchronous, timeout_seconds=config.database_timeout_seconds)
+    database = Database(data_dir=config.paths.data_dir, synchronous=config.database_synchronous, timeout_seconds=config.database_timeout_seconds)
     try:
         apply_migrations(database, cloud_env_map={config.cloud_base_url: config.cloud_env})
     except BaseException:
@@ -171,7 +165,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
     loop_config = TransferRunnerConfig(
         agent_id=config.agent_id,
         base_url=config.cloud_base_url,
-        db_path=str(db_path),
+        db_path=str(database.path),
     )
 
     # 9. The transfer loop, before its executor because the download factory

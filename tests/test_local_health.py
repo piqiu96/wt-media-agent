@@ -355,7 +355,7 @@ class StorageProbeTest(unittest.TestCase):
             store.probe()
 
             self.assertEqual(store.get_incomplete_checkpoints(), [])
-            self.assertEqual(store.get_undelivered_results(), [])
+            self.assertEqual(store.count_undelivered_results(), 0)
 
 
 class RouteTest(unittest.TestCase):

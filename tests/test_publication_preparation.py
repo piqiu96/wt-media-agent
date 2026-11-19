@@ -30,7 +30,7 @@ import concurrent.futures
 from types import SimpleNamespace
 from unittest.mock import patch
 from wt_media_agent.storage.publication import JournalConflict
-from wt_media_agent.storage.publication_claim import PublicationClaimStore
+from wt_media_agent.storage.publication import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
 from wt_media_agent.platforms.publish import PublicationInputError, PublishPayload, PublishControl
 from wt_media_agent.platforms.baidu.publisher import BaiduPublisher

@@ -29,7 +29,7 @@ from http.server import ThreadingHTTPServer
 from support import LoggingStateTestCase, UnusedBitBrowser
 
 from wt_media_agent.bootstrap import cloud as cloud_mode
-from wt_media_agent.bootstrap.app import build_components, database_path
+from wt_media_agent.bootstrap.app import build_components
 from wt_media_agent.local_api.server import LocalApiServer, make_handler
 from wt_media_agent.runtime.config import load_config
 from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
@@ -107,12 +107,12 @@ class AssemblyTests(ComponentTestCase):
 
     def test_publication_boundary_shares_the_existing_database_without_starting_work(self):
         journal=self.components.publication_journal
-        self.assertEqual(journal.db_path,database_path(self.config))
+        self.assertIs(journal.database,self.components.database)
         self.assertIs(self.components.publication_execution.journal,journal)
         self.assertEqual(journal.pending(self.config.cloud_env,"3"),[])
 
     def test_the_database_lives_under_the_configured_data_directory(self):
-        path = database_path(self.config)
+        path = self.components.database.path
 
         self.assertEqual(path.parent, self.config.paths.data_dir)
         self.assertTrue(path.exists(), "assembly must have applied the schema")
