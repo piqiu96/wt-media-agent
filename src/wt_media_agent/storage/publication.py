@@ -1,4 +1,4 @@
-"""Durable publication boundary, using the existing checkpoint/outbox tables.
+"""Durable publication boundary, using task checkpoints and immutable result records.
 
 These are local records, not a second Cloud task model or a wire contract.
 A report acknowledgement never authorizes another platform click.
@@ -7,15 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from sqlalchemy import select, update
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import select, update, delete
 from wt_media_agent.runtime.constants import CLOUD_ENVS, TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, PublicationPhase, PUBLICATION_RESULT_STATUSES, PUBLICATION_LOCAL_RESULT_STATUSES, PUBLICATION_SETTLED_STATUSES
-from wt_media_agent.storage.database import Database, retry_sqlite_write
-from wt_media_agent.storage.models import TaskCheckpointModel as Checkpoint, TaskResultModel as Result
+from wt_media_agent.storage.database import Database, retry_write
+from wt_media_agent.storage.models import TaskCheckpointModel as Checkpoint, TaskResultModel as Result, AgentMetadata
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Callable
 from urllib.parse import urlsplit, parse_qs
+import uuid
+
 
 from wt_media_agent.utils.time import utc_now_iso
 
@@ -103,7 +102,6 @@ def _safe_result(value: dict) -> None:
 class PublicationJournal:
     def __init__(self, database: Database, *, agent_id: str = ''):
         self.database = database
-        self.db_path = database.path
         self.agent_id = agent_id
 
     @staticmethod
@@ -136,12 +134,12 @@ class PublicationJournal:
         now=utc_now_iso()
         # Insert first: uniqueness is the arbiter, even with deferred transactions.
         with self.database.session.begin() as session:
-            inserted=session.execute(insert(Checkpoint).values(cloud_env=identity.cloud_env,user_id=identity.user_id,
+            inserted=self.database.insert_if_absent(session, Checkpoint, dict(cloud_env=identity.cloud_env,user_id=identity.user_id,
                 task_id=identity.task_id,task_type=TASK_TYPE_PUBLICATION,agent_id=self.agent_id,attempt_id=identity.attempt_id,
                 bit_profile_id=identity.bit_profile_id,checkpoint_status=PublicationCheckpointStatus.OPEN,input_hash=digest,
                 task_payload_json=encoded,checkpoint_json=_json(state),last_stage=PublicationPhase.CLAIMED,external_side_effect=1,
-                created_at=now,updated_at=now).on_conflict_do_nothing())
-            if inserted.rowcount == 1:
+                created_at=now,updated_at=now))
+            if inserted:
                 return True
             old=session.scalar(select(Checkpoint).where(*self._scope(identity)))
             if old is None:
@@ -155,7 +153,7 @@ class PublicationJournal:
         with self.database.session() as session:
             return self._state(session,identity)[1]
 
-    @retry_sqlite_write
+    @retry_write
     def advance(self, identity: ExecutionIdentity, phase: str) -> int:
         previous={PublicationPhase.PREPARED:PublicationPhase.CLAIMED,PublicationPhase.SUBMITTING:PublicationPhase.PREPARED,PublicationPhase.CLICK_STARTED:PublicationPhase.SUBMITTING}
         if phase not in previous:
@@ -168,7 +166,7 @@ class PublicationJournal:
             self._write(session,row,state)
             return state['report_seq']
 
-    @retry_sqlite_write
+    @retry_write
     def save_result(self, identity: ExecutionIdentity, result: dict, *, report_seq: int) -> dict:
         _safe_result(result)
         if type(report_seq) is not int or report_seq <= 0:
@@ -196,24 +194,12 @@ class PublicationJournal:
                 Checkpoint.user_id==user_id,Result.delivered.is_(False)).order_by(Result.id)).all()
             return [{'id':r.id,'packet':json.loads(r.result_json)} for r in rows]
 
-    def flush(self, cloud_env: str, user_id: str, send: Callable[[dict],dict]) -> int:
-        delivered=0
-        for pending in self.pending(cloud_env,user_id):
-            packet=pending['packet']
-            try:
-                ack=send(json.loads(_json(packet)))
-            except Exception:
-                ack=None
-            accepted=isinstance(ack,dict) and (ack.get('attempt_id'),ack.get('result_hash'))==(packet['attempt_id'],packet['result_hash'])
-            delivered+=int(self._record_delivery(pending,cloud_env,user_id,accepted))
-        return delivered
-
-    @retry_sqlite_write
-    def _record_delivery(self, pending: dict, cloud_env: str, user_id: str, accepted: bool) -> bool:
-        packet=pending['packet']
+    @retry_write
+    def record_delivery(self, cloud_env: str, user_id: str, packet: dict, *, accepted: bool) -> bool:
         with self.database.session.begin() as session:
             row=session.scalar(select(Result).join(Checkpoint,Checkpoint.id==Result.checkpoint_id).where(
-                Result.id==pending['id'],Result.delivered.is_(False),Checkpoint.cloud_env==_environment(cloud_env),
+                Checkpoint.task_id==packet['task_id'],Checkpoint.attempt_id==packet['attempt_id'],
+                Result.delivered.is_(False),Checkpoint.cloud_env==_environment(cloud_env),
                 Checkpoint.user_id==user_id,Checkpoint.task_type==TASK_TYPE_PUBLICATION))
             if row is None:
                 return False
@@ -227,7 +213,7 @@ class PublicationJournal:
                 return True
         return False
 
-    @retry_sqlite_write
+    @retry_write
     def settle(self, identity: ExecutionIdentity, result_hash: str, *, task_status: str):
         if task_status not in PUBLICATION_SETTLED_STATUSES:
             raise JournalConflict('Cloud has not resolved this execution')
@@ -238,3 +224,27 @@ class PublicationJournal:
             state['phase']=PublicationPhase.SETTLED
             state.pop('input',None)
             self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.SETTLED,task_payload_json=None)
+
+
+class PublicationClaimStore:
+    def __init__(self, database: Database):
+        self.database = database
+
+    @staticmethod
+    def _key(cloud_env: str, user_id: str) -> str:
+        if cloud_env not in CLOUD_ENVS:
+            raise ValueError('explicit Cloud environment required')
+        if (not isinstance(user_id,str) or not user_id.isascii() or not user_id.isdecimal()
+                or str(int(user_id))!=user_id or not 0<int(user_id)<2**64):
+            raise ValueError('canonical owner identity required')
+        return f'publication.claim.{cloud_env}.{user_id}'
+
+    def pending(self, cloud_env: str, user_id: str) -> str:
+        key=self._key(cloud_env,user_id)
+        with self.database.session.begin() as session:
+            self.database.insert_if_absent(session, AgentMetadata, dict(key=key,value=str(uuid.uuid4()),updated_at=utc_now_iso()))
+            return session.get(AgentMetadata,key).value
+
+    def acknowledge(self, cloud_env: str, user_id: str, request_key: str):
+        with self.database.session.begin() as session:
+            session.execute(delete(AgentMetadata).where(AgentMetadata.key==self._key(cloud_env,user_id),AgentMetadata.value==request_key))

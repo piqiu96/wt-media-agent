@@ -5,6 +5,7 @@ replayed claim or process restart is reconciliation work, never browser work.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from wt_media_agent.runner.publication import PublicationDelivery
 from pathlib import Path
 from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict, _environment
 from wt_media_agent.runtime.constants import PublicationPhase, PublicationStage, PublicationStatus
@@ -88,4 +89,4 @@ class PublicationPreparation:
         def send(packet):
             task_id=packet.pop('task_id')
             return self.cloud.report_publication(token,task_id,'complete',packet)
-        return self.journal.flush(self.cloud_env,user_id,send)
+        return PublicationDelivery(self.journal).flush(self.cloud_env,user_id,send)
