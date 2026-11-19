@@ -100,3 +100,6 @@ PUBLICATION_LOCAL_RESULT_STATUSES = frozenset({PublicationStatus.REVIEWING, Publ
     PublicationStatus.UNCERTAIN, PublicationStatus.AWAITING_HUMAN, PublicationStatus.CANCELLED})
 PUBLICATION_SETTLED_STATUSES = (PublicationStatus.PUBLISHED, PublicationStatus.REVIEWING, PublicationStatus.FAILED,
     PublicationStatus.CANCELLED, PublicationStatus.ABANDONED)
+
+DATABASE_RETRY_INTERVAL_SECONDS = 0.01
+DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300

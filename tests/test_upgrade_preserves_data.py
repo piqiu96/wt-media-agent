@@ -40,6 +40,7 @@ from contextlib import closing
 from pathlib import Path
 
 from wt_media_agent.storage import migration
+from wt_media_agent.storage.dialect import SQLiteDialect
 
 from support import isolated_paths
 
@@ -131,12 +132,12 @@ class UpgradePreservesDataTest(unittest.TestCase):
                     """,
                 ),
             )
-            real = migration.MIGRATIONS
-            migration.MIGRATIONS = (*real, extra)
+            real = SQLiteDialect.migrations
+            SQLiteDialect.migrations = (*real, extra)
             try:
                 applied = migration.apply_migrations(db_path)
             finally:
-                migration.MIGRATIONS = real
+                SQLiteDialect.migrations = real
 
             self.assertEqual(
                 [item.version for item in applied],

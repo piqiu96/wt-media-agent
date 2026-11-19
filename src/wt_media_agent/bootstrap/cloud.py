@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 
-from wt_media_agent.bootstrap.app import build_components, database_path, start_transfer_loop
+from wt_media_agent.bootstrap.app import build_components, start_transfer_loop
 from wt_media_agent.runtime.logging import redact
 from wt_media_agent.runtime.version import __version__
 
@@ -38,7 +38,7 @@ def environment_facts(components) -> dict[str, object]:
         "cloud_env": config.cloud_env,
         "agent_id": config.agent_id,
         "cloud_base_url": config.cloud_base_url,
-        "database_path": str(database_path(config)),
+        "database_path": str(components.database.path),
         "data_dir": str(config.paths.data_dir),
         "log_file": config.log_file,
         "run_runner": config.run_runner,

@@ -1,7 +1,8 @@
 """The local storage schema. Business IDs never double as local primary keys."""
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from wt_media_agent.runtime.constants import TASK_TYPE_PUBLICATION, PublicationCheckpointStatus
+from wt_media_agent.runtime.constants import TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, DEFAULT_EXECUTION_TIMEOUT_SECONDS
+from wt_media_agent.utils.time import utc_now_iso
 
 class Base(DeclarativeBase):
     pass
@@ -16,7 +17,7 @@ class SchemaMigration(Base):
     __tablename__ = 'schema_migrations'
     version: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text)
-    applied_at: Mapped[str] = mapped_column(Text, server_default=text("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"))
+    applied_at: Mapped[str] = mapped_column(Text, default=utc_now_iso)
 
 class TaskCheckpointModel(Base):
     __tablename__ = 'task_checkpoint'
@@ -48,15 +49,15 @@ class TaskCheckpointModel(Base):
     last_report_at: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[str | None] = mapped_column(Text)
     finished_at: Mapped[str | None] = mapped_column(Text)
-    execution_timeout_seconds: Mapped[int] = mapped_column(default=300, server_default=text('300'))
+    execution_timeout_seconds: Mapped[int] = mapped_column(default=DEFAULT_EXECUTION_TIMEOUT_SECONDS, server_default=text(str(DEFAULT_EXECUTION_TIMEOUT_SECONDS)))
     external_side_effect: Mapped[int] = mapped_column(default=0, server_default=text('0'))
-    __table_args__ = (
-        Index('uq_checkpoint_attempt', 'cloud_env','user_id','task_type','task_id','attempt_id', unique=True, sqlite_where=text('attempt_id IS NOT NULL')),
-        Index('uq_checkpoint_task', 'cloud_env','user_id','task_type','task_id', unique=True, sqlite_where=text('attempt_id IS NULL')),
-        Index('uq_publication_profile', 'bit_profile_id', unique=True,
-              sqlite_where=text(f"task_type='{TASK_TYPE_PUBLICATION}' AND checkpoint_status<>'{PublicationCheckpointStatus.SETTLED}'")),
-        Index('uq_publication_attempt', 'cloud_env','user_id','attempt_id', unique=True, sqlite_where=text(f"task_type='{TASK_TYPE_PUBLICATION}'")),
-    )
+    __table_args__ = {'info': {'unique_rules': (
+        {'name': 'uq_checkpoint_attempt', 'columns': ('cloud_env','user_id','task_type','task_id','attempt_id'), 'where': text('attempt_id IS NOT NULL')},
+        {'name': 'uq_checkpoint_task', 'columns': ('cloud_env','user_id','task_type','task_id'), 'where': text('attempt_id IS NULL')},
+        {'name': 'uq_publication_profile', 'columns': ('bit_profile_id',), 'where': text(f"task_type='{TASK_TYPE_PUBLICATION}' AND checkpoint_status<>'{PublicationCheckpointStatus.SETTLED}'")},
+        {'name': 'uq_publication_attempt', 'columns': ('cloud_env','user_id','attempt_id'), 'where': text(f"task_type='{TASK_TYPE_PUBLICATION}'")},
+    )}}
+
 
 class TaskResultModel(Base):
     __tablename__ = 'task_result'

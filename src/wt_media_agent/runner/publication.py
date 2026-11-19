@@ -34,3 +34,22 @@ class PublicationExecution:
         state = self.journal.get(identity)
         self.journal.save_result(identity, result, report_seq=state['report_seq'] + 1)
         return result
+
+
+class PublicationDelivery:
+    """Send original packets outside database transactions; persist each outcome."""
+    def __init__(self, journal: PublicationJournal):
+        self.journal = journal
+
+    def flush(self, cloud_env: str, user_id: str, send: Callable[[dict], dict]) -> int:
+        from copy import deepcopy
+        delivered = 0
+        for pending in self.journal.pending(cloud_env, user_id):
+            packet = pending['packet']
+            try:
+                ack = send(deepcopy(packet))
+            except Exception:
+                ack = None
+            accepted = isinstance(ack, dict) and (ack.get('attempt_id'), ack.get('result_hash')) == (packet['attempt_id'], packet['result_hash'])
+            delivered += int(self.journal.record_delivery(cloud_env, user_id, packet, accepted=accepted))
+        return delivered

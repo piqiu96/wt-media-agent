@@ -5,7 +5,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from wt_media_agent.storage import CheckpointStore, OfflineResult, TaskCheckpoint
+from wt_media_agent.storage import CheckpointStore, TaskCheckpoint
 from wt_media_agent.storage import checkpoint_store
 from wt_media_agent.storage.migration import apply_migrations
 
@@ -26,10 +26,9 @@ class StoragePackageSurfaceTest(unittest.TestCase):
     def test_reexports_are_the_same_objects(self):
         self.assertIs(CheckpointStore, checkpoint_store.CheckpointStore)
         self.assertIs(TaskCheckpoint, checkpoint_store.TaskCheckpoint)
-        self.assertIs(OfflineResult, checkpoint_store.OfflineResult)
 
     def test_checkpoint_store_still_round_trips(self):
-        """Guards the extraction: the store still works through `connect`."""
+        """Guards the extraction: the store still works through ORM sessions."""
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "agent.db"
             apply_migrations(db)

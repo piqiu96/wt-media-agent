@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from wt_media_agent.storage import migration
+from wt_media_agent.storage.dialect import SQLiteDialect
 from wt_media_agent.storage.checkpoint_store import CheckpointStore, TaskCheckpoint
 from wt_media_agent.storage.transfer_resume import TransferResume
 
@@ -169,12 +170,12 @@ class CheckpointColumnTest(unittest.TestCase):
             for item in migration.MIGRATIONS
             if item.version not in {"0003_transfer_resume", "0004_task_recovery_outbox", "0005_scoped_orm"}
         )
-        real = migration.MIGRATIONS
-        migration.MIGRATIONS = previous
+        real = SQLiteDialect.migrations
+        SQLiteDialect.migrations = previous
         try:
             applied_before = migration.apply_migrations(self.db_path)
         finally:
-            migration.MIGRATIONS = real
+            SQLiteDialect.migrations = real
         self.assertEqual(
             [item.version for item in applied_before], ["0001_base", "0002_task_checkpoints"]
         )
