@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Callable, Mapping, MutableMapping
 
 from wt_media_agent.runtime.constants import (
-    CLOUD_ENVS, DEFAULT_CLOUD_ENV, DEFAULT_DATABASE_SYNCHRONOUS, DEFAULT_DATABASE_TIMEOUT_SECONDS,
+    Environment, ENVIRONMENTS, DEFAULT_ENVIRONMENT, DEFAULT_CLOUD_ENV, DEFAULT_DATABASE_SYNCHRONOUS, DEFAULT_DATABASE_TIMEOUT_SECONDS,
     DEFAULT_BITBROWSER_API_URL,
     DEFAULT_BITBROWSER_TIMEOUT,
     DEFAULT_CLOUD_BASE_URL,
@@ -110,9 +110,9 @@ def _as_str(raw: object) -> str:
     return raw if isinstance(raw, str) else str(raw)
 
 
-def _as_cloud_env(raw: object) -> str:
+def _as_environment(raw: object) -> str:
     value = _as_str(raw)
-    if value not in CLOUD_ENVS:
+    if value not in ENVIRONMENTS:
         raise ConfigError('expected dev, test, pre or prod')
     return value
 
@@ -219,8 +219,8 @@ class Field:
 
 #: The complete set of things an operator can configure. Order is documentation.
 _SPEC: tuple[Field, ...] = (
-    Field("environment", "environment", ("WT_MEDIA_ENV",), "development", _as_str),
-    Field("cloud_env", "cloud.cloud_env", ("WT_MEDIA_CLOUD_ENV",), DEFAULT_CLOUD_ENV, _as_cloud_env),
+    Field("environment", "environment", ("WT_MEDIA_ENV",), DEFAULT_ENVIRONMENT, _as_environment),
+    Field("cloud_env", "cloud.cloud_env", ("WT_MEDIA_CLOUD_ENV",), DEFAULT_CLOUD_ENV, _as_environment),
     Field("database_synchronous", "database.synchronous", ("WT_MEDIA_DATABASE_SYNCHRONOUS",), DEFAULT_DATABASE_SYNCHRONOUS, _as_synchronous),
     Field("database_timeout_seconds", "database.timeout_seconds", ("WT_MEDIA_DATABASE_TIMEOUT_SECONDS",), DEFAULT_DATABASE_TIMEOUT_SECONDS, _as_positive_float),
     Field("cloud_base_url", "cloud.base_url", ("WT_MEDIA_CLOUD_BASE_URL",), DEFAULT_CLOUD_BASE_URL, _as_str),
@@ -299,7 +299,7 @@ class AgentConfig:
 
     @property
     def is_production(self) -> bool:
-        return self.environment.strip().lower() == "production"
+        return self.environment == Environment.PROD
 
 
 #: The directory a macOS `.app` keeps its sealed resources in. The packaged

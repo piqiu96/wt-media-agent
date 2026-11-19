@@ -70,7 +70,7 @@ class DefaultDataDirTest(DataDirTestCase):
         self.assertNotIn("nobody", str(cfg.paths.data_dir), "dev must not use $HOME")
 
     def test_production_uses_the_installed_location(self):
-        os.environ["WT_MEDIA_ENV"] = "production"
+        os.environ["WT_MEDIA_ENV"] = "prod"
         reset_config_cache()
         self.assertEqual(
             default_data_dir(), Path.home() / "Library/Application Support/WTMedia/Agent"
@@ -83,7 +83,7 @@ class DefaultDataDirTest(DataDirTestCase):
         code returned `~/.wt-media-agent` for every deployment shape. If that
         ever comes back, a development database silently shadows the real one.
         """
-        for environment in ({}, {"WT_MEDIA_ENV": "production"}):
+        for environment in ({}, {"WT_MEDIA_ENV": "prod"}):
             with self.subTest(environment=environment):
                 for key, value in environment.items():
                     os.environ[key] = value

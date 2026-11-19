@@ -10,7 +10,7 @@ class RuntimePathsResolveTest(unittest.TestCase):
     def test_override_wins_over_everything(self):
         rp = RuntimePaths.resolve(
             data_dir="/tmp/wt-override",
-            environment="production",
+            environment="prod",
             frozen=True,
             home=Path("/home/nobody"),
         )
@@ -27,20 +27,20 @@ class RuntimePathsResolveTest(unittest.TestCase):
     def test_blank_override_is_treated_as_unset(self):
         for blank in ("", "   ", "\t"):
             rp = RuntimePaths.resolve(
-                data_dir=blank, environment="development", frozen=False,
+                data_dir=blank, environment="dev", frozen=False,
                 repo_root=Path("/repo"),
             )
             self.assertEqual(rp.origin, "dev", f"data_dir={blank!r} should not be an override")
 
     def test_dev_state_uses_repo_local(self):
-        rp = RuntimePaths.resolve(environment="development", frozen=False, repo_root=Path("/repo"))
+        rp = RuntimePaths.resolve(environment="dev", frozen=False, repo_root=Path("/repo"))
         self.assertEqual(rp.origin, "dev")
         self.assertEqual(rp.data_dir, Path("/repo/.local/data"))
         self.assertEqual(rp.logs_dir, Path("/repo/.local/logs"))
         self.assertEqual(rp.versions_dir, Path("/repo/.local/data/versions"))
 
     def test_production_state_uses_installed_locations(self):
-        rp = RuntimePaths.resolve(environment="production", frozen=False, home=Path("/Users/dev"))
+        rp = RuntimePaths.resolve(environment="prod", frozen=False, home=Path("/Users/dev"))
         self.assertEqual(rp.origin, "installed")
         self.assertEqual(
             rp.data_dir, Path("/Users/dev/Library/Application Support/WTMedia/Agent")
@@ -49,14 +49,14 @@ class RuntimePathsResolveTest(unittest.TestCase):
         self.assertEqual(rp.versions_dir, rp.data_dir / "versions")
 
     def test_frozen_state_uses_installed_locations_even_in_development(self):
-        rp = RuntimePaths.resolve(environment="development", frozen=True, home=Path("/Users/dev"))
+        rp = RuntimePaths.resolve(environment="dev", frozen=True, home=Path("/Users/dev"))
         self.assertEqual(rp.origin, "installed")
         self.assertEqual(
             rp.data_dir, Path("/Users/dev/Library/Application Support/WTMedia/Agent")
         )
 
     def test_environment_matching_ignores_case_and_padding(self):
-        for value in ("Production", " production ", "PRODUCTION"):
+        for value in ("Prod", " prod ", "PROD"):
             rp = RuntimePaths.resolve(environment=value, frozen=False, home=Path("/Users/dev"))
             self.assertEqual(rp.origin, "installed", f"{value!r} should count as production")
 
@@ -81,12 +81,12 @@ class DefaultLogFileTest(unittest.TestCase):
         """
         cases = (
             (
-                {"environment": "development", "frozen": False, "repo_root": Path("/repo")},
+                {"environment": "dev", "frozen": False, "repo_root": Path("/repo")},
                 "/repo/.local/logs/agent.log",
             ),
             ({"data_dir": "/tmp/wt-override"}, "/tmp/wt-override/logs/agent.log"),
             (
-                {"environment": "production", "frozen": False, "home": Path("/Users/dev")},
+                {"environment": "prod", "frozen": False, "home": Path("/Users/dev")},
                 "/Users/dev/Library/Logs/WTMedia/Agent/agent.log",
             ),
         )
@@ -101,9 +101,9 @@ class DefaultLogFileTest(unittest.TestCase):
         pass the table above and still be wrong -- this is what forbids it.
         """
         for kwargs in (
-            {"environment": "development", "frozen": False, "repo_root": Path("/repo")},
+            {"environment": "dev", "frozen": False, "repo_root": Path("/repo")},
             {"data_dir": "/tmp/wt-override"},
-            {"environment": "production", "frozen": False, "home": Path("/Users/dev")},
+            {"environment": "prod", "frozen": False, "home": Path("/Users/dev")},
         ):
             with self.subTest(origin=kwargs):
                 rp = RuntimePaths.resolve(**kwargs)
@@ -135,7 +135,7 @@ class EnsureTest(unittest.TestCase):
             home = Path(tmp)
             (home / "Library").mkdir()
             (home / "Library" / "Logs").write_text("a file where a directory must go")
-            rp = RuntimePaths.resolve(environment="production", frozen=False, home=home)
+            rp = RuntimePaths.resolve(environment="prod", frozen=False, home=home)
 
             created = rp.ensure()  # must not raise
 
