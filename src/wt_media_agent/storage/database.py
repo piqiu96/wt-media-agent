@@ -1,5 +1,7 @@
 """Process-owned SQLAlchemy resources; one Session per operation."""
 from pathlib import Path
+from functools import wraps
+from sqlalchemy.exc import OperationalError
 import sqlite3
 import time
 from sqlalchemy import create_engine, event
@@ -15,6 +17,7 @@ class Database:
             raise ValueError('unsupported database synchronous policy')
         if timeout_seconds <= 0:
             raise ValueError('database timeout must be positive')
+        self.timeout_seconds = timeout_seconds
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(URL.create('sqlite', database=str(self.path)),
@@ -45,3 +48,24 @@ class Database:
 
     def close(self):
         self.engine.dispose()
+
+
+def retry_sqlite_write(operation):
+    """Retry a short database-only operation after a stale read snapshot.
+
+    The decorated operation must create/close its Session on every invocation.
+    Never apply this to browser, file or network operations (including flush).
+    """
+    @wraps(operation)
+    def write(self, *args, **kwargs):
+        deadline = time.monotonic() + self.database.timeout_seconds
+        while True:
+            try:
+                return operation(self, *args, **kwargs)
+            except OperationalError as error:
+                code = getattr(error.orig, 'sqlite_errorcode', 0) & 255
+                if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or time.monotonic() >= deadline:
+                    raise
+                # The failed Session has exited and rolled back before this wait.
+                time.sleep(min(0.01, max(0, deadline-time.monotonic())))
+    return write
