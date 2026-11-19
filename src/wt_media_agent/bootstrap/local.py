@@ -19,16 +19,19 @@ def run() -> int:
         # file-transfer loop.
         start_transfer_loop(components)
         start_publication_loop(components)
-    serve(
-        config.local_api_host,
-        config.local_api_port,
-        bitbrowser=components.bitbrowser,
-        checkpoint_store=components.store,
-        save_directory_store=components.save_directories,
-        agent_token=components.agent_token,
-        cloud_agent=components.cloud,
-        state=components.state,
-        auth_token=config.runtime_token,
-        cloud_base_url=config.cloud_base_url,
-    )
+    try:
+        serve(
+            config.local_api_host,
+            config.local_api_port,
+            bitbrowser=components.bitbrowser,
+            checkpoint_store=components.store,
+            save_directory_store=components.save_directories,
+            agent_token=components.agent_token,
+            cloud_agent=components.cloud,
+            state=components.state,
+            auth_token=config.runtime_token,
+            cloud_base_url=config.cloud_base_url,
+        )
+    finally:
+        components.close()
     return 0

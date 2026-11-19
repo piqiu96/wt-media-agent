@@ -1,3 +1,4 @@
+from wt_media_agent.storage.database import Database
 """Coordinator fault checks use real SQLite; fixture receipts are not platform acceptance."""
 import copy
 import json
@@ -18,7 +19,7 @@ from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
 class Cloud:
     def __init__(self, journal, ident):
-        self.journal=journal; self.ident=ident; self.base_url=ident.environment; self.reports=[]; self.permission=True; self.lose_permission=False; self.lose_result=False; self.resolved=False; self.stored_hash=None
+        self.journal=journal; self.ident=ident; self.base_url=ident.cloud_env; self.reports=[]; self.permission=True; self.lose_permission=False; self.lose_result=False; self.resolved=False; self.stored_hash=None
     def report_publication(self, token, task, operation, packet):
         self.reports.append((operation,copy.deepcopy(packet)))
         if operation=='progress' and packet['stage']=='submitting':
@@ -39,7 +40,7 @@ class Cloud:
 
 class Preparation:
     def __init__(self,journal,cloud,ident,root):
-        self.journal=journal;self.cloud=cloud;self.report_lock=RLock();self.ident=ident;self.root=root;self.fresh=True
+        self.journal=journal;self.cloud_env=ident.cloud_env;self.cloud=cloud;self.report_lock=RLock();self.ident=ident;self.root=root;self.fresh=True
     def prepare(self,token,value,ident):
         return SimpleNamespace(identity=ident,video=self.root/'video',cover=self.root/'cover',endpoint='127.0.0.1:9999')
     def mark_ready(self, token, ident):
@@ -73,7 +74,7 @@ class PublicationJobTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         self.live_identity.return_value={'login_status':'normal','platform_account_id':snapshot()['platform_uid']}
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);root=Path(self.tmp.name)
-        db=root/'a.db';apply_migrations(db);self.j=PublicationJournal(db);self.i=identity();self.j.register(self.i,snapshot())
+        db=root/'a.db';apply_migrations(db);self.j=PublicationJournal(Database(db));self.i=identity();self.j.register(self.i,snapshot())
         self.cloud=Cloud(self.j,self.i);self.prep=Preparation(self.j,self.cloud,self.i,root);self.platform=Platform(self.j,self.i);self.closed=True
         self.bit=SimpleNamespace(close_profile_verified=lambda *a,**kw:self.closed)
         self.session=Session("127.0.0.1:9999")
@@ -83,10 +84,33 @@ class PublicationJobTests(unittest.TestCase):
         s=snapshot();s.pop('platform')
         self.value={'task':{'id':self.i.task_id,'platform':'baidu'},'attempt':{'input_snapshot':dict(s,bit_profile_id=self.i.bit_profile_id)}}
     def run_job(self):return self.job.run('memory-only-token',self.value,self.i)
+    def test_settled_scene_keeps_original_result_visible_after_restart_and_network_restore(self):
+        self.closed=False
+        self.cloud.lose_result=True
+        self.run_job()
+        self.cloud.resolved=True
+        self.job.recover('token','3')
+        self.cloud.lose_result=False
+        original=self.cloud.report_publication
+        def reject_late_result(token,task,operation,packet):
+            if operation=='complete':
+                self.cloud.reports.append((operation,copy.deepcopy(packet)))
+                raise ValueError('Cloud rejects a result after manual resolution')
+            return original(token,task,operation,packet)
+        self.cloud.report_publication=reject_late_result
+        before=sum(operation=='complete' for operation,_ in self.cloud.reports)
+        self.job.journal=PublicationJournal(Database(self.j.db_path))
+        self.job.recover('token','3')
+        after=sum(operation=='complete' for operation,_ in self.cloud.reports)
+        self.assertEqual(after-before,1)
+        self.assertEqual(self.platform.clicks,1)
+        self.assertEqual(len(self.job.journal.pending(self.i.cloud_env,'3')),1)
+        self.assertEqual(self.job.journal.get(self.i)['phase'],'settled')
+
     def test_click_requires_both_durable_barriers_and_only_receipt_means_reviewing(self):
         result=self.run_job()
         self.assertEqual(result['status'],'reviewing');self.assertEqual(self.platform.clicks,1)
-        self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.j.pending(self.i.environment,self.i.user_id),[])
+        self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.j.pending(self.i.cloud_env,self.i.user_id),[])
         with self.assertRaises(JournalConflict):self.run_job()
         self.assertEqual(self.platform.clicks,1)
     def test_lost_permission_never_clicks_and_restart_cannot_reenter(self):
@@ -104,7 +128,7 @@ class PublicationJobTests(unittest.TestCase):
     def test_result_saved_before_network_and_recovery_resends_original_only(self):
         self.cloud.lose_result=True
         result=self.run_job();self.assertEqual(result['status'],'reviewing')
-        packet=self.j.pending(self.i.environment,self.i.user_id)[0]['packet']
+        packet=self.j.pending(self.i.cloud_env,self.i.user_id)[0]['packet']
         self.cloud.lose_result=False
         self.assertEqual(self.job.recover('memory-only-token',self.i.user_id),1)
         self.assertEqual(self.j.get(self.i)['phase'],'settled')
@@ -132,7 +156,7 @@ class PublicationJobTests(unittest.TestCase):
         self.j.settle=crash
         self.run_job()
         self.assertEqual(self.j.get(self.i)['phase'],'result_saved')
-        self.assertEqual(self.j.pending(self.i.environment,self.i.user_id),[])
+        self.assertEqual(self.j.pending(self.i.cloud_env,self.i.user_id),[])
         self.j.settle=original
         self.assertEqual(self.job.recover('memory-only-token',self.i.user_id),1)
         self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.platform.clicks,1)
@@ -141,7 +165,7 @@ class PublicationJobTests(unittest.TestCase):
         self.j.advance(self.i, 'prepared')
         self.j.advance(self.i, 'submitting')
         self.j.advance(self.i, 'click_started')
-        self.j = PublicationJournal(self.j.db_path)
+        self.j = PublicationJournal(Database(self.j.db_path))
         self.job.journal = self.j
         before = self.j.get(self.i)
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
@@ -153,36 +177,36 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(state['phase'], 'settled')
         self.assertEqual(state['report_seq'], before['report_seq'])
         self.assertEqual(self.cloud.reports, [])  # No fabricated completion.
-        self.assertEqual(self.j.pending(self.i.environment, self.i.user_id), [])
+        self.assertEqual(self.j.pending(self.i.cloud_env, self.i.user_id), [])
         self.assertEqual(self.platform.fills, 0)
         self.assertEqual(self.platform.clicks, 0)
         with self.assertRaises(JournalConflict):
             self.run_job()
         self.assertFalse(self.j.register(self.i, snapshot()))
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
-        new = ExecutionIdentity(self.i.environment, self.i.user_id, self.i.task_id, '2', self.i.bit_profile_id)
+        new = ExecutionIdentity(self.i.cloud_env, self.i.user_id, self.i.task_id, '2', self.i.bit_profile_id)
         self.assertTrue(self.j.register(new, snapshot()))
 
     def test_manual_resolution_before_report_releases_scene_without_faking_delivery(self):
         self.closed = False
         self.cloud.lose_result = True
         self.run_job()
-        pending = self.j.pending(self.i.environment, self.i.user_id)
+        pending = self.j.pending(self.i.cloud_env, self.i.user_id)
         self.assertEqual(len(pending), 1)
         self.assertIsNone(self.cloud.stored_hash)
         self.cloud.resolved = True
 
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 1)
         self.assertEqual(self.j.get(self.i)['phase'], 'settled')
-        self.assertEqual(self.j.pending(self.i.environment, self.i.user_id), pending)
+        self.assertEqual(self.j.pending(self.i.cloud_env, self.i.user_id), pending)
         with closing(sqlite3.connect(self.j.db_path)) as db:
-            row = db.execute('SELECT final_result_json,report_pending FROM task_checkpoints WHERE task_id=?', (self.i.key,)).fetchone()
+            row = db.execute('SELECT r.result_json,c.report_pending FROM task_result r JOIN task_checkpoint c ON c.id=r.checkpoint_id WHERE c.task_id=?', (self.i.task_id,)).fetchone()
             self.assertEqual(json.loads(row[0]), pending[0]['packet'])
             self.assertEqual(row[1], 1)
-            self.assertEqual(db.execute('SELECT delivered FROM offline_results WHERE task_id=?', (self.i.key,)).fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT r.delivered FROM task_result r JOIN task_checkpoint c ON c.id=r.checkpoint_id WHERE c.task_id=?', (self.i.task_id,)).fetchone()[0], 0)
         self.assertEqual(self.platform.clicks, 1)
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
-        new = ExecutionIdentity(self.i.environment, self.i.user_id, self.i.task_id, '2', self.i.bit_profile_id)
+        new = ExecutionIdentity(self.i.cloud_env, self.i.user_id, self.i.task_id, '2', self.i.bit_profile_id)
         self.assertTrue(self.j.register(new, snapshot()))
 
     def test_missing_result_recovery_is_scoped_to_current_environment_and_owner(self):
@@ -191,10 +215,10 @@ class PublicationJobTests(unittest.TestCase):
         self.cloud.original_publication_attempt = lambda *args: (reads.append(args), original(*args))[1]
         self.cloud.resolved = True
         self.assertEqual(self.job.recover('memory-only-token', '4'), 0)
-        self.cloud.base_url = 'http://other.test'
+        self.prep.cloud_env = 'prod'
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
         self.assertEqual(reads, [])
-        self.cloud.base_url = self.i.environment
+        self.prep.cloud_env = self.i.cloud_env
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 1)
         self.assertEqual(len(reads), 1)
 

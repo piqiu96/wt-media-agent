@@ -1,31 +1,31 @@
-"""Persist the request key before HTTP; never advance past an unknown claim."""
-import hashlib
-import json
+"""Persist a scoped claim request before HTTP; acknowledge only durable outcomes."""
 import uuid
-from contextlib import closing
-from wt_media_agent.storage.sqlite import connect
-from wt_media_agent.storage.publication import _environment
+from sqlalchemy import delete
+from sqlalchemy.dialects.sqlite import insert
+from wt_media_agent.runtime.constants import CLOUD_ENVS
+from wt_media_agent.storage.database import Database
+from wt_media_agent.storage.models import AgentMetadata
 from wt_media_agent.utils.time import utc_now_iso
 
 class PublicationClaimStore:
-    def __init__(self, db_path): self.db_path = db_path
-    def _key(self, environment, user_id):
-        if not isinstance(user_id,str) or not user_id.isascii() or not user_id.isdecimal() or str(int(user_id))!=user_id or int(user_id)<=0:
+    def __init__(self, database: Database):
+        self.database = database
+
+    @staticmethod
+    def _key(cloud_env: str, user_id: str) -> str:
+        if cloud_env not in CLOUD_ENVS:
+            raise ValueError('explicit Cloud environment required')
+        if (not isinstance(user_id,str) or not user_id.isascii() or not user_id.isdecimal()
+                or str(int(user_id))!=user_id or not 0<int(user_id)<2**64):
             raise ValueError('canonical owner identity required')
-        return 'publication.claim.' + hashlib.sha256(json.dumps([_environment(environment),user_id],separators=(',',':')).encode()).hexdigest()
-    def pending(self, environment, user_id):
-        key=self._key(environment,user_id)
-        with closing(connect(self.db_path)) as db:
-            db.execute('PRAGMA synchronous=FULL')
-            db.execute('BEGIN IMMEDIATE')
-            with db:
-                row=db.execute('SELECT value FROM agent_metadata WHERE key=?',(key,)).fetchone()
-                if row: return row['value']
-                value=str(uuid.uuid4())
-                db.execute('INSERT INTO agent_metadata(key,value,updated_at) VALUES(?,?,?)',(key,value,utc_now_iso()))
-                return value
-    def acknowledge(self, environment, user_id, request_key):
-        # Only no-task or an already durable local attempt can acknowledge a claim.
-        with closing(connect(self.db_path)) as db:
-            db.execute('PRAGMA synchronous=FULL')
-            with db: db.execute('DELETE FROM agent_metadata WHERE key=? AND value=?',(self._key(environment,user_id),request_key))
+        return f'publication.claim.{cloud_env}.{user_id}'
+
+    def pending(self, cloud_env: str, user_id: str) -> str:
+        key=self._key(cloud_env,user_id)
+        with self.database.session.begin() as session:
+            session.execute(insert(AgentMetadata).values(key=key,value=str(uuid.uuid4()),updated_at=utc_now_iso()).on_conflict_do_nothing(index_elements=['key']))
+            return session.get(AgentMetadata,key).value
+
+    def acknowledge(self, cloud_env: str, user_id: str, request_key: str):
+        with self.database.session.begin() as session:
+            session.execute(delete(AgentMetadata).where(AgentMetadata.key==self._key(cloud_env,user_id),AgentMetadata.value==request_key))

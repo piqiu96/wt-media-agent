@@ -25,6 +25,7 @@ class StorageMigrationTest(unittest.TestCase):
                     "0002_task_checkpoints",
                     "0003_transfer_resume",
                     "0004_task_recovery_outbox",
+                    "0005_scoped_orm",
                 ],
             )
             self.assertEqual(second, [])
@@ -38,8 +39,8 @@ class StorageMigrationTest(unittest.TestCase):
                 }
                 self.assertIn("schema_migrations", tables)
                 self.assertIn("agent_metadata", tables)
-                self.assertIn("task_checkpoints", tables)
-                self.assertIn("offline_results", tables)
+                self.assertIn("task_checkpoint", tables)
+                self.assertIn("task_result", tables)
                 versions = [
                     row[0]
                     for row in db.execute(
@@ -53,6 +54,7 @@ class StorageMigrationTest(unittest.TestCase):
                         "0002_task_checkpoints",
                         "0003_transfer_resume",
                         "0004_task_recovery_outbox",
+                    "0005_scoped_orm",
                     ],
                 )
 
@@ -62,8 +64,8 @@ class StorageMigrationTest(unittest.TestCase):
             migration.apply_migrations(db_path)
 
             with closing(sqlite3.connect(db_path)) as db:
-                checkpoints = _columns(db, "task_checkpoints")
-                outbox = _columns(db, "offline_results")
+                checkpoints = _columns(db, "task_checkpoint")
+                outbox = _columns(db, "task_result")
 
             self.assertEqual(
                 {
@@ -86,7 +88,7 @@ class StorageMigrationTest(unittest.TestCase):
             )
             self.assertEqual(
                 {
-                    "attempt_id",
+                    "checkpoint_id",
                     "result_json",
                     "error_message",
                     "retryable",

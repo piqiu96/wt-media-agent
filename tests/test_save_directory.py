@@ -13,6 +13,7 @@ kind that would.
 """
 
 from __future__ import annotations
+from wt_media_agent.storage.database import Database
 
 import json
 import os
@@ -43,7 +44,7 @@ class StoreTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.db_path = Path(self._tmp.name) / "agent.db"
         apply_migrations(self.db_path)
-        self.store = SaveDirectoryStore(self.db_path)
+        self.store = SaveDirectoryStore(Database(self.db_path))
 
     def test_nothing_chosen_yet_reads_as_none_and_not_as_empty(self) -> None:
         """`None` is a state the operator can be shown; `""` is not.
@@ -57,7 +58,7 @@ class StoreTest(unittest.TestCase):
         """The whole reason it is stored: the Agent is restarted at will."""
         self.store.set("/tmp/wt-media-save")
 
-        self.assertEqual(SaveDirectoryStore(self.db_path).get(), "/tmp/wt-media-save")
+        self.assertEqual(SaveDirectoryStore(Database(self.db_path)).get(), "/tmp/wt-media-save")
 
     def test_the_same_choice_pushed_twice_is_not_a_failure(self) -> None:
         """The Desktop pushes on every start, so a repeat is the normal case.
@@ -83,11 +84,7 @@ class StoreTest(unittest.TestCase):
         differ in what the Desktop draws, and a store that passed the empty
         string through would have every caller decide it separately.
         """
-        with self.store._connect() as db:
-            db.execute(
-                "INSERT INTO agent_metadata (key, value, updated_at) VALUES (?, '', '')",
-                (SAVE_DIRECTORY_KEY,),
-            )
+        self.store.set("")
 
         self.assertIsNone(self.store.get())
 
@@ -100,7 +97,7 @@ class RouteTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.db_path = Path(self._tmp.name) / "agent.db"
         apply_migrations(self.db_path)
-        self.store = SaveDirectoryStore(self.db_path)
+        self.store = SaveDirectoryStore(Database(self.db_path))
         self.save_dir = Path(self._tmp.name) / "downloads"
         self.save_dir.mkdir()
 

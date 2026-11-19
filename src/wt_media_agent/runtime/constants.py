@@ -111,3 +111,11 @@ BITBROWSER_SCAN_REUSE_SECONDS = 300.0
 # marked on one side is marked at the same length on the other.
 DEFAULT_LOG_MAX_RECORD_BYTES = 1024 * 1024
 DEFAULT_LOG_RETENTION_DAYS = 14
+
+# Storage and Cloud routing. These are separate from the application's build mode.
+CLOUD_ENVS = frozenset({'dev', 'test', 'pre', 'prod'})
+DEFAULT_CLOUD_ENV = 'dev'
+DEFAULT_DB_NAME = 'local-agent.sqlite3'
+DEFAULT_DATABASE_SYNCHRONOUS = 'FULL'
+DEFAULT_DATABASE_TIMEOUT_SECONDS = 5.0
+SAVE_DIRECTORY_KEY = 'download.save_directory'

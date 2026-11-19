@@ -15,6 +15,7 @@ file of the right length and the wrong content, caught only by the digest.
 """
 
 from __future__ import annotations
+from wt_media_agent.storage.database import Database
 
 import sqlite3
 import sys
@@ -115,7 +116,7 @@ class CheckpointColumnTest(unittest.TestCase):
 
     def test_the_resume_state_round_trips_through_the_checkpoint(self) -> None:
         migration.apply_migrations(self.db_path)
-        store = CheckpointStore(self.db_path)
+        store = CheckpointStore(Database(self.db_path))
         record = TransferResume("春日-42.mp4", 4096)
 
         store.save_checkpoint(self._checkpoint(transfer_state_json=record.encode()))
@@ -127,7 +128,7 @@ class CheckpointColumnTest(unittest.TestCase):
     def test_a_checkpoint_that_never_resumed_reads_back_as_none(self) -> None:
         """Every checkpoint written before this column existed looks like this."""
         migration.apply_migrations(self.db_path)
-        store = CheckpointStore(self.db_path)
+        store = CheckpointStore(Database(self.db_path))
 
         store.save_checkpoint(self._checkpoint())
 
@@ -143,7 +144,7 @@ class CheckpointColumnTest(unittest.TestCase):
         path that matters is the second write.
         """
         migration.apply_migrations(self.db_path)
-        store = CheckpointStore(self.db_path)
+        store = CheckpointStore(Database(self.db_path))
         store.save_checkpoint(self._checkpoint(progress=0))
 
         record = TransferResume("春日-42.mp4", 1234)
@@ -166,7 +167,7 @@ class CheckpointColumnTest(unittest.TestCase):
         previous = tuple(
             item
             for item in migration.MIGRATIONS
-            if item.version not in {"0003_transfer_resume", "0004_task_recovery_outbox"}
+            if item.version not in {"0003_transfer_resume", "0004_task_recovery_outbox", "0005_scoped_orm"}
         )
         real = migration.MIGRATIONS
         migration.MIGRATIONS = previous
@@ -189,13 +190,13 @@ class CheckpointColumnTest(unittest.TestCase):
                  "2026-09-01T00:01:00Z", "2026-09-01T00:01:00Z"),
             )
 
-        applied = migration.apply_migrations(self.db_path)
+        applied = migration.apply_migrations(self.db_path, legacy_scope=("dev","3"))
 
         self.assertEqual(
             [item.version for item in applied],
-            ["0003_transfer_resume", "0004_task_recovery_outbox"],
+            ["0003_transfer_resume", "0004_task_recovery_outbox", "0005_scoped_orm"],
         )
-        stored = CheckpointStore(self.db_path).get_checkpoint("old-1")
+        stored = CheckpointStore(Database(self.db_path), user_id=lambda:"3").get_checkpoint("old-1", task_type="publish")
         assert stored is not None
         self.assertEqual(stored.progress, 40)
         self.assertIsNone(stored.transfer_state_json)
@@ -216,7 +217,7 @@ class CheckpointColumnTest(unittest.TestCase):
             # (cid, name, type, notnull, dflt_value, pk)
             columns = {
                 row[1]: tuple(row)
-                for row in db.execute("PRAGMA table_info(task_checkpoints)")
+                for row in db.execute("PRAGMA table_info(task_checkpoint)")
             }
 
         self.assertIn(RESUME_COLUMN, columns)

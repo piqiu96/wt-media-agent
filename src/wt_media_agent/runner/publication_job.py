@@ -138,8 +138,12 @@ class PublicationJob:
 
     def recover(self, token, user_id):
         confirmed = 0
-        for row in self.journal.unresolved_attempts(self.cloud.base_url, user_id):
+        pending=self.journal.pending_attempts(self.preparation.cloud_env,user_id)
+        attempts={row['identity'].key:row for row in self.journal.unresolved_attempts(self.preparation.cloud_env,user_id)}
+        attempts.update({row['identity'].key:row for row in pending})
+        for row in attempts.values():
             identity, packet = row['identity'], row['packet']
+            was_settled=self.journal.get(identity)['phase']==PublicationPhase.SETTLED
             expected = (identity.attempt_id, packet['result_hash']) if packet is not None else None
             acknowledgement = None
             resolved_status = ''
@@ -169,12 +173,12 @@ class PublicationJob:
                     pass
             try:
                 if acknowledgement is not None:
-                    self.journal.flush(identity.environment, user_id,
+                    self.journal.flush(identity.cloud_env, user_id,
                         lambda pending: acknowledgement if pending == packet else None,
                         only_attempt=identity.attempt_id)
                 if resolved_status:
                     self.journal.settle(identity, packet['result_hash'], task_status=resolved_status)
-                elif acknowledgement is None and scene_resolution is not None:
+                elif acknowledgement is None and scene_resolution is not None and not was_settled:
                     self.journal.settle_resolved(identity, scene_resolution)
                 elif acknowledgement is None:
                     continue
