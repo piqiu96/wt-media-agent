@@ -99,7 +99,7 @@ class PublicationJobTests(unittest.TestCase):
             return original(token,task,operation,packet)
         self.cloud.report_publication=reject_late_result
         before=sum(operation=='complete' for operation,_ in self.cloud.reports)
-        self.job.journal=PublicationJournal(Database(self.j.db_path))
+        self.job.journal=PublicationJournal(Database(self.j.database.path))
         self.job.recover('token','3')
         after=sum(operation=='complete' for operation,_ in self.cloud.reports)
         self.assertEqual(after-before,1)
@@ -165,7 +165,7 @@ class PublicationJobTests(unittest.TestCase):
         self.j.advance(self.i, 'prepared')
         self.j.advance(self.i, 'submitting')
         self.j.advance(self.i, 'click_started')
-        self.j = PublicationJournal(Database(self.j.db_path))
+        self.j = PublicationJournal(Database(self.j.database.path))
         self.job.journal = self.j
         before = self.j.get(self.i)
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 0)
@@ -199,7 +199,7 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(self.job.recover('memory-only-token', self.i.user_id), 1)
         self.assertEqual(self.j.get(self.i)['phase'], 'settled')
         self.assertEqual(self.j.pending(self.i.cloud_env, self.i.user_id), pending)
-        with closing(sqlite3.connect(self.j.db_path)) as db:
+        with closing(sqlite3.connect(self.j.database.path)) as db:
             row = db.execute('SELECT r.result_json,c.report_pending FROM task_result r JOIN task_checkpoint c ON c.id=r.checkpoint_id WHERE c.task_id=?', (self.i.task_id,)).fetchone()
             self.assertEqual(json.loads(row[0]), pending[0]['packet'])
             self.assertEqual(row[1], 1)
