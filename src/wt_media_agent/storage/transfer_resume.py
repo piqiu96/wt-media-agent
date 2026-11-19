@@ -30,7 +30,7 @@ would pin the download to a directory that may no longer exist, and would be the
 one place a local absolute path reached a database -- CHG-061 §8 keeps paths out
 of what this Agent records. `decode` therefore refuses a name that is a path.
 
-The record travels as a JSON object in `task_checkpoints.transfer_state_json`
+The record travels as a JSON object in `task_checkpoint.transfer_state_json`
 (migration `0003_transfer_resume`), which is a plain nullable `TEXT`: this module
 owns the content, the checkpoint store owns the storage, and neither has to know
 the other's rules.

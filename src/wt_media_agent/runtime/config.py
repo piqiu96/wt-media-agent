@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Callable, Mapping, MutableMapping
 
 from wt_media_agent.runtime.constants import (
+    Environment, ENVIRONMENTS, DEFAULT_ENVIRONMENT, DEFAULT_CLOUD_ENV, DEFAULT_DATABASE_SYNCHRONOUS, DEFAULT_DATABASE_TIMEOUT_SECONDS,
     DEFAULT_BITBROWSER_API_URL,
     DEFAULT_BITBROWSER_TIMEOUT,
     DEFAULT_CLOUD_BASE_URL,
@@ -108,6 +109,24 @@ class ConfigError(ValueError):
 def _as_str(raw: object) -> str:
     return raw if isinstance(raw, str) else str(raw)
 
+
+def _as_environment(raw: object) -> str:
+    value = _as_str(raw)
+    if value not in ENVIRONMENTS:
+        raise ConfigError('expected dev, test, pre or prod')
+    return value
+
+def _as_synchronous(raw: object) -> str:
+    value = _as_str(raw).upper()
+    if value not in {'FULL', 'NORMAL', 'EXTRA'}:
+        raise ConfigError('expected FULL, NORMAL or EXTRA')
+    return value
+
+def _as_positive_float(raw: object) -> float:
+    value = _as_float(raw)
+    if not 0 < value < float('inf'):
+        raise ConfigError('expected a finite positive number')
+    return value
 
 def _as_int(raw: object) -> int:
     try:
@@ -200,7 +219,10 @@ class Field:
 
 #: The complete set of things an operator can configure. Order is documentation.
 _SPEC: tuple[Field, ...] = (
-    Field("environment", "environment", ("WT_MEDIA_ENV",), "development", _as_str),
+    Field("environment", "environment", ("WT_MEDIA_ENV",), DEFAULT_ENVIRONMENT, _as_environment),
+    Field("cloud_env", "cloud.cloud_env", ("WT_MEDIA_CLOUD_ENV",), DEFAULT_CLOUD_ENV, _as_environment),
+    Field("database_synchronous", "database.synchronous", ("WT_MEDIA_DATABASE_SYNCHRONOUS",), DEFAULT_DATABASE_SYNCHRONOUS, _as_synchronous),
+    Field("database_timeout_seconds", "database.timeout_seconds", ("WT_MEDIA_DATABASE_TIMEOUT_SECONDS",), DEFAULT_DATABASE_TIMEOUT_SECONDS, _as_positive_float),
     Field("cloud_base_url", "cloud.base_url", ("WT_MEDIA_CLOUD_BASE_URL",), DEFAULT_CLOUD_BASE_URL, _as_str),
     Field("cloud_timeout_seconds", "cloud.timeout_seconds", ("WT_MEDIA_CLOUD_TIMEOUT",), 10.0, _as_float),
     Field("local_api_host", "local_api.host", ("WT_MEDIA_LOCAL_API_HOST",), DEFAULT_LOCAL_API_HOST, _as_str),
@@ -267,6 +289,9 @@ class AgentConfig:
     runtime_token: str = field(repr=False)
     #: Derived from `environment` and `data_dir`, not configured directly.
     paths: RuntimePaths
+    cloud_env: str = DEFAULT_CLOUD_ENV
+    database_synchronous: str = DEFAULT_DATABASE_SYNCHRONOUS
+    database_timeout_seconds: float = DEFAULT_DATABASE_TIMEOUT_SECONDS
 
     @property
     def local_api_address(self) -> str:
@@ -274,7 +299,7 @@ class AgentConfig:
 
     @property
     def is_production(self) -> bool:
-        return self.environment.strip().lower() == "production"
+        return self.environment == Environment.PROD
 
 
 #: The directory a macOS `.app` keeps its sealed resources in. The packaged

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from wt_media_agent.storage.checkpoint_store import (
     CheckpointStore,
-    OfflineResult,
     TaskCheckpoint,
 )
 from wt_media_agent.storage.download_sink import (
@@ -29,7 +28,6 @@ __all__ = [
     "DownloadSink",
     "InsufficientSpaceError",
     "NameUnusableError",
-    "OfflineResult",
     "SAVE_DIRECTORY_KEY",
     "SaveDirectoryStore",
     "TaskCheckpoint",

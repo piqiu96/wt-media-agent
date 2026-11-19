@@ -28,7 +28,7 @@ class StubLoop:
 class StartTransferLoopTests(LoggingStateTestCase):
     def test_the_transfer_loop_gets_its_own_daemon_thread(self) -> None:
         transfers = StubLoop()
-        components = SimpleNamespace(transfers=transfers)
+        components = SimpleNamespace(threads=[], transfers=transfers)
 
         loops = start_transfer_loop(components)
         for loop in loops:
@@ -41,7 +41,7 @@ class StartTransferLoopTests(LoggingStateTestCase):
         self.assertEqual([loop.is_alive() for loop in loops], [False])
 
     def test_the_caller_is_told_what_was_started(self) -> None:
-        components = SimpleNamespace(transfers=StubLoop())
+        components = SimpleNamespace(threads=[], transfers=StubLoop())
 
         loops = start_transfer_loop(components)
         self.addCleanup(lambda: [loop.join(timeout=5) for loop in loops])

@@ -1,184 +1,20 @@
+"""Stable migration entrypoint; the selected driver owns its upgrade steps."""
 from __future__ import annotations
-
 import argparse
-import sqlite3
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-
+from sqlalchemy import select
 from wt_media_agent.runtime.config import get_config
-
-
-DEFAULT_DB_NAME = "local-agent.sqlite3"
-
-
-@dataclass(frozen=True)
-class Migration:
-    version: str
-    name: str
-    statements: tuple[str, ...]
-
+from wt_media_agent.runtime.constants import DEFAULT_DB_NAME, CLOUD_ENVS
+from wt_media_agent.storage.database import Database
+from wt_media_agent.storage.models import SchemaMigration
+# Public legacy migration fixtures remain importable at their existing path.
+from wt_media_agent.storage.dialect import MIGRATIONS, Migration, LegacyIdentityRequired
 
 @dataclass(frozen=True)
 class AppliedMigration:
     version: str
     name: str
-
-
-MIGRATIONS: tuple[Migration, ...] = (
-    Migration(
-        version="0001_base",
-        name="base",
-        statements=(
-            """
-            CREATE TABLE IF NOT EXISTS agent_metadata (
-                key TEXT NOT NULL PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-        ),
-    ),
-    Migration(
-        version="0002_task_checkpoints",
-        name="task_checkpoints",
-        statements=(
-            """
-            CREATE TABLE IF NOT EXISTS task_checkpoints (
-                task_id TEXT NOT NULL PRIMARY KEY,
-                task_type TEXT NOT NULL,
-                agent_id TEXT NOT NULL,
-                checkpoint_status TEXT NOT NULL,
-                progress INTEGER NOT NULL DEFAULT 0,
-                message TEXT DEFAULT NULL,
-                result_json TEXT DEFAULT NULL,
-                error_code TEXT DEFAULT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                retry_count INTEGER NOT NULL DEFAULT 0
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS offline_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id TEXT NOT NULL,
-                agent_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                progress INTEGER NOT NULL DEFAULT 0,
-                message TEXT DEFAULT NULL,
-                error_code TEXT DEFAULT NULL,
-                queued_at TEXT NOT NULL,
-                delivered INTEGER NOT NULL DEFAULT 0
-            )
-            """,
-        ),
-    ),
-    # Appended, never folded into 0002. A migration that has been applied is
-    # skipped by version (`apply_migrations`), so editing 0002 to add this column
-    # would reach only databases created after the edit and leave every existing
-    # one silently short a column -- and `get_checkpoint` reads `SELECT *` into a
-    # dataclass, so the symptom would be a `TypeError` on the operator's machine
-    # and nothing here.
-    Migration(
-        version="0003_transfer_resume",
-        name="transfer_resume",
-        statements=(
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN transfer_state_json TEXT DEFAULT NULL
-            """,
-        ),
-    ),
-    # 终态必须先落盘再上报，所以 checkpoint 记录完整的任务上下文与终态，
-    # offline_results 保存上报所需的全部字段（含 result 与错误元数据）。
-    Migration(
-        version="0004_task_recovery_outbox",
-        name="task_recovery_outbox",
-        statements=(
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN attempt_id TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN task_payload_json TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN last_stage TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN checkpoint_json TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN final_status TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN final_result_json TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN error_message TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN report_pending INTEGER NOT NULL DEFAULT 0
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN last_report_at TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN started_at TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN finished_at TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN execution_timeout_seconds INTEGER NOT NULL DEFAULT 300
-            """,
-            """
-            ALTER TABLE task_checkpoints
-                ADD COLUMN external_side_effect INTEGER NOT NULL DEFAULT 0
-            """,
-            """
-            ALTER TABLE offline_results
-                ADD COLUMN attempt_id TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE offline_results
-                ADD COLUMN result_json TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE offline_results
-                ADD COLUMN error_message TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE offline_results
-                ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0
-            """,
-            """
-            ALTER TABLE offline_results
-                ADD COLUMN recovery_action TEXT DEFAULT NULL
-            """,
-            """
-            ALTER TABLE offline_results
-                ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0
-            """,
-            """
-            ALTER TABLE offline_results
-                ADD COLUMN delivered_at TEXT DEFAULT NULL
-            """,
-        ),
-    ),
-)
-
 
 def default_data_dir() -> Path:
     """The local Agent data directory.
@@ -203,50 +39,55 @@ def default_db_path(data_dir: Path | None = None) -> Path:
     return (data_dir or default_data_dir()) / DEFAULT_DB_NAME
 
 
-def apply_migrations(db_path: str | Path) -> list[AppliedMigration]:
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # `closing` for the connection, `db` for the transaction: `with connection`
-    # alone commits but never closes, so this leaked one connection per call.
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version TEXT NOT NULL PRIMARY KEY,
-                name TEXT NOT NULL,
-                applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            )
-            """
-        )
-        applied_versions = {
-            row[0] for row in db.execute("SELECT version FROM schema_migrations")
-        }
-        applied: list[AppliedMigration] = []
-        for item in MIGRATIONS:
-            if item.version in applied_versions:
-                continue
-            with db:
-                for statement in item.statements:
-                    db.execute(statement)
-                db.execute(
-                    "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
-                    (item.version, item.name),
-                )
-            applied.append(AppliedMigration(version=item.version, name=item.name))
-        return applied
+def apply_migrations(database: Database | str | Path, *, legacy_scope: tuple[str,str] | None = None,
+                     cloud_env_map: dict[str,str] | None = None) -> list[AppliedMigration]:
+    if legacy_scope and (legacy_scope[0] not in CLOUD_ENVS or not legacy_scope[1]):
+        raise ValueError('verified legacy environment and user required')
+    cloud_env_map=cloud_env_map or {}
+    if any(env not in CLOUD_ENVS for env in cloud_env_map.values()):
+        raise ValueError('invalid legacy Cloud environment mapping')
+    owned=not isinstance(database,Database)
+    database=Database(database) if owned else database
+    try:
+        with database.engine.begin() as connection:
+            SchemaMigration.__table__.create(connection,checkfirst=True)
+            versions=set(connection.execute(select(SchemaMigration.version)).scalars())
+            applied=[]
+            for item in database.migrations:
+                if item.version in versions:
+                    continue
+                database.apply_migration(connection, item, legacy_scope=legacy_scope, cloud_env_map=cloud_env_map)
+                connection.execute(SchemaMigration.__table__.insert().values(version=item.version,name=item.name))
+                applied.append(AppliedMigration(item.version,item.name))
+            return applied
+    finally:
+        if owned:
+            database.close()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", help="local Agent data directory")
     parser.add_argument("--db-path", help="explicit SQLite database path")
+    parser.add_argument('--legacy-cloud-env', choices=sorted(CLOUD_ENVS))
+    parser.add_argument('--legacy-user-id', help='verified owner of historical download/claim records')
+    parser.add_argument('--legacy-cloud-url', help='verified old Cloud URL for publication/claim mapping')
     args = parser.parse_args(argv)
+    if bool(args.legacy_cloud_env) != bool(args.legacy_user_id):
+        parser.error('--legacy-cloud-env and --legacy-user-id must be supplied together')
 
     db_path = Path(args.db_path) if args.db_path else default_db_path(
         Path(args.data_dir).expanduser() if args.data_dir else None
     )
-    applied = apply_migrations(db_path)
-    print(f"storage migration ok: {len(applied)} applied, {len(MIGRATIONS)} total")
+    config=get_config()
+    with_database=Database(db_path,synchronous=config.database_synchronous,timeout_seconds=config.database_timeout_seconds)
+    try:
+        applied = apply_migrations(with_database,
+            legacy_scope=(args.legacy_cloud_env,args.legacy_user_id) if args.legacy_user_id else None,
+            cloud_env_map={args.legacy_cloud_url:args.legacy_cloud_env} if args.legacy_cloud_url else {})
+    finally:
+        with_database.close()
+    print(f"storage migration ok: {len(applied)} applied, {len(with_database.migrations)} total")
     print(f"database {db_path}")
     for item in applied:
         print(f"applied {item.version} {item.name}")

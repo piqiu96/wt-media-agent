@@ -865,7 +865,7 @@ class BoundaryRuleControls(unittest.TestCase):
         self.assertTrue(any("executors/material_download.py" in v for v in r9_url_literals(files)))
 
     def test_r10_control(self):
-        files = self.plant(f"{PACKAGE}/storage/sqlite.py", f"\nfrom {PACKAGE}.clients import platform_urls\n")
+        files = self.plant(f"{PACKAGE}/storage/database.py", f"\nfrom {PACKAGE}.clients import platform_urls\n")
         self.assertTrue(any("storage -> clients" in v for v in r10_layer_edges(files)))
 
     def test_r1_control(self):
