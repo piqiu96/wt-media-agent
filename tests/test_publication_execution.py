@@ -66,6 +66,25 @@ class PublicationExecutionTests(unittest.TestCase):
         self.assertEqual(pending[0]['packet']['result'], value)
         self.assertEqual(pending[0]['packet']['report_seq'], row['report_seq'])
 
+    def test_keepalive_preserves_submission_barriers_and_stops_after_result(self):
+        self.journal.register(self.owner, snapshot())
+        self.journal.advance(self.owner, 'prepared')
+        for phase in ('submitting', 'click_started'):
+            self.journal.advance(self.owner, phase)
+            before = self.journal.get(self.owner)
+            with self.assertRaises(JournalConflict):
+                self.journal.reserve_report(self.owner)
+            seq = self.journal.reserve_report(self.owner, keepalive=True)
+            after = self.journal.get(self.owner)
+            self.assertEqual(after['phase'], phase)
+            self.assertEqual(seq, before['report_seq'] + 1)
+            self.assertEqual(after['report_seq'], seq)
+        packet = self.journal.save_result(self.owner,
+            {'status': 'uncertain', 'evidence': {'scene_closed': False}}, report_seq=seq+1)
+        with self.assertRaises(JournalConflict):
+            self.journal.reserve_report(self.owner, keepalive=True)
+        self.assertEqual(self.journal.pending(self.owner.cloud_env, self.owner.user_id)[0]['packet'], packet)
+
     def test_same_claim_replay_after_restart_never_calls_browser(self):
         self.run_execution()
         outcome, events = self.run_execution(journal=PublicationJournal(Database(self.db)))

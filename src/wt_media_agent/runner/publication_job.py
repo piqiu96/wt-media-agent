@@ -7,6 +7,8 @@ from threading import Event, Thread
 from wt_media_agent.runtime.constants import (
     DEFAULT_PUBLICATION_HEARTBEAT_SECONDS,
     PUBLICATION_RESOLVED_STATUSES,
+    PUBLICATION_INPUT_CHANGED,
+    PUBLICATION_NOT_SUBMITTED,
     PUBLICATION_RESULT_UNCERTAIN,
     PUBLICATION_RESULT_UNCERTAIN_MESSAGE,
     PublicationPhase,
@@ -15,6 +17,7 @@ from wt_media_agent.runtime.constants import (
     PublicationStatus,
     PublishMethod,
 )
+from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
 from wt_media_agent.storage.publication import JournalConflict
 from wt_media_agent.platforms.publish import PublishControl, PublishPayload
 
@@ -35,22 +38,28 @@ class PublicationJob:
             raise JournalConflict('recovered attempts cannot enter the browser')
         done, stopped = Event(), Event()
         prepared = None
+        stop_reason = ""
         receipt = {}
         source = claim['attempt']['input_snapshot']
         evidence = {key: source[key] for key in ('platform_uid', 'video_sha256', 'cover_sha256')}
         evidence['bit_profile_id'] = identity.bit_profile_id
 
         def progress(stage, seq):
-            return self.cloud.report_publication(token, identity.task_id, PublicationReport.PROGRESS,
+            nonlocal stop_reason
+            feedback = self.cloud.report_publication(token, identity.task_id, PublicationReport.REPORT,
                 dict(evidence, attempt_id=identity.attempt_id, report_seq=seq, stage=stage))
+            if feedback.get('stop_reason') == PUBLICATION_INPUT_CHANGED:
+                stop_reason = PUBLICATION_INPUT_CHANGED
+            return feedback
 
         def should_stop():
             return stopped.is_set() or not current()
 
         def on_prepared():
-            self.preparation.mark_ready(token, identity)
-            with self.preparation.report_lock:
-                feedback = progress(PublicationStage.READY, self.journal.reserve_report(identity))
+            nonlocal stop_reason
+            feedback = self.preparation.mark_ready(token, identity)
+            if feedback.get('stop_reason') == PUBLICATION_INPUT_CHANGED:
+                stop_reason = PUBLICATION_INPUT_CHANGED
             if feedback.get('stop_requested') is not False:
                 raise JournalConflict('Cloud stopped the upload')
 
@@ -69,8 +78,8 @@ class PublicationJob:
                     return
                 try:
                     with self.preparation.report_lock:
-                        seq = self.journal.get(identity)['report_seq']
-                        feedback = self.cloud.report_publication(token, identity.task_id, PublicationReport.HEARTBEAT,
+                        seq = self.journal.reserve_report(identity, keepalive=True)
+                        feedback = self.cloud.report_publication(token, identity.task_id, PublicationReport.REPORT,
                             {'attempt_id': identity.attempt_id, 'report_seq': seq})
                     if feedback.get('stop_requested') is not False:
                         stopped.set()
@@ -102,6 +111,8 @@ class PublicationJob:
             if not isinstance(work_id, str) or not work_id.isascii() or not work_id.isdecimal() or len(work_id) > 255 or int(work_id) <= 0 or str(int(work_id)) != work_id:
                 raise JournalConflict('no credible platform receipt')
         except Exception as error:
+            if isinstance(error, CloudExecutionStopped) and error.reason == PUBLICATION_INPUT_CHANGED:
+                stop_reason = PUBLICATION_INPUT_CHANGED
             logger.warning("publication stopped before a credible result: phase=%s error_type=%s",
                 self.journal.get(identity)['phase'], type(error).__name__)
             # Do not persist exception text: platform errors may contain private
@@ -121,6 +132,12 @@ class PublicationJob:
         evidence['scene_closed'] = closed is True
         result = {'status': PublicationStatus.UNCERTAIN, 'error_code': PUBLICATION_RESULT_UNCERTAIN,
                   'error_message': PUBLICATION_RESULT_UNCERTAIN_MESSAGE, 'evidence': evidence}
+        if not receipt and closed is True and self.journal.get(identity)['phase'] in {PublicationPhase.CLAIMED, PublicationPhase.PREPARED}:
+            evidence['not_submitted'] = True
+            result = {'status': PublicationStatus.FAILED,
+                      'error_code': stop_reason or PUBLICATION_NOT_SUBMITTED,
+                      'error_message': 'Execution stopped before submission; the browser scene was closed.',
+                      'evidence': evidence}
         if receipt:
             evidence['receipt_id'] = receipt['platform_work_id']
             result['platform_work_id'] = receipt['platform_work_id']

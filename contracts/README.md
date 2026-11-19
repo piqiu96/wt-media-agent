@@ -12,3 +12,12 @@ the revision it is at.
 ## Consumed Cloud Contracts
 
 Agent consumes the Cloud-owned Cloud-Agent API. M1-C1 locks the expected Cloud-Agent contract major version and revision in Agent source code, without copying the provider's formal OpenAPI definition.
+
+
+Publication execution consumes Cloud contract revision `2026.11.20.2`:
+`/api/v1/cloud-agent/publication-task/claim`, `/{id}/report`, and `/{id}/complete`.
+Keepalive omits `stage`; progress and the pre-submit check supply it. These reports
+share increasing sequence numbers, while completion keeps the saved original
+packet for replay. The original-attempt recovery read uses the singular
+`/{id}/attempt/{attempt_id}` path supplied by the Cloud recovery capability;
+it is separate from the session-authenticated task history API.

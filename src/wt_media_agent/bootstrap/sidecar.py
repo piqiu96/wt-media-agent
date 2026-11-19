@@ -25,6 +25,7 @@ def run() -> int:
             config.local_api_host,
             config.local_api_port,
             bitbrowser=components.bitbrowser,
+            profile_operations=components.publication_journal.profile_operations,
             checkpoint_store=components.store,
             # Both of these were missing here until CHG-061's assembly step, and the
             # save-directory one was missing in silence: `serve` defaults the store
