@@ -9,6 +9,7 @@ and everything about the row a re-issued task continues from.
 """
 
 from __future__ import annotations
+from wt_media_agent.storage.database import Database
 
 import logging
 import sys
@@ -102,7 +103,7 @@ class TransferRunnerTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         apply_migrations(Path(self._tmp.name) / "agent.db")
-        self.store = CheckpointStore(Path(self._tmp.name) / "agent.db")
+        self.store = CheckpointStore(Database(Path(self._tmp.name) / "agent.db"))
         self.cloud = FakeTransferCloud()
         # What the runner's `credential` callable answers; `None` is an Agent that
         # Desktop has not bound yet, which is the state this process starts in.

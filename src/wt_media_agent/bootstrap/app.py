@@ -25,7 +25,7 @@ client" an assertable property instead of a convention.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from wt_media_agent.clients.bitbrowser import BitBrowserClient, bitbrowser_from_config
@@ -34,10 +34,11 @@ from wt_media_agent.executors.material_download import MaterialDownloadExecutor
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.runner.config import TransferRunnerConfig
 from wt_media_agent.runner.transfer import TransferRunner
-from wt_media_agent.runtime.agent_token import AgentToken
+from wt_media_agent.runtime.agent_token import AgentToken, routing_user_id
 from wt_media_agent.runtime.config import AgentConfig, configure_frozen_ca_bundle, load_config
 from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 from wt_media_agent.runtime.logging import configure_from
+from wt_media_agent.storage.database import Database
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import DEFAULT_DB_NAME, apply_migrations
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
@@ -62,6 +63,14 @@ class Components:
     publication_journal: PublicationJournal
     publication_execution: PublicationExecution
     publication_preparation: PublicationPreparation
+    database: Database
+    threads: list[threading.Thread] = field(default_factory=list, compare=False, repr=False)
+
+    def close(self):
+        self.transfers.stop()
+        for thread in self.threads:
+            thread.join()
+        self.database.close()
 
 
 def start_transfer_loop(components: Components) -> list[threading.Thread]:
@@ -76,6 +85,7 @@ def start_transfer_loop(components: Components) -> list[threading.Thread]:
         name="agent-transfers",
         daemon=True,
     )
+    components.threads.append(loop)
     loop.start()
     return [loop]
 
@@ -121,23 +131,27 @@ def build_components(config: AgentConfig | None = None) -> Components:
     # 6. Storage. The schema goes in before the store is used: a runner writing
     #    checkpoints into a database with no tables would fail on its first
     #    claim, and `apply_migrations` is idempotent.
-    apply_migrations(db_path)
-    store = CheckpointStore(db_path)
+    database = Database(db_path, synchronous=config.database_synchronous, timeout_seconds=config.database_timeout_seconds)
+    try:
+        apply_migrations(database, cloud_env_map={config.cloud_base_url: config.cloud_env})
+    except BaseException:
+        database.close()
+        raise
+    agent_token = AgentToken()
+    store = CheckpointStore(database, cloud_env=config.cloud_env, user_id=lambda: routing_user_id(agent_token.get()) or '')
     # Same file, same schema: the operator's save-directory choice lives in
     # `agent_metadata`, a table migration 0001 created for exactly this and that
     # nothing wrote to until now.
-    save_directories = SaveDirectoryStore(db_path)
-    publication_journal = PublicationJournal(db_path)
+    save_directories = SaveDirectoryStore(database)
+    publication_journal = PublicationJournal(database, agent_id=config.agent_id)
     publication_execution = PublicationExecution(publication_journal)
     publication_preparation = PublicationPreparation(cloud, bitbrowser, publication_journal,
-        PublicationClaimStore(db_path), config.paths.data_dir / 'publications')
+        PublicationClaimStore(database), config.paths.data_dir / 'publications', cloud_env=config.cloud_env)
 
     # 7. The Cloud identity this process works under. Desktop exchanges its
     #    desktop session for an Agent Token and hands it here over the local
     #    API, so this starts empty and is filled in while the loops below are
     #    already running.
-    agent_token = AgentToken()
-
     # 8. The transfer loop's configuration. Every field is a fact about this process:
     #    `agent_id` goes on a checkpoint row and the db path is shared state.
     loop_config = TransferRunnerConfig(
@@ -180,5 +194,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         transfers=transfers,
         publication_journal=publication_journal,
         publication_execution=publication_execution,
+        database=database,
         publication_preparation=publication_preparation,
     )

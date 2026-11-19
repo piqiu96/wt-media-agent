@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
-from contextlib import closing
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from wt_media_agent.runtime.config import get_config
 
 
-DEFAULT_DB_NAME = "local-agent.sqlite3"
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from wt_media_agent.runtime.constants import DEFAULT_DB_NAME, CLOUD_ENVS
+from wt_media_agent.storage.database import Database
+from wt_media_agent.storage.models import SchemaMigration, TaskCheckpointModel, TaskResultModel, AgentMetadata
+from wt_media_agent.utils.time import utc_now_iso
+
+class LegacyIdentityRequired(RuntimeError):
+    """An operator must identify historical records before they can be upgraded."""
+
 
 
 @dataclass(frozen=True)
@@ -177,6 +186,7 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration('0005_scoped_orm', 'scoped_orm', ()),
 )
 
 
@@ -203,49 +213,142 @@ def default_db_path(data_dir: Path | None = None) -> Path:
     return (data_dir or default_data_dir()) / DEFAULT_DB_NAME
 
 
-def apply_migrations(db_path: str | Path) -> list[AppliedMigration]:
-    path = Path(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # `closing` for the connection, `db` for the transaction: `with connection`
-    # alone commits but never closes, so this leaked one connection per call.
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version TEXT NOT NULL PRIMARY KEY,
-                name TEXT NOT NULL,
-                applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            )
-            """
-        )
-        applied_versions = {
-            row[0] for row in db.execute("SELECT version FROM schema_migrations")
-        }
-        applied: list[AppliedMigration] = []
-        for item in MIGRATIONS:
-            if item.version in applied_versions:
-                continue
-            with db:
-                for statement in item.statements:
-                    db.execute(statement)
-                db.execute(
-                    "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
-                    (item.version, item.name),
-                )
-            applied.append(AppliedMigration(version=item.version, name=item.name))
-        return applied
+def _encode(value):
+    return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
+
+
+def _upgrade(connection, *, legacy_scope, cloud_env_map):
+    old_checkpoints=connection.exec_driver_sql('SELECT * FROM task_checkpoints').mappings().all()
+    old_results=connection.exec_driver_sql('SELECT * FROM offline_results').mappings().all()
+    converted=[]
+    users=set()
+    for original in old_checkpoints:
+        values=dict(original)
+        if values['task_type']=='publication':
+            state=json.loads(values['checkpoint_json'])
+            identity=state['identity']
+            old_env=identity.get('cloud_env',identity.get('environment'))
+            env=old_env if old_env in CLOUD_ENVS else cloud_env_map.get(old_env)
+            if env not in CLOUD_ENVS:
+                raise LegacyIdentityRequired('historical publication requires an explicit Cloud URL/environment mapping; original database unchanged')
+            user=identity['user_id']
+            values.update(task_id=identity['task_id'],attempt_id=identity['attempt_id'],bit_profile_id=identity['bit_profile_id'],
+                input_hash=hashlib.sha256(_encode(state['input']).encode()).hexdigest())
+            identity.pop('environment',None)
+            identity['cloud_env']=env
+            values['checkpoint_json']=_encode(state)
+            # Historical agent_id held user_id. Do not invent a device identity.
+            values['agent_id']=''
+        else:
+            if legacy_scope is None:
+                raise LegacyIdentityRequired('historical download owner/environment is unknown; use --legacy-cloud-env and --legacy-user-id after verification; original database unchanged')
+            env,user=legacy_scope
+            values['attempt_id']=None
+        users.add(user)
+        values.update(cloud_env=env,user_id=user)
+        converted.append((original['task_id'],values))
+    # Old claim keys contain an irreversible URL/user digest. Only verified
+    # mappings can match one; never rotate an unresolved request on upgrade.
+    metadata=connection.exec_driver_sql("SELECT key,value FROM agent_metadata WHERE key LIKE 'publication.claim.%'").mappings().all()
+    if legacy_scope:
+        users.add(legacy_scope[1])
+    claim_changes=[]
+    for entry in metadata:
+        if len(entry['key'].removeprefix('publication.claim.')) != 64:
+            continue
+        matches=[]
+        for url,env in cloud_env_map.items():
+            for user in users:
+                raw=json.dumps([url,user],separators=(',',':'))
+                if entry['key']=='publication.claim.'+hashlib.sha256(raw.encode()).hexdigest():
+                    matches.append(f'publication.claim.{env}.{user}')
+        if len(set(matches)) != 1:
+            raise LegacyIdentityRequired('pending historical claim requires a verified Cloud URL and user mapping; original request key retained')
+        claim_changes.append((entry,matches[0]))
+    TaskCheckpointModel.__table__.create(connection,checkfirst=True)
+    TaskResultModel.__table__.create(connection,checkfirst=True)
+    # Bind the ORM to this migration transaction; it must not commit independently.
+    with Session(bind=connection,join_transaction_mode='rollback_only') as session:
+        mapping={}
+        for old_id,values in converted:
+            row=TaskCheckpointModel(**values)
+            session.add(row)
+            session.flush()
+            mapping[old_id]=row.id
+        for original in old_results:
+            values=dict(original)
+            old_id=values.pop('task_id')
+            cp_id=mapping.get(old_id)
+            if cp_id is None:
+                raise LegacyIdentityRequired('orphaned historical result requires reconciliation; original database unchanged')
+            values.pop('agent_id',None)
+            values.pop('attempt_id',None)
+            values.update(checkpoint_id=cp_id)
+            packet=json.loads(values['result_json']) if values.get('result_json') else {}
+            values['result_hash']=packet.get('result_hash')
+            session.add(TaskResultModel(**values))
+        for entry,new_key in claim_changes:
+            if session.get(AgentMetadata,new_key) is not None:
+                raise LegacyIdentityRequired('historical claim conflicts with an existing pending request')
+            session.add(AgentMetadata(key=new_key,value=entry['value'],updated_at=utc_now_iso()))
+            session.delete(session.get(AgentMetadata,entry['key']))
+        session.flush()
+    connection.exec_driver_sql('DROP TABLE offline_results')
+    connection.exec_driver_sql('DROP TABLE task_checkpoints')
+
+
+def apply_migrations(database: Database | str | Path, *, legacy_scope: tuple[str,str] | None = None,
+                     cloud_env_map: dict[str,str] | None = None) -> list[AppliedMigration]:
+    if legacy_scope and (legacy_scope[0] not in CLOUD_ENVS or not legacy_scope[1]):
+        raise ValueError('verified legacy environment and user required')
+    cloud_env_map=cloud_env_map or {}
+    if any(env not in CLOUD_ENVS for env in cloud_env_map.values()):
+        raise ValueError('invalid legacy Cloud environment mapping')
+    owned=not isinstance(database,Database)
+    database=Database(database) if owned else database
+    try:
+        with database.engine.begin() as connection:
+            SchemaMigration.__table__.create(connection,checkfirst=True)
+            versions=set(connection.execute(select(SchemaMigration.version)).scalars())
+            applied=[]
+            for item in MIGRATIONS:
+                if item.version in versions:
+                    continue
+                if item.version=='0005_scoped_orm':
+                    _upgrade(connection,legacy_scope=legacy_scope,cloud_env_map=cloud_env_map)
+                else:
+                    for statement in item.statements:
+                        connection.exec_driver_sql(statement)
+                connection.execute(SchemaMigration.__table__.insert().values(version=item.version,name=item.name))
+                applied.append(AppliedMigration(item.version,item.name))
+            return applied
+    finally:
+        if owned:
+            database.close()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", help="local Agent data directory")
     parser.add_argument("--db-path", help="explicit SQLite database path")
+    parser.add_argument('--legacy-cloud-env', choices=sorted(CLOUD_ENVS))
+    parser.add_argument('--legacy-user-id', help='verified owner of historical download/claim records')
+    parser.add_argument('--legacy-cloud-url', help='verified old Cloud URL for publication/claim mapping')
     args = parser.parse_args(argv)
+    if bool(args.legacy_cloud_env) != bool(args.legacy_user_id):
+        parser.error('--legacy-cloud-env and --legacy-user-id must be supplied together')
 
     db_path = Path(args.db_path) if args.db_path else default_db_path(
         Path(args.data_dir).expanduser() if args.data_dir else None
     )
-    applied = apply_migrations(db_path)
+    config=get_config()
+    with_database=Database(db_path,synchronous=config.database_synchronous,timeout_seconds=config.database_timeout_seconds)
+    try:
+        applied = apply_migrations(with_database,
+            legacy_scope=(args.legacy_cloud_env,args.legacy_user_id) if args.legacy_user_id else None,
+            cloud_env_map={args.legacy_cloud_url:args.legacy_cloud_env} if args.legacy_cloud_url else {})
+    finally:
+        with_database.close()
     print(f"storage migration ok: {len(applied)} applied, {len(MIGRATIONS)} total")
     print(f"database {db_path}")
     for item in applied:

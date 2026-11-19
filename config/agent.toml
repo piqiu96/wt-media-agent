@@ -17,6 +17,7 @@
 environment = "development"
 
 [cloud]
+cloud_env = "dev"
 base_url = "http://127.0.0.1:8188"
 timeout_seconds = 10.0
 
@@ -69,3 +70,7 @@ file = ""
 # there is is not. Uncomment to override the built-in 1 MiB / 14 days.
 # max_record_bytes = 1048576
 # retention_days = 14
+
+[database]
+synchronous = "FULL"
+timeout_seconds = 5.0

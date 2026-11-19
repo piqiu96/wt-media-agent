@@ -6,7 +6,8 @@ replayed claim or process restart is reconciliation work, never browser work.
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict
+from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict, _environment
+from wt_media_agent.runtime.constants import PublicationPhase, PublicationStage, PublicationStatus
 from wt_media_agent.clients.publication import PublicationInputError,download_verified,live_baidu_identity
 
 
@@ -21,14 +22,15 @@ class PreparedPublication:
 
 
 class PublicationPreparation:
-    def __init__(self, cloud, bitbrowser, journal, claims, directory):
+    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str):
+        self.cloud_env=_environment(cloud_env)
         self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set()
 
     def claim(self, token: str, user_id: str):
-        key=self.claims.pending(self.cloud.base_url,user_id)
+        key=self.claims.pending(self.cloud_env,user_id)
         value=self.cloud.claim_publication(token,key)
         if value is None:
-            self.claims.acknowledge(self.cloud.base_url,user_id,key)
+            self.claims.acknowledge(self.cloud_env,user_id,key)
             return None
         # No browser access or request-key rotation until the response has been
         # checked and the original input is durable.
@@ -36,14 +38,14 @@ class PublicationPreparation:
             task=value['task'];attempt=value['attempt'];source=attempt['input_snapshot']
             if task['operator_id']!=user_id or attempt['executor_user_id']!=user_id or attempt['publication_id']!=task['id'] or task['current_attempt_id']!=attempt['id'] or type(value['replayed']) is not bool:
                 raise ValueError('owner/attempt differs')
-            identity=ExecutionIdentity(self.cloud.base_url,user_id,task['id'],attempt['id'],source['bit_profile_id'])
+            identity=ExecutionIdentity(self.cloud_env,user_id,task['id'],attempt['id'],source['bit_profile_id'])
             snapshot={k:source[k] for k in ('platform_uid','video_sha256','video_size','cover_sha256','cover_size')}
             snapshot['platform']=task['platform'];snapshot['content']={k:source['content'][k] for k in ('description','topics','declaration')}
             fresh=self.journal.register(identity,snapshot)
         except (KeyError,TypeError,ValueError):
             raise PublicationInputError('invalid owner-bound claim input') from None
-        self.claims.acknowledge(self.cloud.base_url,user_id,key)
-        if not fresh or value['replayed'] or task['status']!='running' or attempt['status']!='running' or attempt['stage']!='claimed':
+        self.claims.acknowledge(self.cloud_env,user_id,key)
+        if not fresh or value['replayed'] or task['status']!=PublicationStatus.RUNNING or attempt['status']!=PublicationStatus.RUNNING or attempt['stage']!=PublicationStage.CLAIMED:
             raise JournalConflict('original attempt requires verification; browser re-entry forbidden')
         self._fresh.add(identity.key)
         return value,identity
@@ -53,7 +55,7 @@ class PublicationPreparation:
             raise JournalConflict('preparation requires a fresh claim in this process')
         self._fresh.remove(identity.key)
         state=self.journal.get(identity)
-        if state['phase']!='claimed' or state['report_seq']!=0:
+        if state['phase']!=PublicationPhase.CLAIMED or state['report_seq']!=0:
             raise JournalConflict('preparation cannot be replayed')
         task=claim['task'];i=claim['attempt']['input_snapshot']
         if task['platform']!='baidu': raise PublicationInputError('platform not implemented')
@@ -73,9 +75,9 @@ class PublicationPreparation:
             raise PublicationInputError('live platform UID differs or login unavailable')
         # Persist before reporting progress. Losing this response never reopens
         # the browser; this attempt then requires explicit reconciliation.
-        seq=self.journal.advance(identity,'prepared')
+        seq=self.journal.advance(identity,PublicationPhase.PREPARED)
         feedback=self.cloud.report_publication(token,task['id'],'progress',{
-            'attempt_id':identity.attempt_id,'report_seq':seq,'stage':'ready',
+            'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,
             'platform_uid':observed['platform_account_id'],'bit_profile_id':identity.bit_profile_id,
             'video_sha256':i['video_sha256'],'cover_sha256':i['cover_sha256']})
         if feedback.get('stop_requested') is not False:
@@ -86,4 +88,4 @@ class PublicationPreparation:
         def send(packet):
             task_id=packet.pop('task_id')
             return self.cloud.report_publication(token,task_id,'complete',packet)
-        return self.journal.flush(self.cloud.base_url,user_id,send)
+        return self.journal.flush(self.cloud_env,user_id,send)
