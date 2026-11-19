@@ -73,6 +73,29 @@ class CloudAgentClient:
         )
         return _expect_data(response)
 
+    # ---- 发布执行（独立于文件下载租约） ----
+
+    def claim_publication(self, token: str, request_key: str):
+        response = self._transport('POST', '/api/v1/cloud-agent/publication-tasks/claim',
+                                   {'request_key': request_key}, _bearer(token))
+        _raise_on_failure(response)
+        if 'data' not in response:
+            raise CloudUnavailableError('publication response missing data')
+        data = response['data']
+        if data is None:
+            return None
+        if not isinstance(data, Mapping):
+            raise CloudUnavailableError('publication response malformed')
+        return dict(data)
+
+    def report_publication(self, token: str, task_id: str, operation: str, packet: dict):
+        if operation not in ('heartbeat', 'progress', 'complete'):
+            raise ValueError('invalid publication report operation')
+        if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdecimal() or str(int(task_id)) != task_id or int(task_id) <= 0:
+            raise ValueError('canonical task identity required')
+        return dict(_expect_data(self._transport('POST',
+            f'/api/v1/cloud-agent/publication-tasks/{task_id}/{operation}', packet, _bearer(token))))
+
     # ---- 文件传输 ----
     #
     # 四个调用的身份都在 Bearer Token 上；已领取后还必须带 claim 返回的

@@ -44,6 +44,8 @@ from wt_media_agent.storage.migration import apply_migrations
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
 from wt_media_agent.storage.publication import PublicationJournal
 from wt_media_agent.runner.publication import PublicationExecution
+from wt_media_agent.storage.publication import PublicationClaimStore
+from wt_media_agent.runner.publication_preparation import PublicationPreparation
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ class Components:
     transfers: TransferRunner
     publication_journal: PublicationJournal
     publication_execution: PublicationExecution
+    publication_preparation: PublicationPreparation
     database: Database
     threads: list[threading.Thread] = field(default_factory=list, compare=False, repr=False)
 
@@ -136,6 +139,8 @@ def build_components(config: AgentConfig | None = None) -> Components:
     save_directories = SaveDirectoryStore(database)
     publication_journal = PublicationJournal(database, agent_id=config.agent_id)
     publication_execution = PublicationExecution(publication_journal)
+    publication_preparation = PublicationPreparation(cloud, bitbrowser, publication_journal,
+        PublicationClaimStore(database), config.paths.data_dir / 'publications', cloud_env=config.cloud_env)
 
     # 7. The Cloud identity this process works under. Desktop exchanges its
     #    desktop session for an Agent Token and hands it here over the local
@@ -184,4 +189,5 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_journal=publication_journal,
         publication_execution=publication_execution,
         database=database,
+        publication_preparation=publication_preparation,
     )

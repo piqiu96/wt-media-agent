@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from sqlalchemy import select, update
-from wt_media_agent.runtime.constants import CLOUD_ENVS, TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, PublicationPhase, PUBLICATION_LOCAL_RESULT_STATUSES, PUBLICATION_SETTLED_STATUSES
+from sqlalchemy import select, update, delete
+from wt_media_agent.runtime.constants import CLOUD_ENVS, TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, PublicationPhase, PUBLICATION_RESULT_STATUSES, PUBLICATION_LOCAL_RESULT_STATUSES, PUBLICATION_SETTLED_STATUSES
 from wt_media_agent.storage.database import Database, retry_write
-from wt_media_agent.storage.models import TaskCheckpointModel as Checkpoint, TaskResultModel as Result
+from wt_media_agent.storage.models import TaskCheckpointModel as Checkpoint, TaskResultModel as Result, AgentMetadata
 from dataclasses import asdict, dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
+import uuid
+
 
 from wt_media_agent.utils.time import utc_now_iso
 
@@ -75,7 +77,7 @@ def _validated_snapshot(value: dict) -> str:
 
 
 def _safe_result(value: dict) -> None:
-    if not isinstance(value, dict) or value.get('status') not in PUBLICATION_LOCAL_RESULT_STATUSES:
+    if not isinstance(value, dict) or value.get('status') not in PUBLICATION_RESULT_STATUSES:
         raise ValueError('an explicit observation is required')
     def visit(node):
         if isinstance(node, dict):
@@ -87,7 +89,12 @@ def _safe_result(value: dict) -> None:
             for child in node: visit(child)
         elif isinstance(node, str) and node.startswith(('https://', 'http://')):
             url = urlsplit(node)
-            if url.username or url.password or url.query or url.fragment:
+            public_id_query = False
+            if url.scheme == 'https' and url.netloc == 'baijiahao.baidu.com' and url.path == '/s':
+                query = parse_qs(url.query, keep_blank_values=True)
+                ids = query.get('id', [])
+                public_id_query = set(query) == {'id'} and len(ids) == 1 and ids[0].isascii() and ids[0].isdecimal()
+            if url.scheme != 'https' or url.username or url.password or (url.query and not public_id_query) or url.fragment:
                 raise ValueError('only public credential-free evidence URLs may be saved')
     visit(value)
 
@@ -217,3 +224,27 @@ class PublicationJournal:
             state['phase']=PublicationPhase.SETTLED
             state.pop('input',None)
             self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.SETTLED,task_payload_json=None)
+
+
+class PublicationClaimStore:
+    def __init__(self, database: Database):
+        self.database = database
+
+    @staticmethod
+    def _key(cloud_env: str, user_id: str) -> str:
+        if cloud_env not in CLOUD_ENVS:
+            raise ValueError('explicit Cloud environment required')
+        if (not isinstance(user_id,str) or not user_id.isascii() or not user_id.isdecimal()
+                or str(int(user_id))!=user_id or not 0<int(user_id)<2**64):
+            raise ValueError('canonical owner identity required')
+        return f'publication.claim.{cloud_env}.{user_id}'
+
+    def pending(self, cloud_env: str, user_id: str) -> str:
+        key=self._key(cloud_env,user_id)
+        with self.database.session.begin() as session:
+            self.database.insert_if_absent(session, AgentMetadata, dict(key=key,value=str(uuid.uuid4()),updated_at=utc_now_iso()))
+            return session.get(AgentMetadata,key).value
+
+    def acknowledge(self, cloud_env: str, user_id: str, request_key: str):
+        with self.database.session.begin() as session:
+            session.execute(delete(AgentMetadata).where(AgentMetadata.key==self._key(cloud_env,user_id),AgentMetadata.value==request_key))
