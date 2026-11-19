@@ -9,9 +9,8 @@ import hashlib
 import json
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.exc import OperationalError
 from wt_media_agent.runtime.constants import CLOUD_ENVS, TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, PublicationPhase, PublicationStatus, PUBLICATION_RESULT_STATUSES, PUBLICATION_SETTLED_STATUSES
-from wt_media_agent.storage.database import Database
+from wt_media_agent.storage.database import Database, retry_sqlite_write
 from wt_media_agent.storage.models import TaskCheckpointModel as Checkpoint, TaskResultModel as Result
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -156,21 +155,20 @@ class PublicationJournal:
         with self.database.session() as session:
             return self._state(session,identity)[1]
 
+    @retry_sqlite_write
     def advance(self, identity: ExecutionIdentity, phase: str) -> int:
         previous={PublicationPhase.PREPARED:PublicationPhase.CLAIMED,PublicationPhase.SUBMITTING:PublicationPhase.PREPARED,PublicationPhase.CLICK_STARTED:PublicationPhase.SUBMITTING}
         if phase not in previous:
             raise ValueError('unsupported local submit phase')
-        try:
-            with self.database.session.begin() as session:
-                row,state=self._state(session,identity)
-                if state['phase'] != previous[phase]:
-                    raise JournalConflict('submit boundary cannot be replayed or reversed')
-                state.update(phase=phase,report_seq=state['report_seq']+1)
-                self._write(session,row,state)
-                return state['report_seq']
-        except OperationalError as error:
-            raise JournalConflict('execution state could not be advanced') from error
+        with self.database.session.begin() as session:
+            row,state=self._state(session,identity)
+            if state['phase'] != previous[phase]:
+                raise JournalConflict('submit boundary cannot be replayed or reversed')
+            state.update(phase=phase,report_seq=state['report_seq']+1)
+            self._write(session,row,state)
+            return state['report_seq']
 
+    @retry_sqlite_write
     def reserve_report(self, identity: ExecutionIdentity) -> int:
         with self.database.session.begin() as session:
             row,state=self._state(session,identity)
@@ -196,6 +194,7 @@ class PublicationJournal:
         # A resolved browser scene must not hide a result that has not reached Cloud.
         return self._attempts(cloud_env,user_id,pending=True)
 
+    @retry_sqlite_write
     def save_result(self, identity: ExecutionIdentity, result: dict, *, report_seq: int) -> dict:
         _safe_result(result)
         if type(report_seq) is not int or report_seq <= 0:
@@ -234,22 +233,29 @@ class PublicationJournal:
             except Exception:
                 ack=None
             accepted=isinstance(ack,dict) and (ack.get('attempt_id'),ack.get('result_hash'))==(packet['attempt_id'],packet['result_hash'])
-            with self.database.session.begin() as session:
-                row=session.scalar(select(Result).join(Checkpoint,Checkpoint.id==Result.checkpoint_id).where(
-                    Result.id==pending['id'],Result.delivered.is_(False),Checkpoint.cloud_env==_environment(cloud_env),
-                    Checkpoint.user_id==user_id,Checkpoint.task_type==TASK_TYPE_PUBLICATION))
-                if row is None:
-                    continue
-                if json.loads(row.result_json) != packet:
-                    raise JournalConflict('pending result differs')
-                row.delivery_attempts+=1
-                if accepted:
-                    row.delivered=True
-                    row.delivered_at=utc_now_iso()
-                    session.execute(update(Checkpoint).where(Checkpoint.id==row.checkpoint_id).values(report_pending=0))
-                    delivered+=1
+            delivered+=int(self._record_delivery(pending,cloud_env,user_id,accepted))
         return delivered
 
+    @retry_sqlite_write
+    def _record_delivery(self, pending: dict, cloud_env: str, user_id: str, accepted: bool) -> bool:
+        packet=pending['packet']
+        with self.database.session.begin() as session:
+            row=session.scalar(select(Result).join(Checkpoint,Checkpoint.id==Result.checkpoint_id).where(
+                Result.id==pending['id'],Result.delivered.is_(False),Checkpoint.cloud_env==_environment(cloud_env),
+                Checkpoint.user_id==user_id,Checkpoint.task_type==TASK_TYPE_PUBLICATION))
+            if row is None:
+                return False
+            if json.loads(row.result_json) != packet:
+                raise JournalConflict('pending result differs')
+            row.delivery_attempts+=1
+            if accepted:
+                row.delivered=True
+                row.delivered_at=utc_now_iso()
+                session.execute(update(Checkpoint).where(Checkpoint.id==row.checkpoint_id).values(report_pending=0))
+                return True
+        return False
+
+    @retry_sqlite_write
     def settle_resolved(self, identity: ExecutionIdentity, original: dict):
         if (not isinstance(original,dict) or original.get('attempt_id')!=identity.attempt_id
                 or original.get('scene_resolved') is not True
@@ -270,6 +276,7 @@ class PublicationJournal:
             self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.SETTLED,
                 task_payload_json=row.task_payload_json if row.report_pending else None)
 
+    @retry_sqlite_write
     def settle(self, identity: ExecutionIdentity, result_hash: str, *, task_status: str):
         if task_status not in PUBLICATION_SETTLED_STATUSES:
             raise JournalConflict('Cloud has not resolved this execution')

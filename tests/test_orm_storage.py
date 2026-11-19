@@ -153,3 +153,27 @@ class OrmStorageTests(unittest.TestCase):
         apply_migrations(self.path,legacy_scope=('prod','3'),cloud_env_map={'https://old.example':'prod'})
         with closing(sqlite3.connect(self.path)) as raw:
             self.assertEqual(raw.execute("SELECT value FROM agent_metadata WHERE key='publication.claim.prod.3'").fetchone()[0],'original-request')
+
+    def test_concurrent_metadata_commit_does_not_lose_observed_result(self):
+        from unittest.mock import patch
+        from wt_media_agent.storage.models import AgentMetadata
+        from wt_media_agent.storage.publication import PublicationJournal, ExecutionIdentity
+        from test_publication_execution import snapshot
+        db=self.database()
+        journal=PublicationJournal(db)
+        owner=ExecutionIdentity('dev','3','9','1','profile')
+        journal.register(owner,snapshot())
+        original=journal._write
+        committed=[]
+        def interleave(session,row,state,**values):
+            if not committed:
+                with db.session.begin() as writer:
+                    writer.add(AgentMetadata(key='unrelated-write',value='kept',updated_at='before'))
+                committed.append(True)
+            return original(session,row,state,**values)
+        with patch.object(journal,'_write',side_effect=interleave):
+            packet=journal.save_result(owner,{'status':'uncertain'},report_seq=1)
+        self.assertEqual(len(committed),1)
+        self.assertEqual(journal.pending('dev','3')[0]['packet'],packet)
+        self.assertEqual(packet['report_seq'],1)
+        self.assertEqual(journal.get(owner)['phase'],'result_saved')
