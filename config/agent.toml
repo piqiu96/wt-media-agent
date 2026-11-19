@@ -14,7 +14,7 @@
 # by name. The environment does not travel in the release artifact, this file
 # does.
 
-environment = "development"
+environment = "dev"
 
 [cloud]
 cloud_env = "dev"

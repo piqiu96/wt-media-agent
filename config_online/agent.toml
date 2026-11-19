@@ -12,7 +12,7 @@
 # environment only; a sensitive key found in this file is ignored and reported
 # by name.
 
-environment = "production"
+environment = "prod"
 
 [cloud]
 cloud_env = "prod"
@@ -45,7 +45,7 @@ id = "local-agent-dev"
 # because it was started. The acceptance scripts and Desktop turn it on.
 run_runner = false
 # Empty resolves to ~/Library/Application Support/WTMedia/Agent because
-# `environment` above is "production". Desktop overrides it with
+# `environment` above is "prod". Desktop overrides it with
 # WT_MEDIA_AGENT_DATA_DIR when it spawns a sidecar.
 data_dir = ""
 
