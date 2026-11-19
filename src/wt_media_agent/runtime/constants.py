@@ -1,11 +1,78 @@
 """Centralized constants for the WT Media Agent."""
 
 from __future__ import annotations
+
 from enum import StrEnum
 
-# The only remaining claimed work: a download arrives on the transfer surface
-# as a `LocalLease`, not through a generic Cloud task route.
+
+class PublishMethod(StrEnum):
+    BROWSER = "browser"
+
+# 下载与发布分别使用各自的领取协议，不使用通用任务领取接口。
 TASK_TYPE_MATERIAL_DOWNLOAD = "material_download_task"
+TASK_TYPE_PUBLICATION = "publication"
+
+
+class PublicationStatus(StrEnum):
+    """Cloud 定义的发布任务状态；Agent 只消费和报告，不自行裁决。"""
+
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    AWAITING_HUMAN = "awaiting_human"
+    UNCERTAIN = "uncertain"
+    REVIEWING = "reviewing"
+    FAILED = "failed"
+    PUBLISHED = "published"
+    CANCELLED = "cancelled"
+    ABANDONED = "abandoned"
+
+
+class PublicationStage(StrEnum):
+    """Cloud 执行尝试的阶段，区别于本机提交屏障。"""
+
+    CLAIMED = "claimed"
+    PREPARING = "preparing"
+    READY = "ready"
+    SUBMITTING = "submitting"
+
+
+class PublicationPhase(StrEnum):
+    """本地执行阶段；重启后只用于核实，不授权继续点击。"""
+
+    CLAIMED = "claimed"
+    PREPARED = "prepared"
+    SUBMITTING = "submitting"
+    CLICK_STARTED = "click_started"
+    RESULT_SAVED = "result_saved"
+    SETTLED = "settled"
+
+
+class PublicationCheckpointStatus(StrEnum):
+    OPEN = "publication_open"
+    RESULT = "publication_result"
+    SETTLED = "publication_settled"
+
+
+class PublicationReport(StrEnum):
+    HEARTBEAT = "heartbeat"
+    PROGRESS = "progress"
+    COMPLETE = "complete"
+
+
+PUBLICATION_REPORT_OPERATIONS = tuple(PublicationReport)
+PUBLICATION_RESULT_STATUSES = (
+    PublicationStatus.REVIEWING, PublicationStatus.FAILED, PublicationStatus.UNCERTAIN,
+)
+PUBLICATION_RESOLVED_STATUSES = (PublicationStatus.REVIEWING, PublicationStatus.FAILED)
+PUBLICATION_SETTLED_STATUSES = (
+    PublicationStatus.PUBLISHED, PublicationStatus.REVIEWING, PublicationStatus.FAILED,
+    PublicationStatus.CANCELLED, PublicationStatus.ABANDONED,
+)
+PUBLICATION_RESULT_UNCERTAIN = "PUBLICATION_RESULT_UNCERTAIN"
+PUBLICATION_RESULT_UNCERTAIN_MESSAGE = "投稿结果或执行现场尚未核实，请核对原尝试；不会自动重新投稿。"
+DEFAULT_PUBLICATION_HEARTBEAT_SECONDS = 15.0
+DEFAULT_PUBLICATION_POLL_SECONDS = 5.0
 
 # Agent modes.
 AGENT_MODE_LOCAL = "local"
@@ -59,56 +126,7 @@ DEFAULT_CLOUD_ENV = Environment.DEV
 DEFAULT_DB_NAME = 'local-agent.sqlite3'
 DEFAULT_DATABASE_SYNCHRONOUS = 'FULL'
 DEFAULT_DATABASE_TIMEOUT_SECONDS = 5.0
-TASK_TYPE_PUBLICATION = 'publication'
 SAVE_DIRECTORY_KEY = 'download.save_directory'
 
-class PublicationStatus(StrEnum):
-    """Cloud 定义的发布任务状态；Agent 只消费和报告，不自行裁决。"""
-
-    PENDING = "pending"
-    QUEUED = "queued"
-    RUNNING = "running"
-    AWAITING_HUMAN = "awaiting_human"
-    UNCERTAIN = "uncertain"
-    REVIEWING = "reviewing"
-    FAILED = "failed"
-    PUBLISHED = "published"
-    CANCELLED = "cancelled"
-    ABANDONED = "abandoned"
-
-
-class PublicationStage(StrEnum):
-    """Cloud 执行尝试的阶段，区别于本机提交屏障。"""
-
-    CLAIMED = "claimed"
-    PREPARING = "preparing"
-    READY = "ready"
-    SUBMITTING = "submitting"
-
-
-class PublicationPhase(StrEnum):
-    """本地执行阶段；重启后只用于核实，不授权继续点击。"""
-
-    CLAIMED = "claimed"
-    PREPARED = "prepared"
-    SUBMITTING = "submitting"
-    CLICK_STARTED = "click_started"
-    RESULT_SAVED = "result_saved"
-    SETTLED = "settled"
-
-
-class PublicationCheckpointStatus(StrEnum):
-    OPEN = "publication_open"
-    RESULT = "publication_result"
-    SETTLED = "publication_settled"
-
-
-
-PUBLICATION_LOCAL_RESULT_STATUSES = frozenset({PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED, PublicationStatus.FAILED,
-    PublicationStatus.UNCERTAIN, PublicationStatus.AWAITING_HUMAN, PublicationStatus.CANCELLED})
-PUBLICATION_SETTLED_STATUSES = (PublicationStatus.PUBLISHED, PublicationStatus.REVIEWING, PublicationStatus.FAILED,
-    PublicationStatus.CANCELLED, PublicationStatus.ABANDONED)
-
-PUBLICATION_RESULT_STATUSES = (PublicationStatus.REVIEWING, PublicationStatus.FAILED, PublicationStatus.UNCERTAIN)
 DATABASE_RETRY_INTERVAL_SECONDS = 0.01
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300

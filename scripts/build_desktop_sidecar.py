@@ -56,7 +56,12 @@ def binary_name(target: str) -> str:
 
 def pyinstaller_signing_args(system: str | None = None) -> list[str]:
     """Ad-hoc sign embedded Mach-O libraries for macOS runtime loading."""
-    return ["--codesign-identity", "-"] if (system or platform.system()).lower() == "darwin" else []
+    if (system or platform.system()).lower() != "darwin":
+        return []
+    # PyInstaller re-signs Playwright's bundled Node with hardened runtime.
+    # Without JIT permission V8 aborts before the driver can start.
+    return ["--codesign-identity", "-", "--osx-entitlements-file",
+            str(ROOT / "resources" / "sidecar-macos.entitlements.plist")]
 
 
 def python_library_resign_args(system: str | None = None) -> list[str]:
@@ -99,18 +104,27 @@ def unsigned_python_shared_library():
     if library is None:
         yield
         return
-    with tempfile.TemporaryDirectory(prefix="wt-media-agent-python-lib-") as temporary:
-        backup = Path(temporary) / library.name
+    library = library.resolve()
+    has_signature = subprocess.run(
+        ["codesign", "-d", str(library)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode == 0
+    if not has_signature:
+        yield
+        return
+    # Never rewrite an inode mapped by running interpreters. macOS caches its
+    # signed pages; restoring bytes/mtime in place can make later launches die
+    # with SIGKILL. Stage and restore through atomic replacements on this volume.
+    with tempfile.TemporaryDirectory(prefix="wt-media-agent-python-lib-", dir=library.parent) as temporary:
+        backup = Path(temporary) / ("original-" + library.name)
+        staged = Path(temporary) / library.name
         shutil.copy2(library, backup)
-        has_signature = subprocess.run(
-            ["codesign", "-d", str(library)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        ).returncode == 0
+        shutil.copy2(library, staged)
+        subprocess.run([*resign_args, str(staged)], check=True)
+        os.replace(staged, library)
         try:
-            if has_signature:
-                subprocess.run([*resign_args, str(library)], check=True)
             yield
         finally:
-            shutil.copy2(backup, library)
+            os.replace(backup, library)
 
 
 def sha256(path: Path) -> str:

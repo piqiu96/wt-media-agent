@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import errno
+import socket
+import time
+from urllib.parse import urlsplit
 from typing import Callable
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -188,6 +192,41 @@ class BitBrowserClient:
             raise
         except BitBrowserResponseError:
             pass  # Close may fail if already closed
+
+    def close_profile_verified(self, profile_id: str, endpoint: str, *, timeout: float = 10.0) -> bool:
+        """Close this owned Profile and verify both the mirror and original socket.
+
+        A missing mirror alone is insufficient. A timeout or unreadable state is
+        unknown, never evidence that an existing publication scene disappeared.
+        """
+        parsed = urlsplit('http://' + endpoint)
+        if parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or parsed.path or timeout <= 0:
+            return False
+        try:
+            port = parsed.port
+        except ValueError:
+            return False
+        if not port:
+            return False
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self.close_profile(profile_id)
+                ports = self._check_success(self._post('/browser/ports', {'ids': [profile_id]}))
+                mirror_closed = not ports.get(profile_id)
+                socket_closed = False
+                try:
+                    with socket.create_connection((parsed.hostname, port), timeout=min(timeout, 1.0)):
+                        pass
+                except OSError as error:
+                    socket_closed = error.errno == errno.ECONNREFUSED
+                if mirror_closed and socket_closed:
+                    return True
+            except (BitBrowserUnavailableError, BitBrowserResponseError, OSError, ValueError):
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
 
     def _read_profile_runtime_fields(self, profile_id: str) -> dict[str, object]:
         """Read fields required by /browser/update from the local profile detail.

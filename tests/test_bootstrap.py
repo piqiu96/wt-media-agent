@@ -200,8 +200,12 @@ class ModeSurfaceWiringTests(ComponentTestCase):
         components = self.build(**env)
         with mock.patch.object(mode, "build_components", return_value=components):
             with mock.patch.object(mode, "start_transfer_loop") as loops:
-                with mock.patch.object(mode, "serve") as serve:
+                with mock.patch.object(mode, "serve") as serve, mock.patch.object(mode, "start_publication_loop") as publications:
                     mode.run()
+                    if components.config.run_runner:
+                        publications.assert_called_once_with(components)
+                    else:
+                        publications.assert_not_called()
         return components, serve, loops
 
     def test_both_api_modes_hand_over_the_stores_assembly_built(self):

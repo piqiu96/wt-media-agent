@@ -1,4 +1,4 @@
-"""ADR-0016 dependency boundaries, checked with the standard `ast` module.
+"""ADR-0016/0034 dependency boundaries, checked with the standard `ast` module.
 
 The point of this file is that each boundary is enforced, not merely stated:
 "executors reach the outside world only through clients/services" and "only
@@ -59,13 +59,14 @@ sys.path.insert(0, str(ROOT / "src"))
 SOURCE_ROOT = ROOT / "src" / "wt_media_agent"
 PACKAGE = "wt_media_agent"
 
-#: ADR-0016 §2's nine layers.
+#: ADR-0016 layers plus ADR-0034's independent platform capabilities.
 KNOWN_LAYERS = frozenset(
     {
         "bootstrap",
         "runtime",
         "runner",
         "executors",
+        "platforms",
         "clients",
         "services",
         "storage",
@@ -75,8 +76,8 @@ KNOWN_LAYERS = frozenset(
 )
 
 #: Packages that must stay empty. `adapters/` is the only one: `modes/` and
-#: `generated/` are not part of architecture baseline §5.2, and `platforms/` is
-#: excluded by ADR-0016 §5. A package listed here may hold nothing but a
+#: `generated/` are not part of architecture baseline §5.2. `platforms/` is now
+#: defined by ADR-0034. A package listed here may hold nothing but a
 #: docstring.
 PLACEHOLDER_PACKAGES = frozenset({"adapters"})
 
@@ -98,7 +99,8 @@ ROOT_MODULES = frozenset(
 #: package's outside face and their edges are frozen by R10.
 DOWNWARD_EDGES: dict[str, frozenset[str]] = {
     "bootstrap": KNOWN_LAYERS,
-    "runner": frozenset({"executors", "clients", "services", "storage", "runtime", "utils"}),
+    "runner": frozenset({"executors", "platforms", "clients", "services", "storage", "runtime", "utils"}),
+    "platforms": frozenset({"clients", "services", "runtime", "utils"}),
     "executors": frozenset({"clients", "services", "storage", "runtime", "utils"}),
     "local_api": frozenset({"clients", "services", "storage", "runtime", "utils"}),
     "clients": frozenset({"services", "storage", "runtime", "utils"}),
@@ -123,7 +125,7 @@ FORBIDDEN_BY_ADR_3: dict[tuple[str, str], str] = {
     ("services", "executors"): "services -> executors",
 }
 BUSINESS_LAYERS = frozenset(
-    {"bootstrap", "runner", "executors", "clients", "services", "storage", "local_api"}
+    {"bootstrap", "runner", "executors", "platforms", "clients", "services", "storage", "local_api"}
 )
 
 #: ADR-0016 §3: executors get external access from clients/services/storage.
@@ -182,6 +184,7 @@ FROZEN_LAYER_EDGES = frozenset(
         ("bootstrap", "executors"),
         ("bootstrap", "local_api"),
         ("bootstrap", "runner"),
+        ("bootstrap", "platforms"),
         ("bootstrap", "runtime"),
         ("bootstrap", "storage"),
         ("clients", "runtime"),
@@ -203,10 +206,16 @@ FROZEN_LAYER_EDGES = frozenset(
         ("local_main", "bootstrap"),
         ("runner", "clients"),
         ("runner", "executors"),
+        ("runner", "platforms"),
+        ("runner", "services"),
         ("runner", "runtime"),
         ("runner", "storage"),
         ("runner", "utils"),
         ("runtime", "clients"),
+        ("platforms", "clients"),
+        ("platforms", "services"),
+        ("platforms", "runtime"),
+        ("services", "clients"),
         ("sidecar_main", "bootstrap"),
         ("sidecar_main", "local_api"),
         ("storage", "runtime"),
@@ -682,6 +691,34 @@ def r11_single_logging_initializer(files: dict[str, str]) -> list[str]:
 # --- the assertions -----------------------------------------------------------
 
 
+def r12_platform_boundary(files: dict[str, str]) -> list[str]:
+    """ADR-0034: business capabilities cannot acquire task authority or raw IO."""
+    violations = []
+    denied = ('urllib.request', 'http.client', 'requests', 'httpx', 'socket', 'sqlite3')
+    cloud = f'{PACKAGE}.clients.cloud'
+    for path, source in files.items():
+        if Path(path).parts[1:2] != ('platforms',):
+            continue
+        for edge in imports_of(path, source):
+            if edge.target == cloud or edge.target.startswith(cloud + '.'):
+                violations.append(f'R12 {path}:{edge.lineno}: platform imports Cloud task authority')
+        for node in ast.walk(ast.parse(source)):
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ''
+                modules = [base] + [base + '.' + alias.name for alias in node.names]
+                if base.endswith('clients') and any(a.name in ('cloud', '*') for a in node.names):
+                    violations.append(f'R12 {path}:{node.lineno}: platform imports Cloud task authority')
+            for name in modules:
+                if name == 'urllib' and isinstance(node, ast.Import):
+                    violations.append(f'R12 {path}:{node.lineno}: raw urllib import')
+                elif any(name == prefix or name.startswith(prefix + '.') for prefix in denied):
+                    violations.append(f'R12 {path}:{node.lineno}: raw IO import {name}')
+    return violations
+
+
 class BoundaryScanTests(unittest.TestCase):
     """The real tree. Each rule is one assertion so a failure names its rule."""
 
@@ -737,6 +774,9 @@ class BoundaryScanTests(unittest.TestCase):
     def test_r11_only_bootstrap_initializes_logging(self):
         self.assertEqual(r11_single_logging_initializer(self.files), [])
 
+    def test_r12_platforms_are_independent_of_task_authority_and_raw_network(self):
+        self.assertEqual(r12_platform_boundary(self.files), [])
+
 
 class BoundaryRuleControls(unittest.TestCase):
     """Controls: each rule is shown rejecting a source that breaks it.
@@ -761,6 +801,27 @@ class BoundaryRuleControls(unittest.TestCase):
         files = self.plant(f"{PACKAGE}/clients/cloud/client.py", f"\nfrom {PACKAGE}.executors import noop\n")
         violations = r2_wrong_direction(files)
         self.assertTrue(any("clients/cloud/client.py" in v for v in violations), violations)
+
+    def test_platforms_cannot_reach_task_storage_or_be_imported_by_clients(self):
+        for path, addition in (
+            (f"{PACKAGE}/platforms/baidu/publisher.py", f"\nfrom {PACKAGE}.storage import publication\n"),
+            (f"{PACKAGE}/clients/baidu/identity.py", f"\nfrom {PACKAGE}.platforms import publish\n"),
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(r2_wrong_direction(self.plant(path, addition)))
+
+    def test_r12_rejects_cloud_authority_raw_http_and_database_imports(self):
+        for addition in (
+            f"\nfrom {PACKAGE}.clients.cloud.client import CloudAgentClient\n",
+            f"\nfrom {PACKAGE}.clients import cloud\n",
+            "\nfrom ...clients.cloud import CloudAgentClient\n",
+            "\nfrom urllib.request import urlopen\n",
+            "\nimport requests\n",
+            "\nimport sqlite3\n",
+        ):
+            with self.subTest(addition=addition):
+                files=self.plant(f"{PACKAGE}/platforms/baidu/publisher.py", addition)
+                self.assertTrue(r12_platform_boundary(files))
 
     def test_r2_control_for_a_relative_import(self):
         """Relative imports are resolved, not skipped.

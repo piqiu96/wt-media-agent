@@ -52,3 +52,12 @@ class StartTransferLoopTests(LoggingStateTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class StartPublicationLoopTests(LoggingStateTestCase):
+    def test_publication_polling_gets_a_separate_daemon_thread(self):
+        from wt_media_agent.bootstrap.app import start_publication_loop
+        publications=StubLoop();components=SimpleNamespace(threads=[], publications=publications)
+        threads=start_publication_loop(components)
+        for thread in threads:thread.join(timeout=5)
+        self.assertEqual([thread.name for thread in threads],['agent-publications'])
+        self.assertTrue(all(thread.daemon for thread in threads));self.assertEqual(publications.on_threads,['agent-publications'])

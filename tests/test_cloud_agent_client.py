@@ -100,6 +100,22 @@ class RequestTimeoutTest(unittest.TestCase):
         # network-ok: the real transport is the subject; `_call` patches urlopen
         self.assertEqual(self._call(CloudAgentClient("http://cloud.test")), 10)
 
+class OriginalPublicationReadTests(unittest.TestCase):
+    def test_original_attempt_read_uses_bearer_exact_ids_and_no_request_body(self):
+        reply=mock.MagicMock()
+        reply.__enter__.return_value.read.return_value=b'{"errcode":0,"data":{"attempt_id":"9007199254740993","scene_resolved":false}}'
+        with mock.patch.object(urlrequest,'urlopen',return_value=reply) as open_url:
+            # Explicit HTTP adapter under the patched opener: inspect the actual
+            # request without adding an unmocked/default-transport exception.
+            client = CloudAgentClient('http://cloud.test', transport=lambda *args: client._http_transport(*args))
+            result=client.original_publication_attempt(TOKEN,'9','9007199254740993')
+        req=open_url.call_args.args[0]
+        self.assertEqual(req.get_method(),'GET')
+        self.assertTrue(req.full_url.endswith('/publication-tasks/9/attempts/9007199254740993'))
+        self.assertEqual(req.get_header('Authorization'),'Bearer '+TOKEN)
+        self.assertIsNone(req.data)
+        self.assertFalse(result['scene_resolved'])
+
 
 if __name__ == "__main__":
     unittest.main()

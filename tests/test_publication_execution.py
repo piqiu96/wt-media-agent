@@ -183,6 +183,31 @@ class PublicationExecutionTests(unittest.TestCase):
             ExecutionIdentity('HTTP://CLOUD.TEST:8188/','3','9','1',self.owner.bit_profile_id)
         self.assertFalse(self.journal.register(identity(),snapshot()))
 
+    def test_explicit_scene_resolution_preserves_missing_result_and_replay_barrier(self):
+        self.journal.register(self.owner, snapshot())
+        resolution = {'attempt_id': self.owner.attempt_id, 'result_hash': None,
+                      'scene_resolved': True, 'resolved_status': 'failed'}
+        self.journal.settle_resolved(self.owner, resolution)
+        reopened = PublicationJournal(Database(self.db))
+        self.assertEqual(reopened.get(self.owner)['phase'], 'settled')
+        self.assertEqual(reopened.get(self.owner)['scene_resolution'], resolution)
+        self.assertFalse(reopened.register(self.owner, snapshot()))
+        with self.assertRaises(JournalConflict):
+            reopened.save_result(self.owner, {'status': 'uncertain'}, report_seq=1)
+        self.assertEqual(reopened.pending(self.owner.cloud_env, self.owner.user_id), [])
+        with closing(sqlite3.connect(self.db)) as db, db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM task_result').fetchone()[0],0)
+
+    def test_scene_resolution_cannot_hide_a_different_original_result(self):
+        self.journal.register(self.owner, snapshot())
+        self.journal.save_result(self.owner, {'status': 'uncertain'}, report_seq=1)
+        resolution = {'attempt_id': self.owner.attempt_id, 'result_hash': 'c' * 64,
+                      'scene_resolved': True, 'resolved_status': 'failed'}
+        with self.assertRaises(JournalConflict):
+            self.journal.settle_resolved(self.owner, resolution)
+        self.assertEqual(self.journal.get(self.owner)['phase'], 'result_saved')
+        self.assertEqual(len(self.journal.pending(self.owner.cloud_env, self.owner.user_id)), 1)
+
     def test_profile_reservation_is_physical_even_across_cloud_environments(self):
         self.journal.register(self.owner, snapshot())
         other=ExecutionIdentity('prod','4','20','9',self.owner.bit_profile_id)

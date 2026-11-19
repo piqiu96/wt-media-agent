@@ -7,9 +7,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from wt_media_agent.runner.publication import PublicationDelivery
 from pathlib import Path
+from threading import RLock
+from wt_media_agent.runtime.constants import (
+    PublicationPhase,
+    PublicationReport,
+    PublicationStage,
+    PublicationStatus,
+)
 from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict, _environment
-from wt_media_agent.runtime.constants import PublicationPhase, PublicationStage, PublicationStatus
-from wt_media_agent.clients.publication import PublicationInputError,download_verified,live_baidu_identity
+from wt_media_agent.platforms.publish import PublicationInputError
+from wt_media_agent.services.files.verified_download import download_verified
 
 
 @dataclass(frozen=True)
@@ -25,7 +32,7 @@ class PreparedPublication:
 class PublicationPreparation:
     def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str):
         self.cloud_env=_environment(cloud_env)
-        self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set()
+        self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self.report_lock=RLock()
 
     def claim(self, token: str, user_id: str):
         key=self.claims.pending(self.cloud_env,user_id)
@@ -56,10 +63,9 @@ class PublicationPreparation:
             raise JournalConflict('preparation requires a fresh claim in this process')
         self._fresh.remove(identity.key)
         state=self.journal.get(identity)
-        if state['phase']!=PublicationPhase.CLAIMED or state['report_seq']!=0:
+        if state['phase']!=PublicationPhase.CLAIMED:
             raise JournalConflict('preparation cannot be replayed')
         task=claim['task'];i=claim['attempt']['input_snapshot']
-        if task['platform']!='baidu': raise PublicationInputError('platform not implemented')
         profile=next((p for p in self.bitbrowser.scan_profiles().profiles if p.bit_profile_id==identity.bit_profile_id),None)
         if profile is None or profile.main_user_id!=i['bit_main_user_id']:
             raise PublicationInputError('BitBrowser owner or Profile differs')
@@ -71,22 +77,33 @@ class PublicationPreparation:
         folder=self.directory/identity.key.replace(':','-')
         video=folder/'video.mp4';cover=folder/'cover'
         download_verified(grants['video'],video);download_verified(grants['cover'],cover)
-        endpoint,observed=live_baidu_identity(self.bitbrowser,identity.bit_profile_id)
-        if observed.get('login_status')!='normal' or observed.get('platform_account_id')!=i['platform_uid']:
-            raise PublicationInputError('live platform UID differs or login unavailable')
+        endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
+        self._prepared.add(identity.key)
+        return PreparedPublication(identity,video,cover,endpoint)
+
+    def mark_ready(self, token: str, identity: ExecutionIdentity):
+        """The platform calls back only after initial live identity verification."""
+        source=self.journal.get(identity)['input']
         # Persist before reporting progress. Losing this response never reopens
         # the browser; this attempt then requires explicit reconciliation.
-        seq=self.journal.advance(identity,PublicationPhase.PREPARED)
-        feedback=self.cloud.report_publication(token,task['id'],'progress',{
-            'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,
-            'platform_uid':observed['platform_account_id'],'bit_profile_id':identity.bit_profile_id,
-            'video_sha256':i['video_sha256'],'cover_sha256':i['cover_sha256']})
+        with self.report_lock:
+            seq=self.journal.advance(identity,PublicationPhase.PREPARED)
+            feedback=self.cloud.report_publication(token,identity.task_id,PublicationReport.PROGRESS,{
+                'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,
+                'platform_uid':source['platform_uid'],'bit_profile_id':identity.bit_profile_id,
+                'video_sha256':source['video_sha256'],'cover_sha256':source['cover_sha256']})
         if feedback.get('stop_requested') is not False:
             raise PublicationInputError('Cloud stopped this execution')
-        return PreparedPublication(identity,video,cover,endpoint)
+
+    def consume_prepared(self, prepared: PreparedPublication):
+        # In-memory, one-use capability. A restarted process cannot turn an old
+        # prepared record into a new browser action or another submission.
+        if prepared.identity.key not in self._prepared:
+            raise JournalConflict('only fresh preparation may enter the platform')
+        self._prepared.remove(prepared.identity.key)
 
     def flush(self, token: str, user_id: str):
         def send(packet):
             task_id=packet.pop('task_id')
-            return self.cloud.report_publication(token,task_id,'complete',packet)
+            return self.cloud.report_publication(token,task_id,PublicationReport.COMPLETE,packet)
         return PublicationDelivery(self.journal).flush(self.cloud_env,user_id,send)

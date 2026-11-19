@@ -12,6 +12,7 @@ from typing import Callable, Mapping, Optional
 from urllib import error as urlerror
 from urllib import request
 
+from wt_media_agent.runtime.constants import PUBLICATION_REPORT_OPERATIONS
 from wt_media_agent.clients.cloud.errors import (
     AgentAuthError,
     CloudUnavailableError,
@@ -89,12 +90,19 @@ class CloudAgentClient:
         return dict(data)
 
     def report_publication(self, token: str, task_id: str, operation: str, packet: dict):
-        if operation not in ('heartbeat', 'progress', 'complete'):
+        if operation not in PUBLICATION_REPORT_OPERATIONS:
             raise ValueError('invalid publication report operation')
         if not isinstance(task_id, str) or not task_id.isascii() or not task_id.isdecimal() or str(int(task_id)) != task_id or int(task_id) <= 0:
             raise ValueError('canonical task identity required')
         return dict(_expect_data(self._transport('POST',
             f'/api/v1/cloud-agent/publication-tasks/{task_id}/{operation}', packet, _bearer(token))))
+
+    def original_publication_attempt(self, token: str, task_id: str, attempt_id: str):
+        for value in (task_id, attempt_id):
+            if not isinstance(value, str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or int(value) <= 0:
+                raise ValueError('canonical publication identity required')
+        return dict(_expect_data(self._transport('GET',
+            f'/api/v1/cloud-agent/publication-tasks/{task_id}/attempts/{attempt_id}', None, _bearer(token))))
 
     # ---- 文件传输 ----
     #
@@ -229,10 +237,10 @@ class CloudAgentClient:
         self,
         method: str,
         path: str,
-        payload: Mapping[str, object],
+        payload: Mapping[str, object] | None,
         headers: Mapping[str, str],
     ) -> str:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        body = None if method == "GET" else json.dumps(payload, separators=(",", ":")).encode("utf-8")
         req = request.Request(
             f"{self.base_url}{path}",
             data=body,
