@@ -12,7 +12,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 from wt_media_agent.runtime.constants import CLOUD_ENVS, DATABASE_RETRY_INTERVAL_SECONDS
-from wt_media_agent.storage.models import AgentMetadata, TaskCheckpointModel, TaskResultModel
+from wt_media_agent.storage.models import AgentMetadata, TaskCheckpointModel, TaskResultModel, PublicationDraftModel
 from wt_media_agent.utils.time import utc_now_iso
 
 class LegacyIdentityRequired(RuntimeError):
@@ -180,6 +180,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
     ),
     Migration('0005_scoped_orm', 'scoped_orm', ()),
+    Migration('0006_publication_draft', 'publication_draft', ()),
 )
 
 
@@ -253,7 +254,9 @@ class SQLiteDialect:
                   unique=True, sqlite_where=rule['where']).create(connection, checkfirst=True)
 
     def apply_migration(self, connection, item, *, legacy_scope, cloud_env_map):
-        if item.version == '0005_scoped_orm':
+        if item.version == '0006_publication_draft':
+            PublicationDraftModel.__table__.create(connection, checkfirst=True)
+        elif item.version == '0005_scoped_orm':
             _upgrade(connection, legacy_scope=legacy_scope, cloud_env_map=cloud_env_map,
                      create_constraints=self.create_constraints)
         else:

@@ -26,6 +26,8 @@ from wt_media_agent.local_api.reporting import (
     _duration_ms,
     _safe_groups,
 )
+from wt_media_agent.local_api.publication_draft import publication_draft_response, refusal
+from wt_media_agent.storage.publication_draft import PublicationDraftStore, MAX_DRAFT_BYTES
 from wt_media_agent.local_api.state import LocalAgentState
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.download_sink import DownloadSink
@@ -90,6 +92,7 @@ class LocalApiServer:
         bitbrowser: ProfileScanner,
         checkpoint_store: Optional[CheckpointStore] = None,
         save_directories: Optional[SaveDirectoryStore] = None,
+        publication_draft: Optional[PublicationDraftStore] = None,
         agent_token: Optional[AgentToken] = None,
         cloud_agent: Optional[CloudAgentClient] = None,
         auth_token: str = "",
@@ -109,6 +112,7 @@ class LocalApiServer:
         # `save_directory_response` -- so a server wired without one says so
         # instead of reporting a machine that has chosen no directory.
         self.save_directories = save_directories
+        self.publication_draft = publication_draft
         # Desktop 通过本机路由写入 Token，任务循环读取同一个对象。没装配时
         # 如实回答不可用，而不是丢弃写入。
         self.agent_token = agent_token
@@ -802,7 +806,9 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
             # Only `/api/v1/status` reads a query string; every other branch below
             # keeps matching the raw `self.path` it always has.
             route = urlparse.urlsplit(self.path)
-            if route.path == "/healthz":
+            if _path_id(route.path, "/api/v1/publication-draft/", "") is not None:
+                self._handle_publication_draft("GET")
+            elif route.path == "/healthz":
                 self._write_json(200, api.health())
             elif route.path == "/api/v1/health":
                 self._write_json(200, api.health_report_response())
@@ -816,6 +822,45 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 self._handle_sse_stream()
             else:
                 self._write_json(404, {"error": "not_found"})
+
+        def do_PUT(self) -> None:
+            if _path_id(urlparse.urlsplit(self.path).path, "/api/v1/publication-draft/", "") is not None:
+                self._handle_publication_draft("PUT")
+            else:
+                self._write_json(404, {"error": "not_found"})
+
+        def do_DELETE(self) -> None:
+            if _path_id(urlparse.urlsplit(self.path).path, "/api/v1/publication-draft/", "") is not None:
+                self._handle_publication_draft("DELETE")
+            else:
+                self._write_json(404, {"error": "not_found"})
+
+        def _handle_publication_draft(self, method) -> None:
+            if not api.auth_token or not self._check_auth():
+                self._write_json(401, {"error": "unauthorized"})
+                return
+            route = urlparse.urlsplit(self.path)
+            prefix = "/api/v1/publication-draft/"
+            if not route.path.startswith(prefix) or route.query or '/' in route.path[len(prefix):]:
+                self._write_json(404, {"error": "not_found"})
+                return
+            body = None
+            if method != "GET":
+                try:
+                    length = int(self.headers.get("content-length", "0"))
+                    if length > MAX_DRAFT_BYTES + 512:
+                        self.close_connection = True
+                        self._write_json(*refusal(413, 'draft_input_too_large', '续编输入超过大小限制'))
+                        return
+                    if length <= 0:
+                        raise ValueError('body required')
+                    body = json.loads(self.rfile.read(length))
+                except (ValueError, UnicodeDecodeError, RecursionError):
+                    self._write_json(*refusal(400, 'draft_input_invalid', '续编输入无效'))
+                    return
+            status, payload = publication_draft_response(api.publication_draft, method,
+                route.path[len(prefix):], self.headers.get('X-Publication-User-ID', ''), body)
+            self._write_json(status, payload)
 
         def do_POST(self) -> None:
             if not self._check_auth():
@@ -939,7 +984,7 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
 
         def _cors_headers(self) -> None:
             self.send_header("access-control-allow-origin", "*")
-            self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
+            self.send_header("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS")
             self.send_header("access-control-allow-headers", "authorization, content-type")
 
         def do_OPTIONS(self) -> None:
@@ -1005,6 +1050,7 @@ def serve(
     bitbrowser: ProfileScanner,
     checkpoint_store: Optional[CheckpointStore] = None,
     save_directory_store: Optional[SaveDirectoryStore] = None,
+    publication_draft: Optional[PublicationDraftStore] = None,
     agent_token: Optional[AgentToken] = None,
     cloud_agent: Optional[CloudAgentClient] = None,
     state: LocalAgentState,
@@ -1017,6 +1063,7 @@ def serve(
         bitbrowser=bitbrowser,
         checkpoint_store=checkpoint_store,
         save_directories=save_directory_store,
+        publication_draft=publication_draft,
         agent_token=agent_token,
         cloud_agent=cloud_agent,
         auth_token=auth_token,

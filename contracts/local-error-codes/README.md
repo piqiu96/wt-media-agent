@@ -13,3 +13,5 @@ Local Agent error code definitions.
 Each definition states its own revision in the `revision` field at the top of the
 file; `tests/test_contract_docs.py` fails if this list stops matching those fields.
 The file is the only place the number is written down.
+
+- `v1/publication-draft.yaml` (revision `2026.11.21.1`): bounded new-task input, trusted native identity, revision conflict and storage failures.

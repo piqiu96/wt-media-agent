@@ -72,6 +72,18 @@ class AssemblyTests(ComponentTestCase):
         self.components = self.build()
         self.config = self.components.config
 
+    def test_draft_uses_runtime_environment_independent_of_cloud_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            shared = dict(WT_MEDIA_AGENT_DATA_DIR=directory, WT_MEDIA_CLOUD_ENV='prod')
+            first = self.build(WT_MEDIA_ENV='test', **shared)
+            self.addCleanup(first.close)
+            first.publication_draft.put('9', 'task', {'description': 'test input'}, '0')
+            second = self.build(WT_MEDIA_ENV='pre', **shared)
+            self.addCleanup(second.close)
+            self.assertEqual(first.publication_draft.environment, 'test')
+            self.assertEqual(second.publication_draft.environment, 'pre')
+            self.assertIsNone(second.publication_draft.get('9', 'task')['payload'])
+
     def test_the_download_executor_reads_what_the_two_routes_write(self):
         """One object at each end, which is the whole of the assembly's job here.
 
@@ -220,6 +232,7 @@ class ModeSurfaceWiringTests(ComponentTestCase):
                 self.assertIs(kwargs.get("state"), components.state)
                 self.assertIs(kwargs.get("checkpoint_store"), components.store)
                 self.assertIs(kwargs.get("save_directory_store"), components.save_directories)
+                self.assertIs(kwargs.get("publication_draft"), components.publication_draft)
                 # The Agent Token the local route writes and the download loop
                 # reads is one object; a mode that passed a fresh holder would
                 # leave both ends working and nothing ever claimed.

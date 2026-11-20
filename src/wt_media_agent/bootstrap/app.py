@@ -42,6 +42,7 @@ from wt_media_agent.storage.database import Database
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import apply_migrations
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
+from wt_media_agent.storage.publication_draft import PublicationDraftStore
 from wt_media_agent.storage.publication import PublicationJournal
 from wt_media_agent.runner.publication import PublicationExecution
 from wt_media_agent.storage.publication import PublicationClaimStore
@@ -61,6 +62,7 @@ class Components:
     cloud: CloudAgentClient
     store: CheckpointStore
     save_directories: SaveDirectoryStore
+    publication_draft: PublicationDraftStore
     agent_token: AgentToken
     transfers: TransferRunner
     publication_journal: PublicationJournal
@@ -203,6 +205,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
         cloud=cloud,
         store=store,
         save_directories=save_directories,
+        publication_draft=PublicationDraftStore(database, environment=config.environment),
         agent_token=agent_token,
         transfers=transfers,
         publication_journal=publication_journal,
