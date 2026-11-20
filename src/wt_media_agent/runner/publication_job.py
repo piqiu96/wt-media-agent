@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 from threading import Event, Thread
 
 from wt_media_agent.runtime.constants import (
@@ -103,9 +105,20 @@ class PublicationJob:
             if should_stop():
                 raise JournalConflict('execution is no longer current')
             publisher = publisher_factory(prepared.endpoint)
+            replace_draft=self.journal.may_replace_previous_draft(identity)
+            if not replace_draft:
+                previous=self.journal.previous_draft_attempt(identity)
+                if previous is not None:
+                    try:
+                        original=self.cloud.original_publication_attempt(token,identity.task_id,previous.attempt_id)
+                        self.journal.settle_resolved(previous,original)
+                        replace_draft=self.journal.may_replace_previous_draft(identity)
+                    except Exception:
+                        pass  # Missing verification never grants draft replacement.
             receipt = publisher.publish(
                 PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid']),
-                PublishControl(stopped=should_stop, on_prepared=on_prepared, before_submit=before_submit),
+                PublishControl(stopped=should_stop, on_prepared=on_prepared, before_submit=before_submit,
+                    replace_matching_draft=replace_draft),
                 method=PublishMethod.BROWSER)
             work_id = receipt.get('platform_work_id', '')
             if not isinstance(work_id, str) or not work_id.isascii() or not work_id.isdecimal() or len(work_id) > 255 or int(work_id) <= 0 or str(int(work_id)) != work_id:
@@ -113,8 +126,21 @@ class PublicationJob:
         except Exception as error:
             if isinstance(error, CloudExecutionStopped) and error.reason == PUBLICATION_INPUT_CHANGED:
                 stop_reason = PUBLICATION_INPUT_CHANGED
-            logger.warning("publication stopped before a credible result: phase=%s error_type=%s",
-                self.journal.get(identity)['phase'], type(error).__name__)
+            location = error.__traceback__
+            failure_path=[]
+            while location is not None:
+                frame_code=location.tb_frame.f_code
+                if 'wt_media_agent' in Path(frame_code.co_filename).parts:
+                    failure_path.append(f'{Path(frame_code.co_filename).name}:{frame_code.co_name}:{location.tb_lineno}')
+                if location.tb_next is None:
+                    break
+                location=location.tb_next
+            code = location.tb_frame.f_code
+            network_error = re.search(r"net::ERR_[A-Z_]+\b", str(error))
+            logger.warning("publication stopped before a credible result: phase=%s error_type=%s failure_site=%s:%s:%s browser_error=%s failure_path=%s",
+                self.journal.get(identity)['phase'], type(error).__name__,
+                Path(code.co_filename).name, code.co_name, location.tb_lineno,
+                network_error.group(0) if network_error else "unknown", ">".join(failure_path))
             # Do not persist exception text: platform errors may contain private
             # addresses or credentials. Keep the exact local phase and evidence.
             receipt = {}

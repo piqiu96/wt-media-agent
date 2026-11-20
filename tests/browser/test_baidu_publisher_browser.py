@@ -45,6 +45,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.folder=Path(self.temp.name)
         self.cover=self.folder/'cover'
         self.cover.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aoykAAAAASUVORK5CYII='))
+        self.cover_response=self.cover.read_bytes()
         self.video=self.folder/'video.mp4'
         self.video.write_bytes(b'fixture video; not a real platform upload')
         self.payload=PublishPayload(self.video,self.cover,{'description':'确认描述','topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid')
@@ -59,6 +60,8 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
                 route.fulfill(content_type='text/html',body=self.home)
             elif request.url=='https://baijiahao.baidu.com/builder/rc/edit':
                 route.fulfill(content_type='text/html',body=FIXTURE)
+            elif request.url.startswith('https://baijiahao.baidu.com/fixture-cover/'):
+                route.fulfill(content_type='image/png',body=self.cover_response)
             elif request.url=='https://baijiahao.baidu.com/pcui/article/publish?type=video' and request.method=='POST':
                 route.fulfill(content_type='application/json',body='{"errno":0,"ret":{"article_id":1862233438702758904}}')
             else:
@@ -91,6 +94,62 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         with self.assertRaises(PlatformFormError):self.publisher.submit()
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
 
+    def test_form_mismatch_diagnostic_identifies_only_the_changed_invariant(self):
+        self.fill()
+        self.page.locator('[contenteditable]').fill('private unexpected content')
+        with self.assertLogs('wt_media_agent.platforms.baidu.publisher',level='INFO') as captured:
+            with self.assertRaises(PlatformFormError):self.publisher.submit()
+        self.assertIn('text_changed=True declaration_changed=False covers_changed=False dialog_changed=False', str(captured.output))
+        self.assertNotIn('private unexpected content',str(captured.output))
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_temporary_cover_preview_is_not_frozen_before_platform_upload_finishes(self):
+        self.fill()
+        self.assertTrue(all(value.startswith('https://') for value in self.publisher._covers))
+        self.page.wait_for_timeout(250)
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
+    def test_cover_without_platform_upload_completion_cannot_submit(self):
+        self.page.evaluate('window.fixtureTemporaryCoversOnly=true')
+        with self.assertRaises(PlatformFormError):self.fill()
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_uploaded_cover_url_rotation_preserves_confirmed_image(self):
+        self.fill()
+        self.page.locator('[data-testid=cover-preview] img').first.evaluate("e=>e.src='https://baijiahao.baidu.com/fixture-cover/0?renewed=1#editor-preview'")
+        self.page.wait_for_function("document.querySelector('[data-testid=cover-preview] img').complete")
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
+    def test_changed_cover_bytes_never_submit_even_when_the_url_is_unchanged(self):
+        self.fill()
+        self.cover_response=b'changed upstream image bytes; same URL'
+        self.page.evaluate("async()=>{const source=document.querySelector('[data-testid=cover-preview] img').src;await (await fetch(source,{cache:'reload'})).arrayBuffer()}")
+        with self.assertRaises(PlatformFormError):self.publisher.submit()
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_same_uploaded_cover_can_be_rendered_from_local_data_or_blob(self):
+        self.fill()
+        raw=base64.b64encode(self.cover_response).decode()
+        self.page.locator('[data-testid=cover-preview] img').first.evaluate("(e, raw)=>e.src='data:image/png;base64,'+raw",raw)
+        self.page.locator('[data-testid=cover-preview] img').nth(1).evaluate("async(e,raw)=>e.src=URL.createObjectURL(await (await fetch('data:image/png;base64,'+raw)).blob())",raw)
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
+    def test_submit_waits_for_the_current_cover_response_to_arrive(self):
+        self.fill()
+        responses=dict(self.publisher._image_responses)
+        self.publisher._image_responses.clear()
+        self.page.once('console',lambda _:self.publisher._image_responses.update(responses))
+        self.page.evaluate("setTimeout(()=>console.log('fixture image response ready'),150)")
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
     def test_local_path_over_50_mib_uses_actual_browser_file_input(self):
         with self.video.open('wb') as file:
             file.truncate(64*1024*1024)
@@ -106,13 +165,28 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
 
     def collapsed_home(self):
-        self.home='''<meta charset="utf-8"><div id="home-publish-btn" onmouseenter="window.menuShown=true;document.querySelector('a').hidden=false">＋</div><a hidden href="/builder/rc/edit">发布视频</a>'''
+        self.home='''<meta charset="utf-8"><div id="home-publish-btn" onmouseenter="window.menuShown=true;document.querySelector('a').style.opacity=1;document.querySelector('a').style.pointerEvents='auto'">＋</div><a style="opacity:0;pointer-events:none" href="/builder/rc/edit">发布视频</a>'''
 
     def test_collapsed_home_menu_is_opened_before_upload(self):
         self.collapsed_home()
         self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
         self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+        self.assertEqual(self.external,[])
+
+    def test_portal_placement_is_ready_before_click_without_diagnostic_delay(self):
+        self.home='''<meta charset="utf-8"><div id="home-publish-btn" style="width:40px;height:40px"
+        onmouseleave="if(!window.placed){const a=document.querySelector('a');a.style.opacity=0;a.style.pointerEvents='none'}"
+        onmouseenter="const a=document.querySelector('a');a.style.opacity=1;a.style.pointerEvents='auto';
+        setTimeout(()=>{window.placed=true;a.style.top='100px'},1200)">＋</div>
+        <a href="/builder/rc/edit" style="position:absolute;top:1400px;opacity:0;pointer-events:none">发布视频</a>
+        <script>window.addEventListener('scroll',()=>{if(!window.placed){
+        const a=document.querySelector('a');a.style.opacity=0;a.style.pointerEvents='none'}})</script>'''
+        self.publisher._record_failure=lambda *args,**kwargs:None
+        self.publisher.timeout=2
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
         self.assertEqual(self.external,[])
 
@@ -225,6 +299,27 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
             self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
         self.assertIsNone(self.page.evaluate('window.selectedVideoSize'))
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'default filename')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_matching_unsubmitted_draft_replaces_current_video_without_adding_another(self):
+        self.page.add_init_script("window.fixtureRestoreEditor=true;window.fixtureMatchingDraft=true")
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False,replace_matching_draft=True)
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)
+        self.assertIsNone(self.page.evaluate('window.addedVideoSize'))
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_matching_text_without_explicit_prior_attempt_proof_is_preserved(self):
+        self.page.add_init_script("window.fixtureRestoreEditor=true;window.fixtureMatchingDraft=true")
+        with self.assertRaisesRegex(PlatformFormError,'prior video'):
+            self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertIsNone(self.page.evaluate('window.selectedVideoSize'))
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_matching_draft_without_new_video_identity_cannot_reach_submit(self):
+        self.page.add_init_script("window.fixtureRestoreEditor=true;window.fixtureMatchingDraft=true;window.fixtureKeepOldVideo=true")
+        with self.assertRaises(PlatformFormError):
+            self.publisher.fill_form(self.page,self.payload,stopped=lambda:False,replace_matching_draft=True)
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
 
     def test_new_video_with_empty_covers_can_upload_and_fill_both_covers(self):

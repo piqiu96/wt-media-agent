@@ -27,6 +27,8 @@ class PublishControl:
     stopped: Callable[[], bool]
     on_prepared: Callable[[], None]
     before_submit: Callable[[], None]
+    # Runner proves the previous same-input attempt safely ended before submit.
+    replace_matching_draft: bool = False
 
     def check_stopped(self) -> None:
         if self.stopped():

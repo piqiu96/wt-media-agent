@@ -30,3 +30,52 @@ class BrowserPublisherTests(unittest.TestCase):
         self.assertEqual(accepted_receipt(capture,'确认内容'),{'platform_work_id':'1862233438702758904'})
         for patch in ({'count':2},{'title':'另一条内容'},{'status':500},{'text':'{}'},{'text':'{"errno":0,"data":{"mediaId":"123"}}'},{'text':'{"errno":1,"ret":{"article_id":"123"}}'},{'text':'{"errno":0,"ret":{"article_id":"0"}}'}):
             with self.subTest(patch=patch),self.assertRaises(PlatformFormError):accepted_receipt(dict(capture,**patch),'确认内容')
+
+    def test_cover_wait_diagnostics_identify_stage_without_private_error_text(self):
+        adapter=BrowserPublisher(timeout=0)
+        adapter._check=lambda: None
+        with self.assertLogs('wt_media_agent.platforms.baidu.publisher',level='INFO') as captured:
+            with self.assertRaises(PlatformFormError):
+                adapter._wait(lambda:False,stage='cover_preview_replaced',cover_index=0)
+        self.assertEqual(len(captured.output),2)
+        self.assertIn('stage=cover_preview_replaced cover_index=0 outcome=started',captured.output[0])
+        self.assertIn('outcome=failed error_type=PlatformFormError',captured.output[1])
+        def private_failure():
+            raise ValueError('private url token and publication text')
+        with self.assertLogs('wt_media_agent.platforms.baidu.publisher',level='INFO') as captured:
+            with self.assertRaises(ValueError):
+                adapter._wait(private_failure,stage='cover_upload_decode',cover_index=1)
+        self.assertNotIn('private',str(captured.output))
+        with self.assertLogs('wt_media_agent.platforms.baidu.publisher',level='INFO') as captured:
+            self.assertEqual(adapter._wait(lambda:'ready',stage='cover_dialog_closed',cover_index=1),'ready')
+        self.assertIn('outcome=completed',captured.output[-1])
+
+    def test_failure_image_stays_in_private_attempt_folder(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as folder:
+            adapter=BrowserPublisher()
+            adapter.page=Mock()
+            adapter.page.screenshot.return_value=b'fixture screenshot'
+            adapter._diagnostic_path=Path(folder)/'editor-failure.png'
+            adapter._record_failure()
+            self.assertEqual(adapter._diagnostic_path.read_bytes(),b'fixture screenshot')
+            self.assertEqual(adapter._diagnostic_path.stat().st_mode & 0o777,0o600)
+            adapter.page.screenshot.side_effect=RuntimeError('private URL')
+            with self.assertLogs('wt_media_agent.platforms.baidu.publisher',level='INFO') as captured:
+                adapter._record_failure()
+            self.assertNotIn('private URL',str(captured.output))
+
+    def test_navigation_failure_captures_private_image_and_preserves_error(self):
+        from unittest.mock import Mock
+        from wt_media_agent.platforms.publish import PublishPayload
+        with tempfile.TemporaryDirectory() as folder:
+            adapter=BrowserPublisher()
+            page=Mock()
+            error=RuntimeError('private navigation error')
+            page.goto.side_effect=error
+            page.screenshot.return_value=b'failed navigation image'
+            payload=PublishPayload(Path(folder)/'video.mp4',Path(folder)/'cover',{},'uid')
+            with self.assertRaises(RuntimeError) as captured:
+                adapter.fill_form(page,payload,stopped=lambda:False)
+            self.assertIs(captured.exception,error)
+            self.assertEqual((Path(folder)/'editor-failure.png').read_bytes(),b'failed navigation image')
