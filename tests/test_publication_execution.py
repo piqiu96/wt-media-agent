@@ -35,6 +35,43 @@ class PublicationExecutionTests(unittest.TestCase):
         self.journal = PublicationJournal(Database(self.db))
         self.owner = identity()
 
+    def test_draft_replacement_requires_latest_same_profile_safe_settled_input(self):
+        from dataclasses import replace
+        def check(*, old_changes=None, new_input=None, result=None, settle=True, delivered=True, manual_resolution=False):
+            with tempfile.TemporaryDirectory() as folder:
+                db=Path(folder)/'agent.sqlite3';apply_migrations(db)
+                journal=PublicationJournal(Database(db))
+                old=replace(identity(),**(old_changes or {}));journal.register(old,snapshot())
+                packet=journal.save_result(old,result or {'status':'failed','evidence':{'not_submitted':True,'scene_closed':True}},report_seq=1)
+                if delivered:
+                    journal.record_delivery(old.cloud_env,old.user_id,packet,accepted=True)
+                if manual_resolution:
+                    journal.settle_resolved(old,{'attempt_id':old.attempt_id,'result_hash':packet['result_hash'],
+                        'scene_resolved':True,'resolved_status':'failed'})
+                elif settle:
+                    journal.settle(old,packet['result_hash'],task_status=packet['result']['status'])
+                new=replace(identity(),attempt_id='2')
+                try:
+                    journal.register(new,new_input or snapshot())
+                except JournalConflict:
+                    if not settle:
+                        return False
+                    raise
+                return journal.may_replace_previous_draft(new)
+        self.assertTrue(check())
+        for changes in ({'task_id':'10'},{'user_id':'4'},{'cloud_env':'prod'},{'bit_profile_id':'another-profile'}):
+            with self.subTest(changes=changes): self.assertFalse(check(old_changes=changes))
+        for key,value in (('video_sha256','c'*64),('cover_sha256','d'*64),('platform_uid','another-uid')):
+            with self.subTest(key=key): self.assertFalse(check(new_input=dict(snapshot(),**{key:value})))
+        for evidence in ({'not_submitted':False,'scene_closed':True},{'not_submitted':True,'scene_closed':False}):
+            with self.subTest(evidence=evidence): self.assertFalse(check(result={'status':'failed','evidence':evidence}))
+        self.assertFalse(check(result={'status':'uncertain','evidence':{'scene_closed':False}},settle=False))
+        self.assertFalse(check(settle=False,delivered=False))
+        self.assertTrue(check(result={'status':'uncertain','evidence':{'scene_closed':False}},manual_resolution=True))
+        self.assertFalse(check(result={'status':'uncertain','platform_work_id':'123','evidence':{'receipt_id':'123'}},manual_resolution=True))
+        self.journal.register(self.owner,snapshot())
+        self.assertFalse(self.journal.may_replace_previous_draft(self.owner))
+
     def run_execution(self, *, journal=None, preflight=None, submit=None, result=None):
         events = []
         journal = journal or self.journal

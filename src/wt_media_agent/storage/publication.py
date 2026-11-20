@@ -167,6 +167,58 @@ class PublicationJournal:
         with self.database.session() as session:
             return self._state(session,identity)[1]
 
+    @staticmethod
+    def _previous_draft_record(session, current, identity):
+        previous=session.execute(select(Checkpoint,Result).outerjoin(Result,Result.checkpoint_id==Checkpoint.id).where(
+            Checkpoint.task_type==TASK_TYPE_PUBLICATION,Checkpoint.bit_profile_id==identity.bit_profile_id,
+            Checkpoint.id<current.id).order_by(Checkpoint.id.desc()).limit(1)).first()
+        if previous is None:
+            return None
+        row,result=previous
+        if (row.cloud_env!=identity.cloud_env or row.user_id!=identity.user_id or row.task_id!=identity.task_id
+                or row.input_hash!=current.input_hash or row.checkpoint_status!=PublicationCheckpointStatus.SETTLED
+                or row.report_pending or result is None or not result.delivered):
+            return None
+        return row,result
+
+    def previous_draft_attempt(self, identity: ExecutionIdentity):
+        """Find an exact old candidate for Cloud read-back; grant no action."""
+        with self.database.session() as session:
+            current,state=self._state(session,identity)
+            previous=self._previous_draft_record(session,current,identity)
+            if state['phase']!=PublicationPhase.CLAIMED or previous is None:
+                return None
+            row,result=previous
+            value=json.loads(result.result_json)['result']
+            if (value.get('status') not in (PublicationStatus.FAILED,PublicationStatus.UNCERTAIN)
+                    or value.get('platform_work_id') or value.get('evidence',{}).get('receipt_id')):
+                return None
+            return ExecutionIdentity(**json.loads(row.checkpoint_json)['identity'])
+
+    def may_replace_previous_draft(self, identity: ExecutionIdentity) -> bool:
+        """A new claim may replace only its last safely failed frozen input."""
+        with self.database.session() as session:
+            current,state=self._state(session,identity)
+            previous=self._previous_draft_record(session,current,identity)
+            if state['phase']!=PublicationPhase.CLAIMED or previous is None:
+                return False
+            row,result=previous
+            value=json.loads(result.result_json)['result']
+            evidence=value.get('evidence',{})
+            if (value.get('status')==PublicationStatus.FAILED and evidence.get('not_submitted') is True
+                    and evidence.get('scene_closed') is True):
+                return True
+            # An explicit Cloud failure resolution is a separate, audited
+            # confirmation of no publishable work and a closed original scene.
+            # Never infer that confirmation from an unresolved/receipt result.
+            resolution=json.loads(row.checkpoint_json).get('scene_resolution',{})
+            return (value.get('status')==PublicationStatus.UNCERTAIN
+                    and not value.get('platform_work_id') and not evidence.get('receipt_id')
+                    and resolution.get('attempt_id')==row.attempt_id
+                    and resolution.get('result_hash')==result.result_hash
+                    and resolution.get('scene_resolved') is True
+                    and resolution.get('resolved_status')==PublicationStatus.FAILED)
+
     @retry_write
     def advance(self, identity: ExecutionIdentity, phase: str) -> int:
         previous={PublicationPhase.PREPARED:PublicationPhase.CLAIMED,PublicationPhase.SUBMITTING:PublicationPhase.PREPARED,PublicationPhase.CLICK_STARTED:PublicationPhase.SUBMITTING}

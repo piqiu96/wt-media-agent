@@ -54,8 +54,9 @@ class Preparation:
 
 class Platform:
     def __init__(self,journal,ident): self.journal=journal;self.ident=ident;self.fills=0;self.clicks=0;self.fail_click=False
-    def fill_form(self,page,payload,*,stopped):
+    def fill_form(self,page,payload,*,stopped,replace_matching_draft=False):
         self.fills+=1
+        self.replace_matching_draft=replace_matching_draft
         assert not stopped()
     def submit(self):
         assert self.journal.get(self.ident)['phase']=='click_started'
@@ -365,7 +366,7 @@ class PublicationJobTests(unittest.TestCase):
             return value
         self.cloud.report_publication = observed_report
         fill = self.platform.fill_form
-        def wait_for_keepalive(page, payload, *, stopped):
+        def wait_for_keepalive(page, payload, *, stopped, replace_matching_draft=False):
             fill(page, payload, stopped=stopped)
             self.assertTrue(pulsed.wait(2), 'upload did not receive a keepalive')
         self.platform.fill_form = wait_for_keepalive
@@ -387,3 +388,51 @@ class PublicationJobTests(unittest.TestCase):
         self.assertTrue(all(a < b for a, b in zip(sequences, sequences[1:])))
         self.assertEqual([packet['stage'] for packet in packets if 'stage' in packet],
                          ['preparing', 'ready', 'submitting'])
+
+    def test_failure_log_identifies_code_site_without_private_exception_text(self):
+        def private_failure(*args, **kwargs):
+            raise ValueError('Page.goto: net::ERR_ABORTED at https://private.example/?token=secret private publication text')
+        self.platform.fill_form=private_failure
+        with self.assertLogs('wt_media_agent.runner.publication_job',level='WARNING') as captured:
+            self.run_job()
+        output=' '.join(captured.output)
+        self.assertIn('failure_site=test_publication_job.py:private_failure:',output)
+        self.assertIn('browser_error=net::ERR_ABORTED',output)
+        self.assertIn('failure_path=publication_job.py:run:',output)
+        self.assertNotIn('private publication text',output)
+        self.assertNotIn('private.example',output)
+        self.assertNotIn('token=secret',output)
+        self.assertEqual(self.platform.clicks,0)
+
+    def test_only_new_same_input_attempt_gets_safe_draft_replacement_control(self):
+        from dataclasses import replace
+        fill=self.platform.fill_form
+        def fail_before_submission(*args, **kwargs):
+            raise ValueError('fixture failure before submission')
+        self.platform.fill_form=fail_before_submission
+        self.assertEqual(self.run_job()['status'],'failed')
+        self.assertEqual(self.j.get(self.i)['phase'],'settled')
+        self.i=replace(self.i,attempt_id='2')
+        self.j.register(self.i,snapshot())
+        self.cloud.ident=self.i;self.prep.ident=self.i;self.prep.fresh=True;self.platform.ident=self.i
+        self.platform.fill_form=fill
+        self.assertEqual(self.run_job()['status'],'reviewing')
+        self.assertTrue(self.platform.replace_matching_draft)
+
+    def test_verified_old_failure_is_read_back_before_replacing_its_draft(self):
+        from dataclasses import replace
+        self.closed=False
+        self.platform.fail_click=True
+        # An old unknown outcome must not authorize draft replacement.
+        old=self.i
+        self.assertEqual(self.run_job()['status'],'uncertain')
+        self.cloud.resolved=True
+        self.job.recover('token',self.i.user_id)
+        self.assertEqual(self.j.get(old)['phase'],'settled')
+        self.i=replace(self.i,attempt_id='2')
+        self.j.register(self.i,snapshot())
+        self.cloud.ident=self.i;self.prep.ident=self.i;self.prep.fresh=True;self.platform.ident=self.i
+        self.platform.fail_click=False;self.closed=True
+        self.assertEqual(self.run_job()['status'],'reviewing')
+        self.assertTrue(self.platform.replace_matching_draft)
+        self.assertTrue(self.j.get(old)['scene_resolution']['scene_resolved'])
