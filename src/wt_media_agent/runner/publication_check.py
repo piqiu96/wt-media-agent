@@ -5,6 +5,7 @@ import logging
 from datetime import timezone
 from typing import Mapping
 
+from wt_media_agent.clients.bitbrowser.errors import BitBrowserUnavailableError
 from wt_media_agent.platforms.publish import PublicationInputError, PublicationReference, PublicWorkObservation
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ class PublicationCheckJob:
         closed = False
         profile_id = source['bit_profile_id']
         endpoint = ''
+        browser_unavailable = False
         try:
             with self.profile_operations.acquire(profile_id):
                 profiles = self.bitbrowser.scan_profiles().profiles
@@ -85,11 +87,15 @@ class PublicationCheckJob:
                         closed = self.bitbrowser.close_profile_verified(profile_id, endpoint) is True
         except Exception as error:
             logger.info('publication check deferred error_type=%s', type(error).__name__)
+            browser_unavailable = isinstance(error, BitBrowserUnavailableError)
             observation = PublicWorkObservation('uncertain', '暂未完成指定稿件核验',
                 '原账号现场或平台读取尚未取得完整证据；本轮未上传或投稿，保留平台审核中')
         if not current():
             return
-        if not closed:
+        if browser_unavailable:
+            observation = PublicWorkObservation('uncertain', '比特浏览器服务不可达，请启动并检查本地API',
+                '本轮未完成原账号现场核验与安全收尾，未上传或投稿；服务恢复后继续核验原稿件')
+        elif not closed:
             observation = PublicWorkObservation('uncertain', '等待原账号现场可用',
                 '未取得仅供本轮核验使用且已安全关闭的原账号现场，保持原任务与原结果，不上传或投稿')
         public = observation.conclusion == 'published'

@@ -90,3 +90,29 @@ class PublicCheckJobTests(unittest.TestCase):
         self.bit.open_profile_for_check.assert_called_once()
         self.cloud.observe_publication.assert_called_once()
         self.assertEqual(self.claim,original)
+
+    def test_unreachable_bitbrowser_explains_recovery_without_public_success(self):
+        from wt_media_agent.clients.bitbrowser.errors import BitBrowserUnavailableError
+        self.bit.scan_profiles.side_effect=BitBrowserUnavailableError('private connection details')
+        self.job.tick('token','9',current=lambda:True)
+        value=self.cloud.observe_publication.call_args.args[2]['observation']
+        self.assertEqual(value['conclusion'],'uncertain')
+        self.assertEqual(value['evidence']['reason'],'比特浏览器服务不可达，请启动并检查本地API')
+        self.assertFalse(value['evidence']['scene_closed'])
+        self.assertNotIn('private connection details',str(value))
+        self.assertNotIn('work_url',value)
+        self.bit.open_profile_for_check.assert_not_called()
+
+    def test_service_loss_during_close_does_not_register_read_public_work(self):
+        from wt_media_agent.clients.bitbrowser.errors import BitBrowserUnavailableError
+        self.bit.close_profile_verified.side_effect=BitBrowserUnavailableError('private connection details')
+        self.job.tick('token','9',current=lambda:True)
+        self.reader.read.assert_called_once()
+        value=self.cloud.observe_publication.call_args.args[2]['observation']
+        self.assertEqual(value['conclusion'],'uncertain')
+        self.assertEqual(value['evidence']['reason'],'比特浏览器服务不可达，请启动并检查本地API')
+        self.assertFalse(value['evidence']['scene_closed'])
+        self.assertFalse(value['evidence']['publicly_accessible'])
+        self.assertNotIn('work_url',value)
+        self.assertNotIn('published_at',value)
+        self.assertNotIn('private connection details',str(value))
