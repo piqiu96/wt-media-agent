@@ -313,7 +313,7 @@ class PublicationJournal:
     def settle_resolved(self, identity: ExecutionIdentity, original: dict):
         if (not isinstance(original,dict) or original.get('attempt_id')!=identity.attempt_id
                 or original.get('scene_resolved') is not True
-                or original.get('resolved_status')!=PublicationStatus.FAILED or 'result_hash' not in original):
+                or original.get('resolved_status') not in (PublicationStatus.FAILED, PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED) or 'result_hash' not in original):
             raise JournalConflict('Cloud has not explicitly resolved this original scene')
         with self.database.session.begin() as session:
             row,state=self._state(session,identity)

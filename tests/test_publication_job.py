@@ -209,6 +209,30 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(self.job.recover('memory-only-token',self.i.user_id),1)
         self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.platform.clicks,1)
 
+    def test_public_resolution_settles_only_the_matching_original_packet(self):
+        self.closed=False
+        self.run_job()
+        packet=self.j.unresolved_attempts(self.i.cloud_env,self.i.user_id)[0]['packet']
+        self.cloud.original_publication_attempt=lambda token,task,attempt: {'attempt_id':attempt,'result_hash':packet['result_hash'],'scene_resolved':True,'resolved_status':'published'}
+        self.assertEqual(self.job.recover('token',self.i.user_id),1)
+        self.assertEqual(self.j.get(self.i)['phase'],'settled')
+        self.assertEqual(self.platform.clicks,1)
+
+    def test_public_resolution_closes_missing_result_without_inventing_packet(self):
+        self.j.register(self.i,snapshot())
+        self.cloud.original_publication_attempt=lambda token,task,attempt: {'attempt_id':attempt,'result_hash':None,'scene_resolved':True,'resolved_status':'published'}
+        self.assertEqual(self.job.recover('token',self.i.user_id),1)
+        self.assertEqual(self.j.get(self.i)['phase'],'settled')
+        self.assertEqual(self.j.pending(self.i.cloud_env,self.i.user_id),[])
+        self.assertEqual(self.platform.clicks,0)
+
+    def test_reviewing_resolution_closes_missing_result_without_new_submission(self):
+        self.j.register(self.i,snapshot())
+        self.cloud.original_publication_attempt=lambda token,task,attempt: {'attempt_id':attempt,'result_hash':None,'scene_resolved':True,'resolved_status':'reviewing'}
+        self.assertEqual(self.job.recover('token',self.i.user_id),1)
+        self.assertEqual(self.j.get(self.i)['phase'],'settled')
+        self.assertEqual(self.platform.clicks,0)
+
     def test_hard_exit_without_a_result_waits_for_original_scene_resolution(self):
         self.j.advance(self.i, 'prepared')
         self.j.advance(self.i, 'submitting')
@@ -273,7 +297,7 @@ class PublicationJobTests(unittest.TestCase):
     def test_conflicting_or_incomplete_resolution_cannot_release_missing_result(self):
         for change in ({'attempt_id': '99'}, {'scene_resolved': False},
                        {'scene_resolved': 'true'}, {'resolved_status': 'uncertain'},
-                       {'resolved_status': 'reviewing'}, {'result_hash': 'invalid'}):
+                       {'resolved_status': 'uncertain'}, {'result_hash': 'invalid'}):
             with self.subTest(change=change):
                 response = dict(attempt_id=self.i.attempt_id, result_hash=None,
                                 scene_resolved=True, resolved_status='failed')
