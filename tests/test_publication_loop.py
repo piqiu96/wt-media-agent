@@ -24,22 +24,23 @@ class PublicationLoopTests(unittest.TestCase):
         def run(t,c,i,*,current):self.calls.append(('run',t,c,i,current))
         self.prep=SimpleNamespace(claim=claim)
         self.job=SimpleNamespace(recover=recover,run=run)
-        self.loop=PublicationLoop(self.holder,self.prep,self.job)
+        self.check=SimpleNamespace(tick=lambda t,u,**kw:self.calls.append(("check",t,u)))
+        self.loop=PublicationLoop(self.holder,self.prep,self.job,self.check)
     def test_absent_or_malformed_token_never_calls_cloud(self):
         self.loop.tick();self.assertEqual(self.calls,[])
         for value in ('opaque','v1.not-json.s',token(user=True),token(user=0),token(exp=1)):
             self.holder.set(value);self.loop.tick();self.assertEqual(self.calls,[])
     def test_only_current_owner_is_recovered_and_claimed(self):
         t=token();self.holder.set(t);self.loop.tick()
-        self.assertEqual(self.calls,[('recover',t,'3'),('claim',t,'3')])
+        self.assertEqual(self.calls,[('recover',t,'3'),('claim',t,'3'),('check',t,'3')])
         other=token(user=8);self.holder.set(other);self.calls.clear();self.loop.tick()
-        self.assertEqual(self.calls,[('recover',other,'8'),('claim',other,'8')])
+        self.assertEqual(self.calls,[('recover',other,'8'),('claim',other,'8'),('check',other,'8')])
     def test_refused_token_can_reconcile_but_cannot_claim_until_replaced(self):
         t=token();self.holder.set(t);self.failure=AgentAuthError('AUTH_DESKTOP_REPLACED','refused')
         self.loop.tick();self.failure=None;self.calls.clear();self.loop.tick()
         self.assertEqual(self.calls,[('recover',t,'3')])
         fresh=token(jti='new');self.holder.set(fresh);self.calls.clear();self.loop.tick()
-        self.assertEqual(self.calls,[('recover',fresh,'3'),('claim',fresh,'3')])
+        self.assertEqual(self.calls,[('recover',fresh,'3'),('claim',fresh,'3'),('check',fresh,'3')])
     def test_claim_runs_once_and_token_change_revokes_new_browser_actions(self):
         t=token();self.holder.set(t);self.claim=({'task':'fixture'},'identity');self.loop.tick()
         run=self.calls[-1];self.assertEqual(run[:4],('run',t,*self.claim));self.assertTrue(run[4]())

@@ -152,3 +152,20 @@ class PublicationReportRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PublicCheckClientTests(unittest.TestCase):
+    def test_empty_check_claim_is_normal_and_never_requests_files(self):
+        transport=RecordingTransport({'data':None})
+        client=CloudAgentClient('http://cloud.test',transport=transport)
+        self.assertIsNone(client.claim_publication_check(TOKEN))
+        self.assertEqual(transport.calls[0][:3],('POST','/api/v1/cloud-agent/publication-task/check/claim',None))
+    def test_observation_preserves_exact_attempt_revision_generation_and_acknowledges_only_it(self):
+        body={'generation':'3','observation':{'attempt_id':'9007199254740995','expected_revision':'7','conclusion':'uncertain'}}
+        transport=RecordingTransport({'data':{'publication_id':'9007199254740993','attempt_id':'9007199254740995','generation':'3','observation_hash':'f'*64}})
+        client=CloudAgentClient('http://cloud.test',transport=transport)
+        ack=client.observe_publication(TOKEN,'9007199254740993',body)
+        self.assertEqual(ack['generation'],'3')
+        self.assertEqual(transport.calls[0][1],'/api/v1/cloud-agent/publication-task/9007199254740993/check')
+        self.assertEqual(transport.calls[0][2],body)
+        transport.answer={'data':{'publication_id':'9007199254740993','attempt_id':'9007199254740996','generation':'3'}}
+        with self.assertRaises(CloudUnavailableError):client.observe_publication(TOKEN,'9007199254740993',body)

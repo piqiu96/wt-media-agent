@@ -26,6 +26,7 @@ class StorageMigrationTest(unittest.TestCase):
                     "0003_transfer_resume",
                     "0004_task_recovery_outbox",
                     "0005_scoped_orm",
+                    "0006_publication_draft",
                 ],
             )
             self.assertEqual(second, [])
@@ -55,6 +56,7 @@ class StorageMigrationTest(unittest.TestCase):
                         "0003_transfer_resume",
                         "0004_task_recovery_outbox",
                     "0005_scoped_orm",
+                    "0006_publication_draft",
                     ],
                 )
 

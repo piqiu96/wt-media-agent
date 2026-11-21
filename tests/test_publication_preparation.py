@@ -64,6 +64,16 @@ class PublicationPreparationTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.db=Path(self.tmp.name)/'a.db';apply_migrations(self.db)
   self.j=PublicationJournal(Database(self.db));self.keys=PublicationClaimStore(Database(self.db));self.cloud=FakeCloud();self.bit=FakeBit();self.p=self.new_preparer()
  def new_preparer(self):return PublicationPreparation(self.cloud,self.bit,self.j,self.keys,Path(self.tmp.name)/'files',cloud_env='dev')
+ def test_template_cover_audit_keeps_actual_frozen_file_and_confirmed_text(self):
+  self.cloud.value['attempt']['input_snapshot']['content']['cover_render']={
+   'template_id':'9007199254740993','published_revision':2,'title':'封面主标题',
+   'background_output_id':'42','background_image_asset_id':'0','render_input_hash':'a'*64}
+  value,i=self.p.claim('memory-token','3')
+  saved=self.j.get(i)['input']
+  self.assertEqual(saved['content'],snapshot()['content'])
+  self.assertEqual(saved['cover_sha256'],value['attempt']['input_snapshot']['cover_sha256'])
+  self.assertEqual(value['attempt']['input_snapshot']['content']['cover_render']['template_id'],'9007199254740993')
+  self.assertEqual(self.bit.scans,0)
  def test_parallel_request_key_is_one_durable_identity(self):
   with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:values=list(pool.map(lambda _:PublicationClaimStore(Database(self.db)).pending('dev','3'),range(16)))
   self.assertEqual(len(set(values)),1)

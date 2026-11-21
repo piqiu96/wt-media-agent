@@ -14,12 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 class PublicationLoop:
-    def __init__(self, agent_token, preparation, job, *, interval=DEFAULT_PUBLICATION_POLL_SECONDS):
+    def __init__(self, agent_token, preparation, job, check_job, *, interval=DEFAULT_PUBLICATION_POLL_SECONDS):
         if interval <= 0:
             raise ValueError('publication polling interval must be positive')
         self.agent_token = agent_token
         self.preparation = preparation
         self.job = job
+        self.check_job = check_job
         self.interval = interval
         self._stop = Event()
         self._refused_token = None
@@ -43,6 +44,8 @@ class PublicationLoop:
             if claimed is not None:
                 claim, identity = claimed
                 self.job.run(token, claim, identity, current=current)
+            elif current():
+                self.check_job.tick(token, user, current=current)
         except AgentAuthError:
             self._refused_token = token
         except Exception as error:

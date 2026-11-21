@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
-from threading import Event, RLock
+from threading import Event, RLock, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 from wt_media_agent.storage.migration import apply_migrations
@@ -54,7 +54,8 @@ class Preparation:
 
 class Platform:
     def __init__(self,journal,ident): self.journal=journal;self.ident=ident;self.fills=0;self.clicks=0;self.fail_click=False
-    def fill_form(self,page,payload,*,stopped,replace_matching_draft=False):
+    def protect_scene(self,page): pass
+    def fill_form(self,page,payload,*,stopped,replace_matching_draft=False,wait_for_human=None):
         self.fills+=1
         self.replace_matching_draft=replace_matching_draft
         assert not stopped()
@@ -110,12 +111,122 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(len(self.job.journal.pending(self.i.cloud_env,'3')),1)
         self.assertEqual(self.job.journal.get(self.i)['phase'],'settled')
 
+    def test_human_scene_continues_same_stack_and_rechecks_cloud_without_refill(self):
+        entered, shown, result = Event(), Event(), []
+        original_fill = self.platform.fill_form
+        def fill(page,payload,*,stopped,replace_matching_draft=False,wait_for_human=None):
+            original_fill(page,payload,stopped=stopped,replace_matching_draft=replace_matching_draft)
+            entered.set()
+            wait_for_human(shown.set)
+        self.platform.fill_form = fill
+        calls=[]
+        def check(token,task,attempt,revision,*,resume=False):
+            calls.append(resume)
+            return {'stop_requested':False,'allow_submit':False,'task_status':'running' if resume else 'awaiting_human','attempt_id':attempt}
+        self.cloud.publication_human = check
+        worker=Thread(target=lambda:result.append(self.run_job()),daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(2))
+        # The operation must be registered before the UI can touch this scene.
+        for _ in range(100):
+            try:
+                self.job.handle_human_action('memory-only-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'5',resume=False)
+                break
+            except JournalConflict:
+                Event().wait(.01)
+        self.assertTrue(shown.wait(2))
+        with self.assertRaises(JournalConflict):
+            self.job.handle_human_action('other-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'5',resume=True)
+        self.job.handle_human_action('memory-only-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'5',resume=True)
+        worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0]['status'],'reviewing')
+        self.assertEqual((self.platform.fills,self.platform.clicks),(1,1))
+        self.assertEqual(calls,[False,True])
+        ack=self.job.handle_human_action('memory-only-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'5',resume=True)
+        self.assertEqual(ack['attempt_id'],self.i.attempt_id)
+        self.assertEqual(calls,[False,True])
+        self.assertEqual((self.platform.fills,self.platform.clicks),(1,1))
+        with self.assertRaises(JournalConflict):
+            self.job.handle_human_action('memory-only-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'6',resume=True)
+
+    def test_human_continuation_rechecks_changed_account_before_submit(self):
+        original_fill=self.platform.fill_form
+        def fill(page,payload,*,stopped,replace_matching_draft=False,wait_for_human=None):
+            original_fill(page,payload,stopped=stopped)
+            wait_for_human(lambda:None)
+        self.platform.fill_form=fill
+        original=self.job.cloud.report_publication
+        def report(token,task,operation,packet):
+            value=original(token,task,operation,packet)
+            if packet.get('stage')=='awaiting_human':
+                self.live_identity.return_value={'login_status':'normal','platform_account_id':'changed-account'}
+            return value
+        self.job.cloud.report_publication=report
+        self.job.cloud.publication_human=lambda *args,**kw:{'stop_requested':False,'allow_submit':False,'task_status':'running','attempt_id':self.i.attempt_id}
+        result=[]
+        thread=Thread(target=lambda:result.append(self.run_job()),daemon=True);thread.start()
+        for _ in range(200):
+            try:
+                self.job.handle_human_action('memory-only-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'5',resume=True)
+                break
+            except JournalConflict: Event().wait(.01)
+        thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result[0]['status'],'failed')
+        self.assertEqual((self.platform.fills,self.platform.clicks),(1,0))
+
     def test_click_requires_both_durable_barriers_and_only_receipt_means_reviewing(self):
         result=self.run_job()
         self.assertEqual(result['status'],'reviewing');self.assertEqual(self.platform.clicks,1)
         self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.j.pending(self.i.cloud_env,self.i.user_id),[])
         with self.assertRaises(JournalConflict):self.run_job()
         self.assertEqual(self.platform.clicks,1)
+    def test_explicit_stop_before_permission_reports_unsubmitted_only_after_close(self):
+        original = self.cloud.report_publication
+        def deny(token, task, operation, packet):
+            if operation == 'report' and packet.get('stage') == 'submitting':
+                return {'stop_requested': True, 'allow_submit': False}
+            return original(token, task, operation, packet)
+        self.cloud.report_publication = deny
+        result = self.run_job()
+        self.assertEqual(result['status'], 'failed')
+        self.assertTrue(result['evidence']['not_submitted'])
+        self.assertTrue(result['evidence']['scene_closed'])
+        self.assertEqual(self.platform.clicks, 0)
+        with self.assertRaises(JournalConflict):
+            self.run_job()
+
+    def test_cancelled_task_acknowledges_original_failed_result_without_extra_lookup(self):
+        original = self.cloud.report_publication
+        def stop_and_ack(token, task, operation, packet):
+            if operation == 'report' and packet.get('stage') == 'submitting':
+                return {'stop_requested': True, 'allow_submit': False}
+            reply = original(token, task, operation, packet)
+            if operation == 'complete':
+                reply['task_status'] = 'cancelled'
+            return reply
+        self.cloud.report_publication = stop_and_ack
+        self.cloud.original_publication_attempt = lambda *args: (_ for _ in ()).throw(ConnectionError('offline'))
+        result = self.run_job()
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(self.j.get(self.i)['phase'], 'settled')
+        self.assertEqual(self.platform.clicks, 0)
+
+    def test_explicit_stop_without_safe_close_remains_unknown(self):
+        original = self.cloud.report_publication
+        def deny(token, task, operation, packet):
+            if operation == 'report' and packet.get('stage') == 'submitting':
+                return {'stop_requested': True, 'allow_submit': False}
+            return original(token, task, operation, packet)
+        self.cloud.report_publication = deny
+        self.closed = False
+        result = self.run_job()
+        self.assertEqual(result['status'], 'uncertain')
+        self.assertFalse(result['evidence']['scene_closed'])
+        self.assertNotIn('not_submitted', result['evidence'])
+        self.assertEqual(self.platform.clicks, 0)
+
     def test_lost_permission_never_clicks_and_restart_cannot_reenter(self):
         self.cloud.lose_permission=True
         result=self.run_job()
@@ -163,6 +274,30 @@ class PublicationJobTests(unittest.TestCase):
         self.j.settle=original
         self.assertEqual(self.job.recover('memory-only-token',self.i.user_id),1)
         self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.platform.clicks,1)
+
+    def test_public_resolution_settles_only_the_matching_original_packet(self):
+        self.closed=False
+        self.run_job()
+        packet=self.j.unresolved_attempts(self.i.cloud_env,self.i.user_id)[0]['packet']
+        self.cloud.original_publication_attempt=lambda token,task,attempt: {'attempt_id':attempt,'result_hash':packet['result_hash'],'scene_resolved':True,'resolved_status':'published'}
+        self.assertEqual(self.job.recover('token',self.i.user_id),1)
+        self.assertEqual(self.j.get(self.i)['phase'],'settled')
+        self.assertEqual(self.platform.clicks,1)
+
+    def test_public_resolution_closes_missing_result_without_inventing_packet(self):
+        self.j.register(self.i,snapshot())
+        self.cloud.original_publication_attempt=lambda token,task,attempt: {'attempt_id':attempt,'result_hash':None,'scene_resolved':True,'resolved_status':'published'}
+        self.assertEqual(self.job.recover('token',self.i.user_id),1)
+        self.assertEqual(self.j.get(self.i)['phase'],'settled')
+        self.assertEqual(self.j.pending(self.i.cloud_env,self.i.user_id),[])
+        self.assertEqual(self.platform.clicks,0)
+
+    def test_reviewing_resolution_closes_missing_result_without_new_submission(self):
+        self.j.register(self.i,snapshot())
+        self.cloud.original_publication_attempt=lambda token,task,attempt: {'attempt_id':attempt,'result_hash':None,'scene_resolved':True,'resolved_status':'reviewing'}
+        self.assertEqual(self.job.recover('token',self.i.user_id),1)
+        self.assertEqual(self.j.get(self.i)['phase'],'settled')
+        self.assertEqual(self.platform.clicks,0)
 
     def test_hard_exit_without_a_result_waits_for_original_scene_resolution(self):
         self.j.advance(self.i, 'prepared')
@@ -228,7 +363,7 @@ class PublicationJobTests(unittest.TestCase):
     def test_conflicting_or_incomplete_resolution_cannot_release_missing_result(self):
         for change in ({'attempt_id': '99'}, {'scene_resolved': False},
                        {'scene_resolved': 'true'}, {'resolved_status': 'uncertain'},
-                       {'resolved_status': 'reviewing'}, {'result_hash': 'invalid'}):
+                       {'resolved_status': 'uncertain'}, {'result_hash': 'invalid'}):
             with self.subTest(change=change):
                 response = dict(attempt_id=self.i.attempt_id, result_hash=None,
                                 scene_resolved=True, resolved_status='failed')
@@ -366,7 +501,7 @@ class PublicationJobTests(unittest.TestCase):
             return value
         self.cloud.report_publication = observed_report
         fill = self.platform.fill_form
-        def wait_for_keepalive(page, payload, *, stopped, replace_matching_draft=False):
+        def wait_for_keepalive(page, payload, *, stopped, replace_matching_draft=False,wait_for_human=None):
             fill(page, payload, stopped=stopped)
             self.assertTrue(pulsed.wait(2), 'upload did not receive a keepalive')
         self.platform.fill_form = wait_for_keepalive

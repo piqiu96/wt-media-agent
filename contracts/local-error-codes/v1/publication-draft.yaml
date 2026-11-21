@@ -1,0 +1,11 @@
+schema_version: 1
+revision: "2026.11.21.1"
+errors:
+  draft_input_invalid: {http_status: 400}
+  draft_input_too_large: {http_status: 413}
+  draft_identity_required: {http_status: 403}
+  draft_revision_conflict: {http_status: 409}
+  draft_unavailable: {http_status: 503}
+# Every response preserves current human input; a conflict never changes the
+# expected revision or retries the write automatically. Runtime authentication
+# failures use the existing HTTP 401 unauthorized response.

@@ -35,6 +35,7 @@ class PublicationStage(StrEnum):
     PREPARING = "preparing"
     READY = "ready"
     SUBMITTING = "submitting"
+    AWAITING_HUMAN = "awaiting_human"
 
 
 class PublicationPhase(StrEnum):
@@ -63,7 +64,7 @@ PUBLICATION_REPORT_OPERATIONS = tuple(PublicationReport)
 PUBLICATION_RESULT_STATUSES = (
     PublicationStatus.REVIEWING, PublicationStatus.FAILED, PublicationStatus.UNCERTAIN,
 )
-PUBLICATION_RESOLVED_STATUSES = (PublicationStatus.REVIEWING, PublicationStatus.FAILED)
+PUBLICATION_RESOLVED_STATUSES = (PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED, PublicationStatus.FAILED, PublicationStatus.CANCELLED)
 PUBLICATION_SETTLED_STATUSES = (
     PublicationStatus.PUBLISHED, PublicationStatus.REVIEWING, PublicationStatus.FAILED,
     PublicationStatus.CANCELLED, PublicationStatus.ABANDONED,

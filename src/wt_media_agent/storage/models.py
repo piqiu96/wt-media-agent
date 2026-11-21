@@ -1,5 +1,5 @@
 """The local storage schema. Business IDs never double as local primary keys."""
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from wt_media_agent.runtime.constants import TASK_TYPE_PUBLICATION, PublicationCheckpointStatus, DEFAULT_EXECUTION_TIMEOUT_SECONDS
 from wt_media_agent.utils.time import utc_now_iso
@@ -76,3 +76,16 @@ class TaskResultModel(Base):
     delivered: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('0'))
     delivery_attempts: Mapped[int] = mapped_column(default=0, server_default=text('0'))
     delivered_at: Mapped[str | None] = mapped_column(Text)
+
+
+class PublicationDraftModel(Base):
+    __tablename__ = 'publication_draft'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    environment: Mapped[str] = mapped_column(Text)
+    user_id: Mapped[str] = mapped_column(Text)
+    draft_type: Mapped[str] = mapped_column(Text)
+    payload_json: Mapped[str] = mapped_column(Text)
+    saved_at: Mapped[str] = mapped_column(Text)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    revision: Mapped[int] = mapped_column(Integer)
+    __table_args__ = (UniqueConstraint('environment', 'user_id', 'draft_type', name='uq_publication_draft_scope'), {'sqlite_autoincrement': True})

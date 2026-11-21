@@ -168,7 +168,7 @@ class CheckpointColumnTest(unittest.TestCase):
         previous = tuple(
             item
             for item in migration.MIGRATIONS
-            if item.version not in {"0003_transfer_resume", "0004_task_recovery_outbox", "0005_scoped_orm"}
+            if item.version in {"0001_base", "0002_task_checkpoints"}
         )
         real = SQLiteDialect.migrations
         SQLiteDialect.migrations = previous
@@ -195,7 +195,7 @@ class CheckpointColumnTest(unittest.TestCase):
 
         self.assertEqual(
             [item.version for item in applied],
-            ["0003_transfer_resume", "0004_task_recovery_outbox", "0005_scoped_orm"],
+            ["0003_transfer_resume", "0004_task_recovery_outbox", "0005_scoped_orm", "0006_publication_draft"],
         )
         stored = CheckpointStore(Database(self.db_path), user_id=lambda:"3").get_checkpoint("old-1", task_type="publish")
         assert stored is not None
