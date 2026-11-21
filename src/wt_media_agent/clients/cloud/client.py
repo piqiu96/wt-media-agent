@@ -104,6 +104,17 @@ class CloudAgentClient:
         return dict(_expect_data(self._transport('GET',
             f'/api/v1/cloud-agent/publication-task/{task_id}/attempt/{attempt_id}', None, _bearer(token))))
 
+    def publication_human(self,token,task_id,attempt_id,revision,*,resume):
+        for value in (task_id,attempt_id,revision):
+            if not isinstance(value,str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or not 0 < int(value) <= 18446744073709551615:
+                raise ValueError('canonical publication identity required')
+        path = f'/api/v1/cloud-agent/publication-task/{task_id}'
+        if resume:
+            method,path,body = 'POST',path+'/resume',{'attempt_id':attempt_id,'expected_revision':revision}
+        else:
+            method,path,body = 'GET',path+f'/attempt/{attempt_id}/scene?expected_revision={revision}',None
+        return dict(_expect_data(self._transport(method,path,body,_bearer(token))))
+
     # ---- 文件传输 ----
     #
     # 四个调用的身份都在 Bearer Token 上；已领取后还必须带 claim 返回的

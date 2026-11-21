@@ -158,6 +158,24 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
         self.assertEqual(self.external,[])
 
+    def test_human_pause_keeps_same_editor_and_blocks_manual_publish(self):
+        self.home+='<div class="passMod_dialog-wrapper">security verification</div>'
+        waits=[]
+        def human(show):
+            waits.append(self.page.url)
+            show()
+            blocked=self.page.evaluate("fetch('/pcui/article/publish?type=video',{method:'POST'}).then(()=>false).catch(()=>true)")
+            self.assertTrue(blocked)
+            self.page.locator('.passMod_dialog-wrapper').evaluate('(node)=>node.remove()')
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False,wait_for_human=human)
+        self.assertEqual(waits,['https://baijiahao.baidu.com/builder/rc/home'])
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt()['platform_work_id'],'1862233438702758904')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+        self.assertEqual(self.external,[])
+
     def test_full_navigation_upload_and_fill_do_not_submit(self):
         self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
         self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)

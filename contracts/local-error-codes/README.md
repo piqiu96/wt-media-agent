@@ -15,3 +15,5 @@ file; `tests/test_contract_docs.py` fails if this list stops matching those fiel
 The file is the only place the number is written down.
 
 - `v1/publication-draft.yaml` (revision `2026.11.21.1`): bounded new-task input, trusted native identity, revision conflict and storage failures.
+
+- `v1/publication-run.yaml` (revision `2026.11.21.2`): original live scene identity, strict continuation and unavailable-scene refusals.

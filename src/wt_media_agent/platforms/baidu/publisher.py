@@ -82,6 +82,8 @@ class BrowserPublisher:
         self.page = None
         self.timeout = timeout
         self._stopped = lambda: False
+        self._wait_for_human = None
+        self._human_seconds = 0.0
         self._ready = False
         self._submitted = False
         self._description = None
@@ -92,6 +94,7 @@ class BrowserPublisher:
         self._capture = {'count': 0}
         self._request = None
         self._diagnostic_path = None
+        self._protected_page = None
 
     def _record_failure(self, filename=None):
         # A local, owner-private attempt artifact; never attach it to Cloud
@@ -138,8 +141,17 @@ class BrowserPublisher:
         url = urlsplit(self.page.url)
         if url.scheme != 'https' or url.netloc != 'baijiahao.baidu.com':
             raise PlatformFormError('editor origin changed')
-        if self.page.locator('.passMod_dialog-wrapper:visible').count():
-            raise PlatformFormError('platform requires human security verification')
+        while self.page.locator('.passMod_dialog-wrapper:visible').count():
+            if self._submitted or self._wait_for_human is None:
+                raise PlatformFormError('platform requires human security verification')
+            start = time.monotonic()
+            self._wait_for_human(self.page.bring_to_front)
+            self._human_seconds += time.monotonic() - start
+            if self._stopped() or self.page.is_closed():
+                raise PlatformFormError('original human scene stopped')
+            url = urlsplit(self.page.url)
+            if url.scheme != 'https' or url.netloc != 'baijiahao.baidu.com':
+                raise PlatformFormError('editor origin changed')
         return url.path
 
     def _wait(self, condition, *, timeout=None, stage=None, cover_index=None):
@@ -150,7 +162,9 @@ class BrowserPublisher:
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         try:
             while True:
+                human_before = self._human_seconds
                 self._check()
+                deadline += self._human_seconds - human_before
                 value = condition()
                 if value:
                     if stage:
@@ -166,7 +180,8 @@ class BrowserPublisher:
                             stage, cover_index, type(error).__name__)
             raise
 
-    def fill_form(self, page, payload, *, stopped, replace_matching_draft=False):
+    def fill_form(self, page, payload, *, stopped, replace_matching_draft=False, wait_for_human=None):
+        self._wait_for_human = wait_for_human
         try:
             self._fill_form(page, payload, stopped=stopped, replace_matching_draft=replace_matching_draft)
         except Exception:
@@ -180,6 +195,7 @@ class BrowserPublisher:
         self._diagnostic_path = payload.video.parent / 'editor-failure.png'
         if stopped():
             raise PlatformFormError('publication stopped before editor')
+        self.protect_scene(page)
         page.goto('https://baijiahao.baidu.com/builder/rc/home', wait_until='domcontentloaded')
         self._check()
         video_entry = page.get_by_text('发布视频', exact=True)
@@ -252,6 +268,7 @@ class BrowserPublisher:
         if self._ready or self._submitted:
             raise PlatformFormError('form preparation cannot be replayed')
         self.page, self._stopped = page, stopped
+        self.protect_scene(page)
         if self._check() != '/builder/rc/edit':
             raise PlatformFormError('not the video editor')
         self._description = publication_description(payload.content)
@@ -310,7 +327,6 @@ class BrowserPublisher:
             self._cover_images.append(self._cover_image(preview))
         self._ready = True
         self._assert_form()
-        self._arm_receipt()
 
     def _remember_image_response(self, response):
         if (response.request.resource_type != 'image'
@@ -391,7 +407,12 @@ class BrowserPublisher:
         return (request.method == 'POST' and url.scheme == 'https' and url.netloc == 'baijiahao.baidu.com'
                 and url.path == '/pcui/article/publish' and parse_qs(url.query).get('type') == ['video'])
 
-    def _arm_receipt(self):
+    def protect_scene(self,page):
+        if self._protected_page is page:
+            return
+        if self._protected_page is not None:
+            raise PlatformFormError('original publication scene cannot be replaced')
+        self._protected_page=page
         def requested(request):
             if not self._submitted or not self._is_publish(request):
                 return
@@ -424,9 +445,9 @@ class BrowserPublisher:
                 forwarded += 1
                 route.fallback()
 
-        self.page.route('https://baijiahao.baidu.com/pcui/article/publish?*', guard)
-        self.page.on('request', requested)
-        self.page.on('response', responded)
+        page.route('https://baijiahao.baidu.com/pcui/article/publish?*', guard)
+        page.on('request', requested)
+        page.on('response', responded)
 
     def submit(self):
         if self._submitted:
@@ -493,14 +514,39 @@ class BaiduPublisher:
             raise PublicationInputError('expected platform UID is required')
         self._started = True
         control.check_stopped()
-        self._verify_identity(payload.platform_uid)
-        control.check_stopped()
-        control.on_prepared()
-        control.check_stopped()
+        observed = self.identity_reader(self.endpoint)
+        initially_ready = observed.get('login_status') == 'normal'
+        if initially_ready:
+            if observed.get('platform_account_id') != payload.platform_uid:
+                raise PublicationInputError('live platform UID differs')
+            control.on_prepared()
+            control.check_stopped()
+        elif control.wait_for_human is None:
+            raise PublicationInputError('platform login requires human verification')
         implementation = self.browser_factory()
+        def human(show):
+            if control.wait_for_human is None:
+                raise PublicationInputError('human continuation is unavailable')
+            control.wait_for_human(show)
+            control.check_stopped()
+            self._verify_identity(payload.platform_uid)
         with self.browser_session_factory(self.endpoint) as session:
+            implementation.protect_scene(session.page)
+            while observed.get('login_status') != 'normal':
+                if control.wait_for_human is None:
+                    raise PublicationInputError('platform login requires human verification')
+                control.check_stopped()
+                session.page.goto('https://baijiahao.baidu.com/builder/rc/home',wait_until='domcontentloaded')
+                control.wait_for_human(session.page.bring_to_front)
+                control.check_stopped()
+                observed = self.identity_reader(self.endpoint)
+            if observed.get('platform_account_id') != payload.platform_uid:
+                raise PublicationInputError('live platform UID differs')
+            if not initially_ready:
+                control.on_prepared()
+                control.check_stopped()
             implementation.fill_form(session.page, payload, stopped=control.stopped,
-                                     replace_matching_draft=control.replace_matching_draft)
+                                     replace_matching_draft=control.replace_matching_draft, wait_for_human=human)
             control.check_stopped()
             self._verify_identity(payload.platform_uid)
             control.check_stopped()

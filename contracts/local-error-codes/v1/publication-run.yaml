@@ -1,0 +1,7 @@
+schema_version: 1
+revision: "2026.11.21.2"
+errors:
+  publication_input_invalid: {http_status: 400}
+  publication_identity_required: {http_status: 403}
+  publication_scene_unavailable: {http_status: [404, 409, 503]}
+# Preserve the original task and scene; refusal never starts another attempt.

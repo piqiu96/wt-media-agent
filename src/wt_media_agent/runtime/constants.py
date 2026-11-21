@@ -35,6 +35,7 @@ class PublicationStage(StrEnum):
     PREPARING = "preparing"
     READY = "ready"
     SUBMITTING = "submitting"
+    AWAITING_HUMAN = "awaiting_human"
 
 
 class PublicationPhase(StrEnum):

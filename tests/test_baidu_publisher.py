@@ -19,6 +19,27 @@ class BrowserPublisherTests(unittest.TestCase):
     def test_submit_without_validated_form_never_clicks(self):
         adapter=BrowserPublisher()
         with self.assertRaises(PlatformFormError):adapter.submit()
+    def test_original_scene_blocks_manual_publish_before_authorized_click(self):
+        from unittest.mock import Mock
+        adapter=BrowserPublisher()
+        page=Mock()
+        adapter.protect_scene(page)
+        adapter.protect_scene(page)
+        self.assertEqual(page.route.call_count,1)
+        guard=page.route.call_args.args[1]
+        route=Mock()
+        route.request.method='POST'
+        route.request.url='https://baijiahao.baidu.com/pcui/article/publish?type=video'
+        guard(route)
+        route.abort.assert_called_once()
+        route.fallback.assert_not_called()
+        adapter._submitted=True
+        guard(route)
+        self.assertEqual(route.fallback.call_count,1)
+        guard(route)
+        self.assertEqual(route.abort.call_count,2)
+        with self.assertRaises(PlatformFormError):adapter.protect_scene(Mock())
+
     def test_receipt_without_this_instance_submit_is_rejected(self):
         adapter=BrowserPublisher()
         with self.assertRaises(PlatformFormError):adapter.read_receipt()

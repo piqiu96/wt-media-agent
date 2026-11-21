@@ -26,6 +26,7 @@ from wt_media_agent.local_api.reporting import (
     _duration_ms,
     _safe_groups,
 )
+from wt_media_agent.local_api.publication_run import publication_run_response
 from wt_media_agent.local_api.publication_draft import publication_draft_response, refusal
 from wt_media_agent.storage.publication_draft import PublicationDraftStore, MAX_DRAFT_BYTES
 from wt_media_agent.local_api.state import LocalAgentState
@@ -93,6 +94,7 @@ class LocalApiServer:
         checkpoint_store: Optional[CheckpointStore] = None,
         save_directories: Optional[SaveDirectoryStore] = None,
         publication_draft: Optional[PublicationDraftStore] = None,
+        publication_job=None,
         agent_token: Optional[AgentToken] = None,
         cloud_agent: Optional[CloudAgentClient] = None,
         auth_token: str = "",
@@ -113,6 +115,7 @@ class LocalApiServer:
         # instead of reporting a machine that has chosen no directory.
         self.save_directories = save_directories
         self.publication_draft = publication_draft
+        self.publication_job = publication_job
         # Desktop 通过本机路由写入 Token，任务循环读取同一个对象。没装配时
         # 如实回答不可用，而不是丢弃写入。
         self.agent_token = agent_token
@@ -862,12 +865,37 @@ def make_handler(api: LocalApiServer) -> type[BaseHTTPRequestHandler]:
                 route.path[len(prefix):], self.headers.get('X-Publication-User-ID', ''), body)
             self._write_json(status, payload)
 
+        def _handle_publication_run(self) -> None:
+            if not api.auth_token:
+                self._write_json(401,{"error":"unauthorized"})
+                return
+            route=urlparse.urlsplit(self.path)
+            parts=route.path.split('/')
+            if route.query or len(parts) != 6 or parts[:4] != ['','api','v1','publication-run']:
+                self._write_json(404,{"error":"not_found"})
+                return
+            try:
+                length=int(self.headers.get('content-length','0'))
+                if not 0 < length <= 1024:
+                    self.close_connection=True
+                    raise ValueError('invalid body length')
+                body=json.loads(self.rfile.read(length))
+            except (ValueError,UnicodeDecodeError,RecursionError):
+                self._write_json(*refusal(400,'publication_input_invalid','发布现场输入无效'))
+                return
+            self._write_json(*publication_run_response(api.publication_job,
+                api.agent_token.get() if api.agent_token else None,
+                self.headers.get('X-Publication-User-ID',''),parts[4],parts[5],body))
+
         def do_POST(self) -> None:
             if not self._check_auth():
                 self._write_json(401, {"error": "unauthorized"})
                 return
             route = urlparse.urlsplit(self.path).path
-            if self.path == "/api/v1/bit-account/bind":
+            if (_path_id(route,"/api/v1/publication-run/","/scene") is not None
+                    or _path_id(route,"/api/v1/publication-run/","/resume") is not None):
+                self._handle_publication_run()
+            elif self.path == "/api/v1/bit-account/bind":
                 status, payload = api.bit_account_bind_response(self._read_body())
                 self._write_json(status, payload)
             elif self.path == "/api/v1/bit-browser/profile-scans":
@@ -1051,6 +1079,7 @@ def serve(
     checkpoint_store: Optional[CheckpointStore] = None,
     save_directory_store: Optional[SaveDirectoryStore] = None,
     publication_draft: Optional[PublicationDraftStore] = None,
+    publication_job=None,
     agent_token: Optional[AgentToken] = None,
     cloud_agent: Optional[CloudAgentClient] = None,
     state: LocalAgentState,
@@ -1064,6 +1093,7 @@ def serve(
         checkpoint_store=checkpoint_store,
         save_directories=save_directory_store,
         publication_draft=publication_draft,
+        publication_job=publication_job,
         agent_token=agent_token,
         cloud_agent=cloud_agent,
         auth_token=auth_token,

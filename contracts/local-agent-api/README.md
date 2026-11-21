@@ -22,7 +22,7 @@ Paths the formal definition holds, by the change that added them:
   `POST /api/v1/bit-browser/profile-update`, `POST /api/v1/bit-browser/profile-delete`,
   `POST /api/v1/cookie-read`
 
-Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.11.21.1`. The
+Formal definition: `v1/local-agent.openapi.yaml`, revision `2026.11.21.2`. The
 revision is that file's own `info.version`, and the file is the only place the
 number is written down. The list above is checked against the file's `paths:` and
 their methods by `tests/test_contract_docs.py`, so an endpoint added to one and
@@ -39,3 +39,5 @@ BitBrowser by the Agent rather than sent in by a caller.
 - `POST /api/v1/account-cookie/inspect` — read-only reconciliation; never repeats writes.
 
 - CHG106: `GET /api/v1/publication-draft/{draft_type}`, `PUT /api/v1/publication-draft/{draft_type}`, `DELETE /api/v1/publication-draft/{draft_type}` — native authenticated new-task input, revisioned and scoped by configured environment and Cloud-authenticated user.
+
+- CHG-20261120-106: `POST /api/v1/publication-run/{attempt_id}/scene` and `POST /api/v1/publication-run/{attempt_id}/resume`, only for the authenticated user’s still-live original human scene; Cloud strict session and original attempt/revision checks apply.
