@@ -89,6 +89,28 @@ class CloudAgentClient:
             raise CloudUnavailableError('publication response malformed')
         return dict(data)
 
+    def claim_publication_check(self, token: str):
+        response = self._transport('POST', '/api/v1/cloud-agent/publication-task/check/claim',
+                                   None, _bearer(token))
+        _raise_on_failure(response)
+        if 'data' not in response or (response['data'] is not None and not isinstance(response['data'], Mapping)):
+            raise CloudUnavailableError('publication check response missing data')
+        return dict(response['data']) if response['data'] is not None else None
+
+    def observe_publication(self, token: str, task_id: str, packet: dict):
+        for value in (task_id, packet.get('generation'), packet.get('observation', {}).get('attempt_id'),
+                      packet.get('observation', {}).get('expected_revision')):
+            if (not isinstance(value, str) or not 0 < len(value) <= 20 or not value.isascii()
+                    or not value.isdecimal() or str(int(value)) != value
+                    or not 0 < int(value) <= 18446744073709551615):
+                raise ValueError('canonical publication check identity required')
+        acknowledgement = dict(_expect_data(self._transport('POST',
+            f'/api/v1/cloud-agent/publication-task/{task_id}/check', packet, _bearer(token))))
+        if (acknowledgement.get('publication_id'), acknowledgement.get('attempt_id'), acknowledgement.get('generation')) != (
+                task_id, packet['observation']['attempt_id'], packet['generation']):
+            raise CloudUnavailableError('publication observation acknowledgement does not match')
+        return acknowledgement
+
     def report_publication(self, token: str, task_id: str, operation: str, packet: dict):
         if operation not in PUBLICATION_REPORT_OPERATIONS:
             raise ValueError('invalid publication report operation')

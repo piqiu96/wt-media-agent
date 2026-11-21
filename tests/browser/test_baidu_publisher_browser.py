@@ -75,6 +75,101 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def fill(self):
         self.publisher.fill_fields(self.page,self.payload,stopped=lambda:False)
 
+    def check_public_reference(self, *, anonymous_public):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
+        from wt_media_agent.platforms.publish import PublicationReference
+        import shutil
+        encoder=shutil.which('ffmpeg')
+        self.assertIsNotNone(encoder,'ffmpeg is required for real isolated media checks')
+        video=self.folder/'public-proof.mp4'
+        subprocess.run([encoder,'-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=black:s=32x32:d=1',
+                        '-c:v','libx264','-pix_fmt','yuv420p','-movflags','faststart',str(video)],check=True)
+        media=video.read_bytes()
+        target='https://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        public='https://mbd.baidu.com/newspage/data/videolanding?nid=sv_7000395122085014122'
+        media_url='https://mbd.baidu.com/fixture/public-proof.mp4'
+        visits=[]
+        def fixture(route):
+            request=route.request
+            if request.url=='https://baijiahao.baidu.com/builder/rc/content':
+                route.fulfill(content_type='text/html',body='<a href="'+target+'">原指定稿件</a>')
+            elif request.url==target:
+                self.external.append(request.url);route.abort()
+            elif request.url==public:
+                authenticated='fixture_session=private-test' in request.all_headers().get('cookie','')
+                visits.append(authenticated)
+                if not anonymous_public and not authenticated:
+                    route.fulfill(status=403,body='Login required')
+                else:
+                    metadata={'id':'7000395122085014122','title':'确认描述 #测试话题','publish_time':1795169573,'duration':1,'playurl':media_url}
+                    route.fulfill(content_type='text/html',body='<meta charset="utf-8"><script>window.fixturePublic={curVideoMeta:'+json.dumps(metadata,ensure_ascii=False)+'};</script><video preload="metadata" src="'+media_url+'"></video>')
+            elif request.url==media_url:
+                route.fulfill(content_type='video/mp4',body=media)
+            else:
+                self.external.append(request.url);route.abort()
+        self.page.unroute('**/*')
+        self.page.context.route('**/*',fixture)
+        self.page.context.add_cookies([{'name':'fixture_session','value':'private-test','domain':'.baidu.com','path':'/','secure':True}])
+        browser=self.page.context.browser
+        original=browser.new_context
+        contexts=[]
+        def anonymous_context(**kwargs):
+            self.assertEqual(kwargs['storage_state'],{'cookies':[],'origins':[]})
+            context=original(**kwargs)
+            context.route('**/*',fixture)
+            contexts.append(context)
+            return context
+        page=self.page
+        class OwnedSession:
+            def __enter__(self):return SimpleNamespace(page=page)
+            def __exit__(self,*_):pass
+        reader=BaiduPublicationReader(self.endpoint,browser_session_factory=lambda _:OwnedSession(),
+            identity_reader=lambda _:{'login_status':'normal','platform_account_id':'fixture-uid'})
+        original_goto=page.goto
+        navigations=[]
+        def navigate(url, **kwargs):
+            navigations.append(url)
+            # Simulate the HTTP redirect boundary; Playwright route handlers do
+            # not intercept redirected requests. All browser traffic stays isolated.
+            return original_goto(public if url==target else url, **kwargs)
+        with patch.object(browser,'new_context',side_effect=anonymous_context), patch.object(page,'goto',side_effect=navigate):
+            result=reader.read(PublicationReference('fixture-uid','1882371730190912814',dict(self.payload.content)),current=lambda:True)
+        self.assertEqual(navigations,['https://baijiahao.baidu.com/builder/rc/content',target])
+        self.assertEqual(visits,[True,False])
+        self.assertEqual(len(browser.contexts),1)
+        self.assertEqual(result.target_url,target)
+        self.assertEqual(self.external,[])
+        return result
+
+    def test_exact_original_link_and_real_anonymous_media_prove_public_work(self):
+        result=self.check_public_reference(anonymous_public=True)
+        self.assertEqual(result.conclusion,'published')
+        self.assertEqual(result.work_id,'7000395122085014122')
+        self.assertEqual(result.published_at.isoformat(),'2026-11-20T10:12:53+00:00')
+
+    def test_authenticated_preview_with_anonymous_login_refusal_stays_reviewing(self):
+        result=self.check_public_reference(anonymous_public=False)
+        self.assertEqual(result.conclusion,'reviewing')
+        self.assertEqual(result.work_id,'')
+        self.assertIsNone(result.published_at)
+
+    def test_metadata_without_decoded_video_frame_cannot_prove_public_work(self):
+        from wt_media_agent.platforms.baidu.publication_check import PUBLIC_METADATA
+        self.page.set_content('<video></video>')
+        self.page.evaluate("""() => {
+          const url='https://mbd.baidu.com/fixture/metadata-only.mp4';
+          window.fixturePublic={curVideoMeta:{id:'7000395122085014122',title:'title',
+            publish_time:1795169573,duration:30,playurl:url}};
+          const video=document.querySelector('video');
+          // Deterministically model HAVE_METADATA with no decoded current frame.
+          for(const [key,value] of Object.entries({currentSrc:url,readyState:1,
+              duration:30,videoWidth:0,videoHeight:0}))
+            Object.defineProperty(video,key,{value});
+        }""")
+        self.assertFalse(self.page.evaluate(PUBLIC_METADATA,'7000395122085014122'))
+
     def test_fields_cover_dialogs_and_one_matching_receipt(self):
         self.fill()
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')

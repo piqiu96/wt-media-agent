@@ -48,6 +48,8 @@ from wt_media_agent.runner.publication import PublicationExecution
 from wt_media_agent.storage.publication import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
 from wt_media_agent.runner.publication_job import PublicationJob
+from wt_media_agent.runner.publication_check import PublicationCheckJob
+from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
 from wt_media_agent.runner.publication_loop import PublicationLoop
 from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
@@ -198,6 +200,11 @@ def build_components(config: AgentConfig | None = None) -> Components:
             raise ValueError('platform publisher is not available')
         return BaiduPublisher
 
+    def publication_reader_factory(platform):
+        if platform != 'baidu':
+            raise ValueError('platform public reader is not available')
+        return BaiduPublicationReader
+
     return Components(
         config=config,
         state=state,
@@ -212,6 +219,7 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_execution=publication_execution,
         database=database,
         publications=PublicationLoop(agent_token, publication_preparation,
-            PublicationJob(publication_preparation, bitbrowser, publisher_factory)),
+            PublicationJob(publication_preparation, bitbrowser, publisher_factory),
+            PublicationCheckJob(cloud, bitbrowser, publication_journal, publication_reader_factory)),
         publication_preparation=publication_preparation,
     )
