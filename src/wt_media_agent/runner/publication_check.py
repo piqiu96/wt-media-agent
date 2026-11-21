@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timezone
+from pathlib import Path
 from typing import Mapping
 
 from wt_media_agent.clients.bitbrowser.errors import BitBrowserUnavailableError
@@ -86,7 +87,20 @@ class PublicationCheckJob:
                     if endpoint:
                         closed = self.bitbrowser.close_profile_verified(profile_id, endpoint) is True
         except Exception as error:
-            logger.info('publication check deferred error_type=%s', type(error).__name__)
+            location = error.__traceback__
+            failure_path = []
+            while location is not None:
+                code = location.tb_frame.f_code
+                if 'wt_media_agent' in Path(code.co_filename).parts:
+                    failure_path.append(f'{Path(code.co_filename).name}:{code.co_name}:{location.tb_lineno}')
+                if location.tb_next is None:
+                    break
+                location = location.tb_next
+            # Keep source locations only; exception text can contain platform secrets.
+            code = location.tb_frame.f_code
+            logger.info('publication check deferred error_type=%s failure_site=%s:%s:%s failure_path=%s',
+                type(error).__name__, Path(code.co_filename).name, code.co_name,
+                location.tb_lineno, '>'.join(failure_path))
             browser_unavailable = isinstance(error, BitBrowserUnavailableError)
             observation = PublicWorkObservation('uncertain', '暂未完成指定稿件核验',
                 '原账号现场或平台读取尚未取得完整证据；本轮未上传或投稿，保留平台审核中')

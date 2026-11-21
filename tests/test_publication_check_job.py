@@ -116,3 +116,18 @@ class PublicCheckJobTests(unittest.TestCase):
         self.assertNotIn('work_url',value)
         self.assertNotIn('published_at',value)
         self.assertNotIn('private connection details',str(value))
+
+    def test_failure_log_locates_timeout_without_private_exception_text(self):
+        def read_timeout(*args, **kwargs):
+            raise TimeoutError('private platform response and credentials')
+        self.reader.read.side_effect=read_timeout
+        with self.assertLogs('wt_media_agent.runner.publication_check',level='INFO') as captured:
+            self.job.tick('token','9',current=lambda:True)
+        message=' '.join(captured.output)
+        self.assertIn('error_type=TimeoutError',message)
+        self.assertIn('failure_site=test_publication_check_job.py:read_timeout:',message)
+        self.assertIn('failure_path=publication_check.py:tick:',message)
+        self.assertNotIn('private platform response',message)
+        value=self.cloud.observe_publication.call_args.args[2]['observation']
+        self.assertEqual(value['conclusion'],'uncertain')
+        self.assertNotIn('work_url',value)
