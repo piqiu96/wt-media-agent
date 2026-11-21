@@ -107,12 +107,15 @@ class BaiduPublicationReader:
             return reference.target_url
         page.goto('https://baijiahao.baidu.com/builder/rc/content', wait_until='domcontentloaded')
         found = page.wait_for_function("""id => {
-          const links=[...document.querySelectorAll('a[href]')].map(a=>a.href).filter(raw=>{
-            const u=new URL(raw);
-            return u.protocol==='https:' && u.host==='baijiahao.baidu.com'
-              && u.pathname==='/builder/preview/s' && !u.hash
-              && [...u.searchParams].length===1 && u.searchParams.get('id')===id;
-          });
+          const links=[...document.querySelectorAll('a[href]')].map(a=>{
+            const u=new URL(a.href);
+            if (!['http:','https:'].includes(u.protocol) || u.host!=='baijiahao.baidu.com'
+              || u.username || u.password || u.pathname!=='/builder/preview/s' || u.hash
+              || [...u.searchParams].length!==1 || u.searchParams.get('id')!==id)return null;
+            // Upgrade an observed original link; never construct one from a receipt ID.
+            u.protocol='https:';
+            return u.href;
+          }).filter(Boolean);
           const exact=[...new Set(links)];return exact.length===1 ? exact[0] : false;
         }""", arg=reference.submission_id, timeout=15000).json_value()
         if not is_exact_target_url(reference.submission_id, found):

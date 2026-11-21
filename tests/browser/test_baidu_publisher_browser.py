@@ -75,7 +75,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def fill(self):
         self.publisher.fill_fields(self.page,self.payload,stopped=lambda:False)
 
-    def check_public_reference(self, *, anonymous_public):
+    def check_public_reference(self, *, anonymous_public, link_scheme="https", decoy_links=()):
         from types import SimpleNamespace
         from unittest.mock import patch
         from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
@@ -94,7 +94,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         def fixture(route):
             request=route.request
             if request.url=='https://baijiahao.baidu.com/builder/rc/content':
-                route.fulfill(content_type='text/html',body='<a href="'+target+'">原指定稿件</a>')
+                route.fulfill(content_type='text/html',body='<a href="'+target.replace('https:', link_scheme+':', 1)+'">原指定稿件</a>'+''.join('<a href="'+link+'">其他链接</a>' for link in decoy_links))
             elif request.url==target:
                 self.external.append(request.url);route.abort()
             elif request.url==public:
@@ -148,6 +148,16 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(result.conclusion,'published')
         self.assertEqual(result.work_id,'7000395122085014122')
         self.assertEqual(result.published_at.isoformat(),'2026-11-20T10:12:53+00:00')
+
+    def test_observed_http_receipt_link_is_upgraded_before_public_verification(self):
+        target='http://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        result=self.check_public_reference(anonymous_public=True, link_scheme='http', decoy_links=(
+            target.replace('baijiahao.baidu.com','baijiahao.baidu.com.evil.test'),
+            target.replace('baijiahao.baidu.com','fixture-user:fixture-password@baijiahao.baidu.com'),
+            target+'&token=fixture-private', target+'#changed',
+            target.replace('1882371730190912814','1882359387756944157')))
+        self.assertEqual(result.conclusion,'published')
+        self.assertTrue(result.target_url.startswith('https://'))
 
     def test_authenticated_preview_with_anonymous_login_refusal_stays_reviewing(self):
         result=self.check_public_reference(anonymous_public=False)
