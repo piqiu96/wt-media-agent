@@ -116,6 +116,51 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(self.j.get(self.i)['phase'],'settled');self.assertEqual(self.j.pending(self.i.cloud_env,self.i.user_id),[])
         with self.assertRaises(JournalConflict):self.run_job()
         self.assertEqual(self.platform.clicks,1)
+    def test_explicit_stop_before_permission_reports_unsubmitted_only_after_close(self):
+        original = self.cloud.report_publication
+        def deny(token, task, operation, packet):
+            if operation == 'report' and packet.get('stage') == 'submitting':
+                return {'stop_requested': True, 'allow_submit': False}
+            return original(token, task, operation, packet)
+        self.cloud.report_publication = deny
+        result = self.run_job()
+        self.assertEqual(result['status'], 'failed')
+        self.assertTrue(result['evidence']['not_submitted'])
+        self.assertTrue(result['evidence']['scene_closed'])
+        self.assertEqual(self.platform.clicks, 0)
+        with self.assertRaises(JournalConflict):
+            self.run_job()
+
+    def test_cancelled_task_acknowledges_original_failed_result_without_extra_lookup(self):
+        original = self.cloud.report_publication
+        def stop_and_ack(token, task, operation, packet):
+            if operation == 'report' and packet.get('stage') == 'submitting':
+                return {'stop_requested': True, 'allow_submit': False}
+            reply = original(token, task, operation, packet)
+            if operation == 'complete':
+                reply['task_status'] = 'cancelled'
+            return reply
+        self.cloud.report_publication = stop_and_ack
+        self.cloud.original_publication_attempt = lambda *args: (_ for _ in ()).throw(ConnectionError('offline'))
+        result = self.run_job()
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(self.j.get(self.i)['phase'], 'settled')
+        self.assertEqual(self.platform.clicks, 0)
+
+    def test_explicit_stop_without_safe_close_remains_unknown(self):
+        original = self.cloud.report_publication
+        def deny(token, task, operation, packet):
+            if operation == 'report' and packet.get('stage') == 'submitting':
+                return {'stop_requested': True, 'allow_submit': False}
+            return original(token, task, operation, packet)
+        self.cloud.report_publication = deny
+        self.closed = False
+        result = self.run_job()
+        self.assertEqual(result['status'], 'uncertain')
+        self.assertFalse(result['evidence']['scene_closed'])
+        self.assertNotIn('not_submitted', result['evidence'])
+        self.assertEqual(self.platform.clicks, 0)
+
     def test_lost_permission_never_clicks_and_restart_cannot_reenter(self):
         self.cloud.lose_permission=True
         result=self.run_job()
