@@ -1,6 +1,7 @@
 """Read one exact original Baidu submission; never upload, edit or submit."""
 from datetime import datetime, timezone
 from math import isfinite
+import logging
 from urllib.parse import parse_qs, urlsplit
 
 from wt_media_agent.platforms.baidu.publisher import publication_description, read_baidu_identity
@@ -100,27 +101,67 @@ class BaiduPublicationReader:
                 or observed.get('platform_account_id') != reference.platform_uid):
             raise PublicationInputError('publication check live account differs')
 
-    def _locate_target(self, page, reference):
+    def _locate_target(self, page, reference, current):
         if reference.target_url:
             if not is_exact_target_url(reference.submission_id, reference.target_url):
                 raise PublicationInputError('original target differs from receipt')
             return reference.target_url
-        page.goto('https://baijiahao.baidu.com/builder/rc/content', wait_until='domcontentloaded')
-        found = page.wait_for_function("""id => {
-          const links=[...document.querySelectorAll('a[href]')].map(a=>{
-            const u=new URL(a.href);
-            if (!['http:','https:'].includes(u.protocol) || u.host!=='baijiahao.baidu.com'
-              || u.username || u.password || u.pathname!=='/builder/preview/s' || u.hash
-              || [...u.searchParams].length!==1 || u.searchParams.get('id')!==id)return null;
-            // Upgrade an observed original link; never construct one from a receipt ID.
-            u.protocol='https:';
-            return u.href;
-          }).filter(Boolean);
-          const exact=[...new Set(links)];return exact.length===1 ? exact[0] : false;
-        }""", arg=reference.submission_id, timeout=15000).json_value()
-        if not is_exact_target_url(reference.submission_id, found):
-            raise PublicationInputError('no unique original submission link')
-        return found
+
+        def list_response(response):
+            parsed = urlsplit(response.url)
+            return (parsed.scheme == 'https' and parsed.netloc == 'baijiahao.baidu.com'
+                    and parsed.path == '/pcui/article/lists' and response.request.method == 'GET')
+
+        with page.expect_response(list_response, timeout=15000) as loaded:
+            page.goto('https://baijiahao.baidu.com/builder/rc/content', wait_until='domcontentloaded')
+        response = loaded.value
+        expected_page, last_page = 1, None
+        while current():
+            body = response.json()
+            if response.status != 200 or not isinstance(body, dict) or type(body.get('errno')) is not int or body['errno'] != 0:
+                raise PublicationInputError('original submission list is unavailable')
+            data = body.get('data')
+            if not isinstance(data, dict) or not isinstance(data.get('page'), dict):
+                raise PublicationInputError('original submission pagination is missing')
+            pagination, records = data['page'], data.get('list')
+            number, total = pagination.get('currentPage'), pagination.get('totalPage')
+            if (type(number) is not int or number != expected_page or type(total) is not int
+                    or total < number or not isinstance(records, list)
+                    or (last_page is not None and total != last_page)):
+                raise PublicationInputError('original submission pagination changed')
+            last_page = total
+            if not records or any(not isinstance(row, dict) or not _decimal(row.get('article_id')) for row in records):
+                raise PublicationInputError('no original submission records on this page')
+            if reference.submission_id in {row['article_id'] for row in records}:
+                found = page.wait_for_function("""id => {
+                  const links=[...document.querySelectorAll('a[href]')].map(a=>{
+                    const u=new URL(a.href);
+                    if (!['http:','https:'].includes(u.protocol) || u.host!=='baijiahao.baidu.com'
+                      || u.username || u.password || u.pathname!=='/builder/preview/s' || u.hash
+                      || [...u.searchParams].length!==1 || u.searchParams.get('id')!==id)return null;
+                    // Upgrade an observed original link; never construct one from a receipt ID.
+                    u.protocol='https:';
+                    return u.href;
+                  }).filter(Boolean);
+                  const exact=[...new Set(links)];return exact.length===1 ? exact[0] : false;
+                }""", arg=reference.submission_id, timeout=15000).json_value()
+                if not is_exact_target_url(reference.submission_id, found):
+                    raise PublicationInputError('original target differs from receipt')
+                return found
+            if number == last_page:
+                logging.getLogger(__name__).info('baidu_publication_lookup complete found=false pages=%d', number)
+                return None
+            page.locator(f'.cheetah-pagination-item-active[title="{number}"]').wait_for(state='visible', timeout=15000)
+            next_page = page.locator('.cheetah-pagination-next[title="下一页"]')
+            if next_page.count() != 1 or next_page.get_attribute('aria-disabled') != 'false':
+                raise PublicationInputError('original submission next page is unavailable')
+            if not current():
+                break
+            with page.expect_response(list_response, timeout=15000) as loaded:
+                next_page.locator('button').click()
+            response = loaded.value
+            expected_page += 1
+        raise PublicationInputError('publication check identity changed during pagination')
 
     def _anonymous_proof(self, browser, work_url, description):
         from playwright.sync_api import TimeoutError as BrowserTimeout
@@ -148,8 +189,11 @@ class BaiduPublicationReader:
             page = session.page
             page.route('**/*', _read_only)
             try:
-                target = self._locate_target(page, reference)
+                target = self._locate_target(page, reference, current)
                 self._verify_owner(reference, current)
+                if target is None:
+                    return PublicWorkObservation('uncertain', '原账号内容列表未找到指定投稿',
+                        '已按平台实际分页查找原投稿回执，暂未找到对应记录；不能据此认定投稿失败，不重新上传或投稿，需核对原回执与平台记录')
                 response = page.goto(target, wait_until='domcontentloaded', timeout=20000)
                 work_url = page.url
                 work_id = read_public_work_id(work_url)

@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from wt_media_agent.platforms.baidu.publisher import BrowserPublisher, PlatformFormError
 from wt_media_agent.platforms.publish import PublishPayload
@@ -75,7 +76,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def fill(self):
         self.publisher.fill_fields(self.page,self.payload,stopped=lambda:False)
 
-    def check_public_reference(self, *, anonymous_public, link_scheme="https", decoy_links=()):
+    def check_public_reference(self, *, anonymous_public, link_scheme="https", decoy_links=(), list_pages=None, page_number_override=None, nonpreview_ids=()):
         from types import SimpleNamespace
         from unittest.mock import patch
         from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
@@ -91,10 +92,18 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         public='https://mbd.baidu.com/newspage/data/videolanding?nid=sv_7000395122085014122'
         media_url='https://mbd.baidu.com/fixture/public-proof.mp4'
         visits=[]
+        list_pages=list_pages or [[target.replace('https:',link_scheme+':',1)]]
+        list_visits=[]
+        self.public_check_list_visits=list_visits
         def fixture(route):
             request=route.request
             if request.url=='https://baijiahao.baidu.com/builder/rc/content':
-                route.fulfill(content_type='text/html',body='<a href="'+target.replace('https:', link_scheme+':', 1)+'">原指定稿件</a>'+''.join('<a href="'+link+'">其他链接</a>' for link in decoy_links))
+                body='<meta charset="utf-8"><div id="list"></div><ul><li class="cheetah-pagination-item-active" title="1"></li><li class="cheetah-pagination-next" title="下一页" aria-disabled="false"><button onclick="load(current+1)">下一页</button></li></ul><script>const pages='+json.dumps(list_pages)+';const decoys='+json.dumps(list(decoy_links))+';let current=1;async function load(n){await fetch("/pcui/article/lists?currentPage="+n).then(r=>r.json());await new Promise(resolve=>setTimeout(resolve,30));current=n;document.querySelector("#list").innerHTML=[...pages[n-1],...decoys].map(link=>`<a href="${link}">指定稿件</a>`).join("");document.querySelector(".cheetah-pagination-next").setAttribute("aria-disabled",String(n===pages.length));document.querySelector(".cheetah-pagination-item-active").setAttribute("title",String(n));}load(1);</script>'
+                route.fulfill(content_type='text/html',body=body)
+            elif urlsplit(request.url).hostname=='baijiahao.baidu.com' and urlsplit(request.url).path=='/pcui/article/lists':
+                number=int(parse_qs(urlsplit(request.url).query)['currentPage'][0]);list_visits.append(number)
+                records=[{'article_id':parse_qs(urlsplit(link).query)['id'][0]} for link in list_pages[number-1]]+[{'article_id':value} for value in nonpreview_ids]
+                route.fulfill(content_type='application/json',body=json.dumps({'errno':0,'data':{'list':records,'page':{'currentPage':(page_number_override or {}).get(number,number),'pageSize':10,'totalPage':len(list_pages),'totalCount':sum(map(len,list_pages))}}}))
             elif request.url==target:
                 self.external.append(request.url);route.abort()
             elif request.url==public:
@@ -129,6 +138,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
             identity_reader=lambda _:{'login_status':'normal','platform_account_id':'fixture-uid'})
         original_goto=page.goto
         navigations=[]
+        self.public_check_navigations=navigations
         def navigate(url, **kwargs):
             navigations.append(url)
             # Simulate the HTTP redirect boundary; Playwright route handlers do
@@ -136,11 +146,20 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
             return original_goto(public if url==target else url, **kwargs)
         with patch.object(browser,'new_context',side_effect=anonymous_context), patch.object(page,'goto',side_effect=navigate):
             result=reader.read(PublicationReference('fixture-uid','1882371730190912814',dict(self.payload.content)),current=lambda:True)
-        self.assertEqual(navigations,['https://baijiahao.baidu.com/builder/rc/content',target])
-        self.assertEqual(visits,[True,False])
+        if result.conclusion=='uncertain':
+            self.assertEqual(navigations,['https://baijiahao.baidu.com/builder/rc/content'])
+            self.assertEqual(visits,[])
+            self.assertEqual(len(contexts),0)
+            self.assertEqual(result.work_id,'')
+            self.assertEqual(result.work_url,'')
+            self.assertIsNone(result.published_at)
+        else:
+            self.assertEqual(navigations,['https://baijiahao.baidu.com/builder/rc/content',target])
+            self.assertEqual(visits,[True,False])
+            self.assertEqual(result.target_url,target)
         self.assertEqual(len(browser.contexts),1)
-        self.assertEqual(result.target_url,target)
         self.assertEqual(self.external,[])
+        self.assertEqual(list_visits,list(range(1,len(list_pages)+1)))
         return result
 
     def test_exact_original_link_and_real_anonymous_media_prove_public_work(self):
@@ -158,6 +177,41 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
             target.replace('1882371730190912814','1882359387756944157')))
         self.assertEqual(result.conclusion,'published')
         self.assertTrue(result.target_url.startswith('https://'))
+
+    def test_original_submission_on_second_page_is_verified_without_reposting(self):
+        target='http://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        result=self.check_public_reference(anonymous_public=True,list_pages=[[
+            target.replace('1882371730190912814','1882359387756944157')],[target]])
+        self.assertEqual(result.conclusion,'published')
+        self.assertEqual(result.work_id,'7000395122085014122')
+
+    def test_unrelated_nonpreviewable_record_does_not_block_pagination(self):
+        target='http://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        result=self.check_public_reference(anonymous_public=True,list_pages=[[
+            target.replace('1882371730190912814','1882359387756944157')],[target]],
+            nonpreview_ids=('1882000000000000001',))
+        self.assertEqual(result.conclusion,'published')
+        self.assertEqual(result.work_id,'7000395122085014122')
+
+    def test_missing_original_does_not_use_another_work_after_last_page(self):
+        other='http://baijiahao.baidu.com/builder/preview/s?id=1882359387756944157'
+        result=self.check_public_reference(anonymous_public=True,list_pages=[[other],[other.replace('4157','4158')]])
+        self.assertEqual(result.conclusion,'uncertain')
+        self.assertEqual(result.reason,'原账号内容列表未找到指定投稿')
+        self.assertIn('不能据此认定投稿失败',result.basis)
+        self.assertEqual(self.public_check_list_visits,[1,2])
+        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/builder/rc/content'])
+        self.assertEqual(self.external,[])
+
+    def test_repeated_page_number_does_not_loop_or_register_another_work(self):
+        from wt_media_agent.platforms.publish import PublicationInputError
+        other='http://baijiahao.baidu.com/builder/preview/s?id=1882359387756944157'
+        target=other.replace('1882359387756944157','1882371730190912814')
+        with self.assertRaises(PublicationInputError):
+            self.check_public_reference(anonymous_public=True,list_pages=[[other],[target]],page_number_override={2:1})
+        self.assertEqual(self.public_check_list_visits,[1,2])
+        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/builder/rc/content'])
+        self.assertEqual(self.external,[])
 
     def test_authenticated_preview_with_anonymous_login_refusal_stays_reviewing(self):
         result=self.check_public_reference(anonymous_public=False)
