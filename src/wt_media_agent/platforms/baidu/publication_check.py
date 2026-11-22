@@ -93,11 +93,13 @@ class BaiduPublicationReader:
         self.browser_session_factory = browser_session_factory
         self.identity_reader = identity_reader
 
-    def _verify_owner(self, reference, current):
+    def _verify_owner(self, reference, current, *, page=None):
         if not current():
             raise PublicationInputError('publication check identity changed')
         if self.identity_reader is not None:
             observed = self.identity_reader(self.endpoint)
+        elif page is not None:
+            observed = read_baidu_identity(self.endpoint, browser_context=page.context)
         else:
             observed = read_baidu_identity(self.endpoint, browser_session_factory=self.browser_session_factory)
         if (observed.get('login_status') != 'normal'
@@ -161,7 +163,7 @@ class BaiduPublicationReader:
             page.route('**/*', _read_only)
             try:
                 target = self._locate_target(page, reference, current)
-                self._verify_owner(reference, current)
+                self._verify_owner(reference, current, page=page)
                 if target is None:
                     return PublicWorkObservation('uncertain', '原账号内容列表未找到指定投稿',
                         '已按平台实际分页查找原投稿回执，暂未找到对应记录；不能据此认定投稿失败，不重新上传或投稿，需核对原回执与平台记录', lookup_result='not_found')
@@ -171,7 +173,7 @@ class BaiduPublicationReader:
                 published_at = None
                 if response is not None and response.status == 200 and work_id:
                     published_at = self._anonymous_proof(page.context.browser, work_url, description)
-                self._verify_owner(reference, current)
+                self._verify_owner(reference, current, page=page)
                 if published_at is not None:
                     return PublicWorkObservation('published', '指定作品已经公开',
                         '原账号UID核对一致；按原投稿ID的实际链接跳转，匿名页面作品ID、确认内容、可加载媒体及平台publish_time一致',

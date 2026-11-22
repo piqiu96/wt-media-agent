@@ -270,6 +270,19 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertNotIn('private unexpected content',str(captured.output))
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
 
+    def test_public_result_owner_recheck_uses_current_profile_context(self):
+        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
+        from wt_media_agent.platforms.publish import PublicationReference
+        context = self.page.context
+        context.route('https://image.baidu.com/user/logininfo?**', lambda route: route.fulfill(
+            content_type='application/json', body='{"data":{"user":{"user_id":6572476037}}}'))
+        before = len(context.pages)
+        reader = BaiduPublicationReader(self.endpoint)
+        reader._verify_owner(PublicationReference('6572476037','1882371730190912814',{}),
+                             lambda: True, page=self.page)
+        self.assertEqual(len(context.pages), before)
+        self.assertFalse(self.page.is_closed())
+
     def test_identity_recheck_reuses_active_browser_context_and_closes_own_tab(self):
         from wt_media_agent.platforms.baidu.identity import read_baidu_identity
         context = self.page.context
