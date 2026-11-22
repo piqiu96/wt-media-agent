@@ -4,6 +4,7 @@ from math import isfinite
 from urllib.parse import parse_qs, urlsplit
 
 from wt_media_agent.platforms.baidu.publisher import publication_description
+from wt_media_agent.platforms.baidu.identity import read_baidu_identity
 from wt_media_agent.platforms.publish import PublicationInputError, PublicationReference, PublicWorkObservation
 from wt_media_agent.services.browser.session import BrowserSession
 
@@ -98,18 +99,7 @@ class BaiduPublicationReader:
         if self.identity_reader is not None:
             observed = self.identity_reader(self.endpoint)
         else:
-            # Browser-mode identity requests must use this Profile's proxy and network stack.
-            import time
-            with self.browser_session_factory(self.endpoint) as identity_session:
-                identity_page = identity_session.page
-                identity_page.route('**/*', _read_only)
-                try:
-                    response = identity_page.goto('https://image.baidu.com/user/logininfo?time=' + str(int(time.time()*1000)) + '&src=pc&page=index', wait_until='domcontentloaded', timeout=15000)
-                    body = response.json() if response and response.status == 200 else {}
-                    uid = str(((body.get('data') or {}).get('user') or {}).get('user_id') or '')
-                    observed = {'login_status': 'normal' if uid else 'not_logged_in', 'platform_account_id': uid}
-                finally:
-                    identity_page.close()
+            observed = read_baidu_identity(self.endpoint, browser_session_factory=self.browser_session_factory)
         if (observed.get('login_status') != 'normal'
                 or observed.get('platform_account_id') != reference.platform_uid):
             raise PublicationInputError('publication check live account differs')

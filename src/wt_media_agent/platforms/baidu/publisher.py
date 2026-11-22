@@ -11,10 +11,9 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from wt_media_agent.clients.baidu.identity import identify_baidu
+from wt_media_agent.platforms.baidu.identity import read_baidu_identity
 from wt_media_agent.platforms.publish import PublicationInputError, PublishControl, PublishPayload, PublishReceipt
 from wt_media_agent.runtime.constants import PublishMethod
-from wt_media_agent.services.browser.cdp import read_live_cookies
 from wt_media_agent.services.browser.session import BrowserSession
 
 
@@ -478,11 +477,6 @@ class BrowserPublisher:
             self.page.wait_for_timeout(100)
         raise PlatformFormError('platform receipt is unknown')
 
-
-
-def read_baidu_identity(endpoint):
-    """Compose local Cookie access and the existing basic identity API client."""
-    return identify_baidu(read_live_cookies(endpoint))
 
 
 class BaiduPublisher:
