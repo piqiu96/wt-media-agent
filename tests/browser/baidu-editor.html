@@ -19,6 +19,6 @@ if(window.fixtureRestoreEditor){
  add.querySelector('input').onchange=e=>window.addedVideoSize=e.target.files[0].size;
  root.replaceChildren(current,add);
 }
-document.querySelector('input[accept=".mp4"]').onchange=e=>{window.selectedVideoSize=e.target.files[0].size;window.fixtureEditor();if(window.fixtureUploadStalled)document.querySelector('#cover-tabs-container').insertAdjacentHTML('beforeend','<p>上传中 25%</p>')};
+document.querySelector('input[accept=".mp4"]').onchange=e=>{window.selectedVideoSize=e.target.files[0].size;window.fixtureEditor();fetch('/materialui/video/compuploadvideo',{method:'POST',body:'fixture upload'}).then(()=>new Promise(resolve=>setTimeout(resolve,window.fixtureVideoProcessingDelayed?150:0))).then(()=>fetch('/pcui/video/process',{method:'POST',body:new URLSearchParams({mediaId:'fixture-new-video'})})).then(()=>{window.fixtureVideoProcessed=true;document.querySelectorAll('[data-testid=cover-preview], [data-testid=select-cover]').forEach((cover,index)=>{cover.setAttribute('data-testid','cover-preview');let image=cover.querySelector('img');if(!image){cover.textContent='';image=document.createElement('img');cover.append(image)}image.src='https://baijiahao.baidu.com/fixture-cover/initial-'+index})});if(window.fixtureUploadStalled)document.querySelector('#cover-tabs-container').insertAdjacentHTML('beforeend','<p>上传中 25%</p>')};
 if(window.fixtureRestoreEditor)window.fixtureEditor();
 </script>

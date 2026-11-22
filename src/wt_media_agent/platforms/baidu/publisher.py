@@ -90,6 +90,9 @@ class BrowserPublisher:
         self._covers = []
         self._cover_images = []
         self._image_responses = {}
+        self._video_media_id = None
+        self._video_processed = False
+        self._initial_video_covers = []
         self._capture = {'count': 0}
         self._request = None
         self._diagnostic_path = None
@@ -195,6 +198,7 @@ class BrowserPublisher:
         if stopped():
             raise PlatformFormError('publication stopped before editor')
         self.protect_scene(page)
+        page.on('response', self._remember_video_response)
         page.goto('https://baijiahao.baidu.com/builder/rc/home', wait_until='domcontentloaded')
         self._check()
         video_entry = page.get_by_text('发布视频', exact=True)
@@ -240,6 +244,7 @@ class BrowserPublisher:
             # The restored editor exposes both Replace and Add-video inputs.
             # Select this video's action, never the separate .cover-add input.
             video_input = page.locator('#cover-tabs-container > :not(.cover-add) input[type=file][accept*=".mp4"]')
+        self._initial_video_covers = page.locator('[data-testid=cover-preview] img').evaluate_all('(es)=>es.map(e=>e.src)')
         video_input.set_input_files(str(payload.video.resolve()))
         if prior_sources is not None:
             self._wait(lambda: self._upload_ready() and page.locator('video').evaluate_all(
@@ -247,7 +252,48 @@ class BrowserPublisher:
                 prior_sources), stage='restored_video_replaced')
         else:
             self._wait(self._upload_ready)
+        self._wait(self._video_covers_ready, stage='video_processing_and_initial_covers')
         self.fill_fields(page, payload, stopped=stopped)
+
+    def _remember_video_response(self, response):
+        url = urlsplit(response.url)
+        if (response.request.method != 'POST' or url.scheme != 'https'
+                or url.netloc != 'baijiahao.baidu.com' or not response.ok
+                or url.path not in ('/materialui/video/compuploadvideo', '/pcui/video/process')):
+            return
+        from playwright.sync_api import Error as BrowserError
+        try:
+            body = response.json()
+        except (ValueError, BrowserError):
+            # An unreadable/aborted response never confirms processing.
+            return
+        if not isinstance(body, dict):
+            return
+        if url.path == '/materialui/video/compuploadvideo':
+            media_id = body.get('mediaId')
+            if str(body.get('error_code')) == '0' and type(media_id) in (str, int) and str(media_id):
+                self._video_media_id = str(media_id)
+                self._video_processed = False
+            return
+        raw = response.request.post_data or ''
+        try:
+            request_body = json.loads(raw)
+        except ValueError:
+            request_body = {key: values[0] for key, values in parse_qs(raw).items() if len(values) == 1}
+        data = body.get('data')
+        if (isinstance(request_body, dict) and self._video_media_id is not None
+                and str(request_body.get('mediaId')) == self._video_media_id
+                and body.get('errno') == 0 and isinstance(data, dict)
+                and data.get('status') == 'PUBLISHED' and data.get('img_frame')):
+            # This status describes video processing, not publication success.
+            self._video_processed = True
+
+    def _video_covers_ready(self):
+        if not self._upload_ready() or not self._video_processed:
+            return False
+        return self.page.locator('[data-testid=cover-preview] img').evaluate_all(
+            '(es, previous) => es.length === 2 && es.every(e => /^https?:/.test(e.src) && e.complete && e.naturalWidth > 0 && !previous.includes(e.src))',
+            self._initial_video_covers)
 
     def _upload_ready(self):
         upload = self.page.locator('#cover-tabs-container')

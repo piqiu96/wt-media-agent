@@ -63,6 +63,10 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
                 route.fulfill(content_type='text/html',body=self.home)
             elif request.url=='https://baijiahao.baidu.com/builder/rc/edit':
                 route.fulfill(content_type='text/html',body=FIXTURE)
+            elif request.url == 'https://baijiahao.baidu.com/materialui/video/compuploadvideo':
+                route.fulfill(content_type='application/json',body='{"error_code":0,"mediaId":"fixture-new-video"}')
+            elif request.url == 'https://baijiahao.baidu.com/pcui/video/process':
+                route.fulfill(content_type='application/json',body='{"errno":0,"data":{"status":"PUBLISHED","img_frame":["fixture-frame"]}}')
             elif request.url == 'https://baijiahao.baidu.com/pcui/picture/processproxy':
                 index = parse_qs(request.post_data)['index'][0]
                 route.fulfill(content_type='application/json', body=json.dumps({
@@ -269,6 +273,14 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertIn('text_changed=True declaration_changed=False covers_changed=False dialog_changed=False', str(captured.output))
         self.assertNotIn('private unexpected content',str(captured.output))
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+
+    def test_cover_configuration_waits_for_current_uploaded_video_processing(self):
+        self.page.context.add_init_script('window.fixtureVideoProcessingDelayed=true')
+        entered=[]
+        self.publisher.timeout=3
+        self.publisher.fill_fields=lambda *a,**kw: entered.append(self.page.evaluate('window.fixtureVideoProcessed===true'))
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(entered,[True])
 
     def test_public_result_owner_recheck_uses_current_profile_context(self):
         from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader

@@ -4,6 +4,27 @@ from pathlib import Path
 from wt_media_agent.platforms.baidu.publisher import BrowserPublisher, PlatformFormError, publication_description, image_upload_file
 
 class BrowserPublisherTests(unittest.TestCase):
+    def test_old_video_processing_cannot_confirm_the_current_upload(self):
+        from unittest.mock import MagicMock
+        adapter=BrowserPublisher();adapter.page=MagicMock()
+        adapter.page.locator.return_value.evaluate_all.return_value=['old-cover']
+        response=MagicMock();response.ok=True;response.request.method='POST'
+        response.url='https://baijiahao.baidu.com/materialui/video/compuploadvideo'
+        response.json.return_value={'error_code':0,'mediaId':'new-video'}
+        adapter._remember_video_response(response)
+        response.url='https://baijiahao.baidu.com/pcui/video/process'
+        response.json.return_value={'errno':0,'data':{'status':'PUBLISHED','img_frame':['frame']}}
+        response.request.post_data='mediaId=old-video'
+        adapter._remember_video_response(response)
+        self.assertFalse(adapter._video_processed)
+        response.request.post_data='mediaId=new-video'
+        response.json.return_value={'errno':0,'data':{'status':'RUNNING'}}
+        adapter._remember_video_response(response)
+        self.assertFalse(adapter._video_processed)
+        response.json.return_value={'errno':0,'data':{'status':'PUBLISHED','img_frame':['frame']}}
+        adapter._remember_video_response(response)
+        self.assertTrue(adapter._video_processed)
+
     def test_missing_portrait_is_rejected_before_any_page_mutation(self):
         from unittest.mock import MagicMock
         from wt_media_agent.platforms.publish import PublishPayload
