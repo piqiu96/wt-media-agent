@@ -22,7 +22,7 @@ def identity(**changes):
 
 def snapshot():
     return {'platform': 'baidu', 'platform_uid': '6572476037', 'video_sha256': 'a'*64,
-            'video_size': 16, 'cover_sha256': 'b'*64, 'cover_size': 8,
+            'video_size': 16, 'cover_sha256': 'b'*64, 'cover_size': 8, 'portrait_cover_sha256':'c'*64, 'portrait_cover_size':9,
             'content': {'description': '真实输入，不发起公开投稿', 'topics': '', 'declaration': '无需声明'}}
 
 

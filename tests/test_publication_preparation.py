@@ -41,7 +41,7 @@ def cloud_claim(replayed=False, owner='3'):
  frozen.update(profile_id='37',bit_profile_id='actual-bit-profile',bit_main_user_id='main-3',content=content)
  return {'task':{'id':'9','operator_id':owner,'platform':'baidu','current_attempt_id':'1','status':'running'},
          'attempt':{'id':'1','publication_id':'9','executor_user_id':owner,'status':'running','stage':'claimed','input_snapshot':frozen},
-         'replayed':replayed,'files':{name:{'url':'https://storage.test/'+name,'sha256':s[name+'_sha256'],'size':s[name+'_size']} for name in ('video','cover')}}
+         'replayed':replayed,'files':{name:{'url':'https://storage.test/'+name,'sha256':s[name+'_sha256'],'size':s[name+'_size']} for name in ('video','cover','portrait_cover')}}
 
 class FakeCloud:
  base_url='https://cloud.test'

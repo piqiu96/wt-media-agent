@@ -31,6 +31,7 @@ class PreparedPublication:
     video: Path
     cover: Path
     endpoint: str
+    portrait_cover: Path
 
 
 
@@ -53,7 +54,7 @@ class PublicationPreparation:
             if task['operator_id']!=user_id or attempt['executor_user_id']!=user_id or attempt['publication_id']!=task['id'] or task['current_attempt_id']!=attempt['id'] or type(value['replayed']) is not bool:
                 raise ValueError('owner/attempt differs')
             identity=ExecutionIdentity(self.cloud_env,user_id,task['id'],attempt['id'],source['bit_profile_id'])
-            snapshot={k:source[k] for k in ('platform_uid','video_sha256','video_size','cover_sha256','cover_size')}
+            snapshot={k:source[k] for k in ('platform_uid','video_sha256','video_size','cover_sha256','cover_size','portrait_cover_sha256','portrait_cover_size')}
             snapshot['platform']=task['platform'];snapshot['content']={k:source['content'][k] for k in ('description','topics','declaration')}
             fresh=self.journal.register(identity,snapshot)
         except (KeyError,TypeError,ValueError):
@@ -76,16 +77,18 @@ class PublicationPreparation:
         if profile is None or profile.main_user_id!=i['bit_main_user_id']:
             raise PublicationInputError('BitBrowser owner or Profile differs')
         grants=claim.get('files',{})
-        for name in ('video','cover'):
+        for name in ('video','cover','portrait_cover'):
             g=grants.get(name,{})
             if g.get('sha256')!=i[name+'_sha256'] or g.get('size')!=i[name+'_size']:
                 raise PublicationInputError('download grant differs from frozen input')
         folder=self.directory/identity.key.replace(':','-')
         video=folder/'video.mp4';cover=folder/'cover'
+        portrait_cover=folder/'portrait-cover'
         download_verified(grants['video'],video);download_verified(grants['cover'],cover)
+        download_verified(grants['portrait_cover'],portrait_cover)
         endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
         self._prepared.add(identity.key)
-        return PreparedPublication(identity,video,cover,endpoint)
+        return PreparedPublication(identity,video,cover,endpoint,portrait_cover)
 
     def mark_ready(self, token: str, identity: ExecutionIdentity):
         """The platform calls back only after initial live identity verification."""
@@ -97,7 +100,7 @@ class PublicationPreparation:
             feedback=self.cloud.report_publication(token,identity.task_id,PublicationReport.REPORT,{
                 'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,
                 'platform_uid':source['platform_uid'],'bit_profile_id':identity.bit_profile_id,
-                'video_sha256':source['video_sha256'],'cover_sha256':source['cover_sha256']})
+                'video_sha256':source['video_sha256'],'cover_sha256':source['cover_sha256'],'portrait_cover_sha256':source['portrait_cover_sha256']})
         if feedback.get('stop_requested') is not False:
             raise CloudExecutionStopped(feedback.get('stop_reason'))
         return feedback

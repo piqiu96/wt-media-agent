@@ -43,7 +43,7 @@ class Preparation:
     def __init__(self,journal,cloud,ident,root):
         self.journal=journal;self.cloud_env=ident.cloud_env;self.cloud=cloud;self.report_lock=RLock();self.ident=ident;self.root=root;self.fresh=True
     def prepare(self,token,value,ident):
-        return SimpleNamespace(identity=ident,video=self.root/'video',cover=self.root/'cover',endpoint='127.0.0.1:9999')
+        return SimpleNamespace(identity=ident,video=self.root/'video',cover=self.root/'cover',portrait_cover=self.root/'portrait-cover',endpoint='127.0.0.1:9999')
     def mark_ready(self, token, ident):
         from wt_media_agent.runner.publication_preparation import PublicationPreparation
         return PublicationPreparation.mark_ready(self,token,ident)

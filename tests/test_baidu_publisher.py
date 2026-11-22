@@ -4,6 +4,14 @@ from pathlib import Path
 from wt_media_agent.platforms.baidu.publisher import BrowserPublisher, PlatformFormError, publication_description, image_upload_file
 
 class BrowserPublisherTests(unittest.TestCase):
+    def test_missing_portrait_is_rejected_before_any_page_mutation(self):
+        from unittest.mock import MagicMock
+        from wt_media_agent.platforms.publish import PublishPayload
+        page=MagicMock()
+        payload=PublishPayload(Path('video.mp4'),Path('cover'),{},'uid')
+        with self.assertRaises(PlatformFormError):
+            BrowserPublisher().fill_fields(page,payload,stopped=lambda:False)
+        self.assertEqual(page.mock_calls,[])
     def test_confirmed_text_is_preserved_and_never_truncated(self):
         content={'description':'已核对的描述','topics':'#三角洲行动 #两端内容核对','declaration':'无需声明'}
         self.assertEqual(publication_description(content),'已核对的描述 #三角洲行动 #两端内容核对')

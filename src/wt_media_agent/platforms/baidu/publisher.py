@@ -49,7 +49,7 @@ def image_upload_file(source: Path) -> Path:
         suffix = '.webp'
     else:
         raise PlatformFormError('cover image type is not supported')
-    target = source.with_name('cover-upload' + suffix)
+    target = source.with_name(source.name + '-upload' + suffix)
     shutil.copyfile(source, target)
     target.chmod(0o600)
     return target
@@ -265,6 +265,8 @@ class BrowserPublisher:
                 and self.page.get_by_role('button', name='发布', exact=True).is_enabled())
 
     def fill_fields(self, page, payload, *, stopped):
+        if payload.portrait_cover is None:
+            raise PlatformFormError('confirmed portrait cover is missing')
         if self._ready or self._submitted:
             raise PlatformFormError('form preparation cannot be replayed')
         self.page, self._stopped = page, stopped
@@ -291,8 +293,8 @@ class BrowserPublisher:
         self._check()
         dialog.get_by_role('button', name='确定', exact=True).click(timeout=5000)
         self._wait(lambda: page.get_by_placeholder('请选择创作声明', exact=True).input_value() == self._declaration)
-        upload = image_upload_file(payload.cover)
-        for index in range(2):
+        for index, source in enumerate((payload.cover, payload.portrait_cover)):
+            upload = image_upload_file(source)
             self._check()
             cover_control = page.locator('[data-testid=cover-preview], [data-testid=select-cover]').nth(index)
             previous_preview = cover_control.locator('img').evaluate_all('(es) => es.map(e => e.src)')

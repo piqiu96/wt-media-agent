@@ -47,9 +47,11 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.cover=self.folder/'cover'
         self.cover.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aoykAAAAASUVORK5CYII='))
         self.cover_response=self.cover.read_bytes()
+        self.portrait_cover=self.folder/'portrait-cover'
+        self.portrait_cover.write_bytes(self.cover_response)
         self.video=self.folder/'video.mp4'
         self.video.write_bytes(b'fixture video; not a real platform upload')
-        self.payload=PublishPayload(self.video,self.cover,{'description':'确认描述','topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid')
+        self.payload=PublishPayload(self.video,self.cover,{'description':'确认描述','topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid',portrait_cover=self.portrait_cover)
         self.session=BrowserSession(self.endpoint).__enter__()
         self.addCleanup(self.session.close)
         self.page=self.session.page
@@ -462,7 +464,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def test_publication_text_is_not_treated_as_video_upload_status(self):
         self.payload=PublishPayload(self.video,self.cover,{
             'description':'上传中也能剪辑：胜率提升25%的游戏复盘',
-            'topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid')
+            'topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid',portrait_cover=self.portrait_cover)
         self.fill()
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),
                          '上传中也能剪辑：胜率提升25%的游戏复盘 #测试话题')
@@ -503,6 +505,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.page.add_init_script('window.fixtureBlankCovers=true')
         self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
         self.assertEqual(self.page.locator('[data-testid=select-cover]').count(),0)
+        self.assertEqual(self.page.evaluate('window.coverUploadNames'),['cover-upload.png','portrait-cover-upload.png'])
         self.assertEqual(self.page.locator('[data-testid=cover-preview] img').count(),2)
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)

@@ -17,6 +17,7 @@ class PublishPayload:
     cover: Path
     content: Mapping[str, Any]
     platform_uid: str
+    portrait_cover: Path | None = None
 
 
 class PublishReceipt(TypedDict):
