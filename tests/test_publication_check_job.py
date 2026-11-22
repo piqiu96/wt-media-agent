@@ -131,3 +131,45 @@ class PublicCheckJobTests(unittest.TestCase):
         value=self.cloud.observe_publication.call_args.args[2]['observation']
         self.assertEqual(value['conclusion'],'uncertain')
         self.assertNotIn('work_url',value)
+
+    def enable_api(self, result):
+        self.api=Mock();self.api.read.return_value=result
+        self.job.api_reader_factory=lambda platform:lambda profile:self.api
+        self.bit.is_profile_closed.return_value=True
+    def test_api_missing_does_not_open_browser_and_reports_precise_lookup(self):
+        self.enable_api(PublicWorkObservation('uncertain','原账号内容列表未找到指定投稿','原账号身份和列表接口分页均完成，暂未找到指定投稿',lookup_result='not_found'))
+        self.job.tick('token','9',current=lambda:True)
+        self.bit.open_profile_for_check.assert_not_called()
+        report=self.cloud.observe_publication.call_args.args[2]
+        self.assertEqual(report['lookup_result'],'not_found')
+        self.assertTrue(report['observation']['evidence']['scene_closed'])
+    def test_successful_pending_api_never_opens_browser(self):
+        self.enable_api(PublicWorkObservation('reviewing','等待审核','原账号与原投稿ID通过列表API核验，等待公开证据','1882371730190912814',TARGET,lookup_result='found'))
+        self.job.tick('token','9',current=lambda:True)
+        self.bit.open_profile_for_check.assert_not_called()
+        self.assertEqual(self.cloud.observe_publication.call_args.args[2]['lookup_result'],'found')
+    def test_fallback_uses_owned_browser_and_records_usage(self):
+        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
+        self.enable_api(None);self.api.read.side_effect=BrowserReadRequired()
+        self.job.tick('token','9',current=lambda:True)
+        self.bit.open_profile_for_check.assert_called_once()
+        self.assertTrue(self.cloud.observe_publication.call_args.args[2]['browser_used'])
+    def test_used_fallback_does_not_reopen_after_restart(self):
+        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
+        self.enable_api(None);self.api.read.side_effect=BrowserReadRequired()
+        self.claim['browser_fallback_allowed']=False
+        self.job.tick('token','9',current=lambda:True)
+        self.bit.open_profile_for_check.assert_not_called()
+        self.assertEqual(self.cloud.observe_publication.call_args.args[2]['lookup_result'],'blocked')
+    def test_temporary_native_network_failure_does_not_open_fallback_or_count_missing(self):
+        from wt_media_agent.services.browser.http import ProfileHttpError
+        self.enable_api(None);self.api.read.side_effect=ProfileHttpError('sensitive transport details')
+        self.job.tick('token','9',current=lambda:True)
+        self.bit.open_profile_for_check.assert_not_called()
+        report=self.cloud.observe_publication.call_args.args[2]
+        self.assertNotIn('lookup_result',report)
+        self.assertNotIn('sensitive',str(report))
+    def test_already_published_claim_is_rejected_without_browser(self):
+        self.claim['task']['status']='published'
+        with self.assertRaises(ValueError):self.job.tick('token','9',current=lambda:True)
+        self.bit.open_profile_for_check.assert_not_called()

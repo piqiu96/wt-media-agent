@@ -102,7 +102,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
                 route.fulfill(content_type='text/html',body=body)
             elif urlsplit(request.url).hostname=='baijiahao.baidu.com' and urlsplit(request.url).path=='/pcui/article/lists':
                 number=int(parse_qs(urlsplit(request.url).query)['currentPage'][0]);list_visits.append(number)
-                records=[{'article_id':parse_qs(urlsplit(link).query)['id'][0]} for link in list_pages[number-1]]+[{'article_id':value} for value in nonpreview_ids]
+                records=[{'article_id':parse_qs(urlsplit(link).query)['id'][0],'url':link} for link in list_pages[number-1]]+[{'article_id':value} for value in nonpreview_ids]
                 route.fulfill(content_type='application/json',body=json.dumps({'errno':0,'data':{'list':records,'page':{'currentPage':(page_number_override or {}).get(number,number),'pageSize':10,'totalPage':len(list_pages),'totalCount':sum(map(len,list_pages))}}}))
             elif request.url==target:
                 self.external.append(request.url);route.abort()
@@ -147,14 +147,14 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         with patch.object(browser,'new_context',side_effect=anonymous_context), patch.object(page,'goto',side_effect=navigate):
             result=reader.read(PublicationReference('fixture-uid','1882371730190912814',dict(self.payload.content)),current=lambda:True)
         if result.conclusion=='uncertain':
-            self.assertEqual(navigations,['https://baijiahao.baidu.com/builder/rc/content'])
+            self.assertEqual(navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
             self.assertEqual(visits,[])
             self.assertEqual(len(contexts),0)
             self.assertEqual(result.work_id,'')
             self.assertEqual(result.work_url,'')
             self.assertIsNone(result.published_at)
         else:
-            self.assertEqual(navigations,['https://baijiahao.baidu.com/builder/rc/content',target])
+            self.assertEqual(navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10',target])
             self.assertEqual(visits,[True,False])
             self.assertEqual(result.target_url,target)
         self.assertEqual(len(browser.contexts),1)
@@ -200,7 +200,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(result.reason,'原账号内容列表未找到指定投稿')
         self.assertIn('不能据此认定投稿失败',result.basis)
         self.assertEqual(self.public_check_list_visits,[1,2])
-        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/builder/rc/content'])
+        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
         self.assertEqual(self.external,[])
 
     def test_repeated_page_number_does_not_loop_or_register_another_work(self):
@@ -210,7 +210,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         with self.assertRaises(PublicationInputError):
             self.check_public_reference(anonymous_public=True,list_pages=[[other],[target]],page_number_override={2:1})
         self.assertEqual(self.public_check_list_visits,[1,2])
-        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/builder/rc/content'])
+        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
         self.assertEqual(self.external,[])
 
     def test_authenticated_preview_with_anonymous_login_refusal_stays_reviewing(self):

@@ -55,6 +55,7 @@ class PublicWorkObservation:
     work_id: str = ''
     work_url: str = ''
     published_at: datetime | None = None
+    lookup_result: str = ""
 
 
 class Publisher(Protocol):

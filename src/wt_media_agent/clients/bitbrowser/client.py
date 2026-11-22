@@ -264,6 +264,16 @@ class BitBrowserClient:
             )
         return data
 
+    def read_request_environment(self, profile_id: str) -> dict[str, object]:
+        """Sensitive local-only settings; caller must not log or persist the result."""
+        data = self._read_profile_runtime_fields(profile_id)
+        keys = ('proxyType', 'proxyMethod', 'host', 'port', 'proxyUserName', 'proxyPassword', 'browserFingerPrint', 'cookie')
+        return {key: data.get(key) for key in keys}
+
+    def is_profile_closed(self, profile_id: str) -> bool:
+        ports = self._check_success(self._post('/browser/ports', {'ids': [profile_id]}))
+        return not bool(ports.get(profile_id))
+
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None:
         """Update an existing browser profile.
 
