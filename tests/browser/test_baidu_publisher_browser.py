@@ -63,6 +63,12 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
                 route.fulfill(content_type='text/html',body=self.home)
             elif request.url=='https://baijiahao.baidu.com/builder/rc/edit':
                 route.fulfill(content_type='text/html',body=FIXTURE)
+            elif request.url == 'https://baijiahao.baidu.com/pcui/picture/processproxy':
+                index = parse_qs(request.post_data)['index'][0]
+                route.fulfill(content_type='application/json', body=json.dumps({
+                    'errno': 0, 'ret': {'url': 'https://baijiahao.baidu.com/fixture-cover/' + index}}))
+            elif request.url == 'https://baijiahao.baidu.com/fixture-recommendation':
+                route.fulfill(content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="gray"/></svg>')
             elif request.url.startswith('https://baijiahao.baidu.com/fixture-cover/'):
                 route.fulfill(content_type='image/png',body=self.cover_response)
             elif request.url=='https://baijiahao.baidu.com/pcui/article/publish?type=video' and request.method=='POST':
@@ -264,6 +270,24 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertNotIn('private unexpected content',str(captured.output))
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
 
+    def test_identity_recheck_reuses_active_browser_context_and_closes_own_tab(self):
+        from wt_media_agent.platforms.baidu.identity import read_baidu_identity
+        context = self.page.context
+        context.route('https://image.baidu.com/user/logininfo?**', lambda route: route.fulfill(
+            content_type='application/json', body='{"data":{"user":{"user_id":6572476037}}}'))
+        before = len(context.pages)
+        self.assertEqual(read_baidu_identity(self.endpoint, browser_context=context),
+                         {'login_status':'normal', 'platform_account_id':'6572476037'})
+        self.assertEqual(len(context.pages), before)
+        self.assertFalse(self.page.is_closed())
+
+    def test_recommended_image_is_not_frozen_before_selected_cover_arrives(self):
+        self.page.evaluate('window.fixtureIntermediateRecommendation=true')
+        self.fill()
+        self.assertTrue(all('/fixture-cover/' in source for source in self.publisher._covers))
+        self.publisher.submit()
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 1)
+
     def test_temporary_cover_preview_is_not_frozen_before_platform_upload_finishes(self):
         self.fill()
         self.assertTrue(all(value.startswith('https://') for value in self.publisher._covers))
@@ -284,6 +308,32 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.publisher.submit()
         self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
         self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
+    def test_observed_http_cover_preview_preserves_confirmed_image(self):
+        self.publisher.timeout = 2
+        self.fill()
+        self.page.route('http://baijiahao.baidu.com/fixture-cover/*',
+                        lambda route: route.fulfill(content_type='image/png', body=self.cover_response))
+        self.page.locator('[data-testid=cover-preview] img').first.evaluate(
+            "e=>e.src='http://baijiahao.baidu.com/fixture-cover/0?http-preview=1'")
+        self.page.wait_for_function("document.querySelector('[data-testid=cover-preview] img').complete")
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt(), {'platform_work_id': '1862233438702758904'})
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 1)
+
+    def test_http_dom_cover_matches_exact_browser_upgraded_response(self):
+        self.publisher.timeout = 2
+        self.fill()
+        self.page.route('http://baijiahao.baidu.com/fixture-cover/*',
+                        lambda route: route.fulfill(status=302, headers={
+                            'location': route.request.url.replace('http:', 'https:', 1)}))
+        self.page.locator('[data-testid=cover-preview] img').first.evaluate(
+            "e=>e.src='http://baijiahao.baidu.com/fixture-cover/0?upgraded=1'")
+        self.page.wait_for_function("document.querySelector('[data-testid=cover-preview] img').complete")
+        self.publisher._image_responses = {key: value for key, value in
+            self.publisher._image_responses.items() if not key.startswith('http:')}
+        self.publisher.submit()
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 1)
 
     def test_changed_cover_bytes_never_submit_even_when_the_url_is_unchanged(self):
         self.fill()

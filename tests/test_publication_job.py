@@ -67,7 +67,7 @@ class Platform:
 
 
 class Session:
-    def __init__(self, endpoint): self.page=object(); self.disconnected=False
+    def __init__(self, endpoint): self.page=SimpleNamespace(context=object()); self.disconnected=False
     def __enter__(self): return self
     def __exit__(self, *_): self.disconnected=True
 
