@@ -96,6 +96,9 @@ class PublicationCheckJob:
                                 '本机接口仍不可用，原任务已经尝试过浏览器接口兜底，不再反复打开窗口', lookup_result='blocked')
                             needs_browser = False
                 if needs_browser:
+                    # Opening a new scene invalidates the earlier absence check,
+                    # including when the open or close reply is lost.
+                    closed = False
                     try:
                         endpoint = self.bitbrowser.open_profile_for_check(profile_id)
                         browser_used = True

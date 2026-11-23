@@ -154,6 +154,31 @@ class PublicCheckJobTests(unittest.TestCase):
         self.job.tick('token','9',current=lambda:True)
         self.bit.open_profile_for_check.assert_called_once()
         self.assertTrue(self.cloud.observe_publication.call_args.args[2]['browser_used'])
+
+    def test_api_fallback_close_failure_cannot_reuse_prior_closed_evidence(self):
+        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
+        from wt_media_agent.clients.bitbrowser.errors import BitBrowserUnavailableError
+        for error in (BitBrowserUnavailableError('private close failure'), TimeoutError('private timeout')):
+            with self.subTest(error=type(error).__name__):
+                self.enable_api(None)
+                self.api.read.side_effect = BrowserReadRequired()
+                self.bit.close_profile_verified.side_effect = error
+                self.job.tick('token', '9', current=lambda: True)
+                value = self.cloud.observe_publication.call_args.args[2]['observation']
+                self.assertEqual(value['conclusion'], 'uncertain')
+                self.assertFalse(value['evidence']['scene_closed'])
+                self.assertNotIn('work_url', value)
+
+    def test_api_fallback_open_failure_invalidates_prior_closed_evidence(self):
+        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
+        self.enable_api(None)
+        self.api.read.side_effect = BrowserReadRequired()
+        self.bit.open_profile_for_check.side_effect = TimeoutError('open reply lost')
+        self.job.tick('token', '9', current=lambda: True)
+        value = self.cloud.observe_publication.call_args.args[2]['observation']
+        self.assertEqual(value['conclusion'], 'uncertain')
+        self.assertFalse(value['evidence']['scene_closed'])
+        self.bit.close_profile_verified.assert_not_called()
     def test_used_fallback_does_not_reopen_after_restart(self):
         from wt_media_agent.clients.baidu.publication import BrowserReadRequired
         self.enable_api(None);self.api.read.side_effect=BrowserReadRequired()
