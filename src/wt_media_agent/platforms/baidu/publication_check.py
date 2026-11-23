@@ -1,46 +1,15 @@
 """Read one exact original Baidu submission; never upload, edit or submit."""
 from datetime import datetime, timezone
 from math import isfinite
-from urllib.parse import parse_qs, urlsplit
 
-from wt_media_agent.platforms.baidu.publisher import publication_description
+from wt_media_agent.platforms.baidu.content import publication_description
+from wt_media_agent.clients.baidu.publication import (
+    is_submission_id, is_exact_target_url, read_public_work_id, observed_target,
+    find_submission, list_url,
+)
 from wt_media_agent.platforms.baidu.identity import read_baidu_identity
 from wt_media_agent.platforms.publish import PublicationInputError, PublicationReference, PublicWorkObservation
 from wt_media_agent.services.browser.session import BrowserSession
-
-
-def _decimal(value):
-    return (isinstance(value, str) and 0 < len(value) <= 255
-            and value.isascii() and value.isdecimal() and value[0] != '0')
-
-
-def is_exact_target_url(submission_id, raw):
-    if not _decimal(submission_id) or not isinstance(raw, str) or len(raw) > 2048:
-        return False
-    try:
-        parsed = urlsplit(raw)
-        return (parsed.scheme == 'https' and parsed.netloc == 'baijiahao.baidu.com'
-                and parsed.path == '/builder/preview/s' and not parsed.fragment
-                and parse_qs(parsed.query, keep_blank_values=True) == {'id': [submission_id]})
-    except ValueError:
-        return False
-
-
-def read_public_work_id(raw):
-    if not isinstance(raw, str) or len(raw) > 2048:
-        return ''
-    try:
-        parsed = urlsplit(raw)
-        query = parse_qs(parsed.query, keep_blank_values=True)
-        if (parsed.scheme != 'https' or parsed.netloc != 'mbd.baidu.com'
-                or parsed.path != '/newspage/data/videolanding' or parsed.fragment
-                or set(query) != {'nid'} or len(query['nid']) != 1):
-            return ''
-        nid = query['nid'][0]
-        value = nid[3:] if nid.startswith('sv_') else ''
-        return value if _decimal(value) else ''
-    except ValueError:
-        return ''
 
 
 def verify_public_metadata(work_url, expected_description, metadata, *, now):
@@ -107,8 +76,6 @@ class BaiduPublicationReader:
             raise PublicationInputError('publication check live account differs')
 
     def _locate_target(self, page, reference, current):
-        from wt_media_agent.clients.baidu.publication import find_submission, list_url
-        from wt_media_agent.platforms.baidu.publication_api import observed_target
         if reference.target_url:
             if not is_exact_target_url(reference.submission_id, reference.target_url):
                 raise PublicationInputError('original target differs from receipt')
@@ -154,7 +121,7 @@ class BaiduPublicationReader:
             anonymous.close()
 
     def read(self, reference, *, current):
-        if not _decimal(reference.submission_id):
+        if not is_submission_id(reference.submission_id):
             raise PublicationInputError('original submission identity is missing')
         description = publication_description(reference.content)
         self._verify_owner(reference, current)

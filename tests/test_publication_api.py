@@ -1,9 +1,27 @@
 import unittest
 from unittest.mock import Mock
 from wt_media_agent.services.browser.http import ProfileHttpSession, ProfileHttpError, profile_proxy
-from wt_media_agent.clients.baidu.publication import find_submission, BrowserReadRequired
+from wt_media_agent.clients.baidu.publication import BaiduPublicationClient, find_submission, BrowserReadRequired
 
 class PublicationApiTests(unittest.TestCase):
+ def test_profile_http_accepts_explicit_non_baidu_scope(self):
+  session=Mock();factory=Mock(return_value=session)
+  session.get.return_value.content=b'{}';session.get.return_value.status_code=200
+  session.get.return_value.json.return_value={'ok':True}
+  env={'proxyType':'noproxy','browserFingerPrint':{'userAgent':'ProfileAgent'},'cookie':[
+   {'name':'owned','value':'yes','domain':'.example.test'},
+   {'name':'foreign','value':'no','domain':'.baidu.com'},
+   {'name':'expired','value':'no','domain':'.example.test','expires':1}]}
+  client=ProfileHttpSession(env,allowed_endpoints={('api.example.test','/read')},
+   cookie_domains={'example.test'},headers={'Referer':'https://example.test/'},session_factory=factory)
+  self.assertEqual(client.get_json('https://api.example.test/read')['json'],{'ok':True})
+  session.cookies.set.assert_called_once_with('owned','yes',domain='.example.test',path='/')
+  self.assertEqual(session.get.call_args.kwargs['headers']['Referer'],'https://example.test/')
+  for url in ['https://api.example.test/other','https://api.example.test.evil/read',
+              'http://api.example.test/read','https://api.example.test/read#fragment',
+              'https://user@api.example.test/read']:
+   with self.subTest(url=url),self.assertRaises(ProfileHttpError):client.get_json(url)
+  self.assertEqual(session.get.call_count,1)
  def test_proxy_is_explicit_and_socks_resolves_remotely(self):
   self.assertEqual(profile_proxy({'proxyType':'socks5','host':'127.0.0.1','port':1080,'proxyUserName':'a@b','proxyPassword':'p:x'}),'socks5h://a%40b:p%3Ax@127.0.0.1:1080')
   self.assertIsNone(profile_proxy({'proxyType':'noproxy'}))
@@ -26,7 +44,7 @@ class PublicationApiTests(unittest.TestCase):
   session=Mock();factory=Mock(return_value=session)
   response=session.get.return_value;response.status_code=200;response.content=b'{}';response.json.return_value={'errno':0}
   env={'proxyType':'http','host':'proxy.example','port':8080,'proxyUserName':'name','proxyPassword':'secret','browserFingerPrint':{'userAgent':'ProfileAgent'},'cookie':[{'name':'BDUSS','value':'private','domain':'.baidu.com'}]}
-  client=ProfileHttpSession(env,session_factory=factory)
+  client=BaiduPublicationClient(env,session_factory=lambda config,**policy:ProfileHttpSession(config,session_factory=factory,**policy)).session
   client.get_json('https://baijiahao.baidu.com/pcui/article/lists?currentPage=1')
   factory.assert_called_once_with(trust_env=False)
   options=session.get.call_args.kwargs
@@ -37,7 +55,7 @@ class PublicationApiTests(unittest.TestCase):
   with self.assertRaises(ProfileHttpError):client.get_json('https://baijiahao.baidu.com.evil.test/pcui/article/lists')
  def test_missing_proxy_details_never_fall_back_to_direct(self):
   factory=Mock()
-  with self.assertRaises(ProfileHttpError):ProfileHttpSession({'proxyType':'http','host':'','browserFingerPrint':{'userAgent':'Agent'}},session_factory=factory)
+  with self.assertRaises(ProfileHttpError):ProfileHttpSession({'proxyType':'http','host':'','browserFingerPrint':{'userAgent':'Agent'}},allowed_endpoints=set(),cookie_domains=set(),session_factory=factory)
   factory.assert_not_called()
  def test_native_reader_matches_original_uid_and_requires_real_public_proof(self):
   from wt_media_agent.platforms.baidu.publication_api import BaiduPublicationApiReader
@@ -47,7 +65,7 @@ class PublicationApiTests(unittest.TestCase):
   row={'article_id':reference.submission_id,'url':'http://baijiahao.baidu.com/builder/preview/s?id='+reference.submission_id,'status':'review','is_published':0}
   listing={'status':200,'json':{'errno':0,'data':{'page':{'currentPage':1,'totalPage':1},'list':[row]}}}
   session=Mock();session.get_json.side_effect=[identity,listing]
-  reader=BaiduPublicationApiReader({},session_factory=lambda env:session)
+  reader=BaiduPublicationApiReader({},client_factory=lambda env:BaiduPublicationClient(env,session_factory=lambda config,**policy:session))
   result=reader.read(reference,current=lambda:True)
   self.assertEqual(result.conclusion,'reviewing');self.assertEqual(result.lookup_result,'found')
   self.assertTrue(result.target_url.startswith('https:'))
@@ -58,6 +76,6 @@ class PublicationApiTests(unittest.TestCase):
  def test_native_reader_foreign_uid_stops_before_querying_list(self):
   from wt_media_agent.platforms.baidu.publication_api import BaiduPublicationApiReader
   from wt_media_agent.platforms.publish import PublicationReference
-  session=Mock();session.get_json.return_value={'status':200,'json':{'data':{'user':{'user_id':'foreign'}}}}
-  result=BaiduPublicationApiReader({},session_factory=lambda env:session).read(PublicationReference('original','123',{}),current=lambda:True)
+  session=Mock();session.get_json.return_value={'status':200,'json':{'data':{'user':{'user_id':'10'}}}}
+  result=BaiduPublicationApiReader({},client_factory=lambda env:BaiduPublicationClient(env,session_factory=lambda config,**policy:session)).read(PublicationReference('9','123',{}),current=lambda:True)
   self.assertEqual(result.lookup_result,'blocked');session.get_json.assert_called_once()

@@ -1,6 +1,29 @@
-"""Read only the observed Baidu content-list API; never manufacture URLs."""
-from urllib.parse import urlencode
+"""Read-only Baidu publication protocol, request scope and observed links."""
+from urllib.parse import urlencode, parse_qs, urlsplit, urlunsplit
 import time
+
+from wt_media_agent.clients.baidu.identity import read_identity
+from wt_media_agent.services.browser.http import ProfileHttpSession
+
+
+class BaiduPublicationClient:
+    """Read-only Baidu protocol and request scope; no task or browser lifecycle."""
+    def __init__(self, environment, *, session_factory=ProfileHttpSession):
+        self.session = session_factory(environment,
+            allowed_endpoints={('baijiahao.baidu.com', '/pcui/article/lists'),
+                               ('image.baidu.com', '/user/logininfo')},
+            cookie_domains={'baidu.com'},
+            headers={'Referer': 'https://baijiahao.baidu.com/builder/rc/content'})
+
+    def read_identity(self):
+        return read_identity(self.session.get_json)
+
+    def find_submission(self, submission_id, *, current):
+        return find_submission(self.session.get_json, submission_id, current=current)
+
+    def close(self):
+        self.session.close()
+
 
 class BrowserReadRequired(RuntimeError):
     def __init__(self, reason='api'):
@@ -44,3 +67,50 @@ def find_submission(fetch, submission_id, *, current):
             return None
         number += 1
     raise ValueError('publication identity changed')
+
+
+def is_submission_id(value):
+    return (isinstance(value, str) and 0 < len(value) <= 255
+            and value.isascii() and value.isdecimal() and value[0] != '0')
+
+
+def is_exact_target_url(submission_id, raw):
+    if not is_submission_id(submission_id) or not isinstance(raw, str) or len(raw) > 2048:
+        return False
+    try:
+        parsed = urlsplit(raw)
+        return (parsed.scheme == 'https' and parsed.netloc == 'baijiahao.baidu.com'
+                and parsed.path == '/builder/preview/s' and not parsed.fragment
+                and parse_qs(parsed.query, keep_blank_values=True) == {'id': [submission_id]})
+    except ValueError:
+        return False
+
+
+def read_public_work_id(raw):
+    if not isinstance(raw, str) or len(raw) > 2048:
+        return ''
+    try:
+        parsed = urlsplit(raw)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if (parsed.scheme != 'https' or parsed.netloc != 'mbd.baidu.com'
+                or parsed.path != '/newspage/data/videolanding' or parsed.fragment
+                or set(query) != {'nid'} or len(query['nid']) != 1):
+            return ''
+        nid = query['nid'][0]
+        value = nid[3:] if nid.startswith('sv_') else ''
+        return value if is_submission_id(value) else ''
+    except ValueError:
+        return ''
+
+
+def observed_target(submission_id, raw):
+    if not isinstance(raw, str):
+        return ''
+    try:
+        parsed = urlsplit(raw)
+        if parsed.scheme not in {'http', 'https'}:
+            return ''
+        upgraded = urlunsplit(('https', parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+        return upgraded if is_exact_target_url(submission_id, upgraded) else ''
+    except ValueError:
+        return ''

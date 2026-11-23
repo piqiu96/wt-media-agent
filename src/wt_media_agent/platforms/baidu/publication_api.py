@@ -1,46 +1,30 @@
 """API-first original-submission lookup using the account's local HTTP environment."""
-import time
-from urllib.parse import urlsplit, urlunsplit
-from wt_media_agent.clients.baidu.publication import find_submission, BrowserReadRequired
-from wt_media_agent.services.browser.http import ProfileHttpSession, ProfileHttpError
+from wt_media_agent.clients.baidu.publication import BaiduPublicationClient, BrowserReadRequired, observed_target
+from wt_media_agent.services.browser.http import ProfileHttpError
 from wt_media_agent.platforms.publish import PublicWorkObservation, PublicationInputError
-from wt_media_agent.platforms.baidu.publication_check import is_exact_target_url
 
-
-def observed_target(submission_id, raw):
-    if not isinstance(raw, str):
-        return ''
-    try:
-        parsed = urlsplit(raw)
-        if parsed.scheme not in {'http', 'https'}:
-            return ''
-        upgraded = urlunsplit(('https', parsed.netloc, parsed.path, parsed.query, parsed.fragment))
-        return upgraded if is_exact_target_url(submission_id, upgraded) else ''
-    except ValueError:
-        return ''
 
 class BaiduPublicationApiReader:
-    def __init__(self, environment, *, session_factory=ProfileHttpSession):
+    def __init__(self, environment, *, client_factory=BaiduPublicationClient):
         self.environment = environment
-        self.session_factory = session_factory
+        self.client_factory = client_factory
 
     def read(self, reference, *, current):
         try:
-            session = self.session_factory(self.environment)
+            client = self.client_factory(self.environment)
         except ProfileHttpError:
             raise BrowserReadRequired() from None
         try:
             if not current():
                 raise PublicationInputError('publication identity changed')
-            identity = session.get_json('https://image.baidu.com/user/logininfo?time=' + str(int(time.time()*1000)) + '&src=pc&page=index')
-            value = identity.get('json') or {}
-            uid = str(((value.get('data') or {}).get('user') or {}).get('user_id') or '')
-            if identity.get('status') != 200 or not uid:
+            identity = client.read_identity()
+            if identity['login_status'] != 'normal':
                 raise BrowserReadRequired()
+            uid = identity['platform_account_id']
             if uid != reference.platform_uid:
                 return PublicWorkObservation('uncertain', '账号身份不一致，请核对原账号',
                     '当前登录态与原投稿账号UID不一致，停止自动核验，不上传或重新投稿', lookup_result='blocked')
-            row = find_submission(session.get_json, reference.submission_id, current=current)
+            row = client.find_submission(reference.submission_id, current=current)
             if not current():
                 raise PublicationInputError('publication identity changed')
             if row is None:
@@ -55,4 +39,4 @@ class BaiduPublicationApiReader:
                 '原账号UID及列表接口原投稿ID匹配，公开媒体和实际发布时间尚待完整核验',
                 reference.submission_id, target or reference.target_url, lookup_result='found')
         finally:
-            session.close()
+            client.close()

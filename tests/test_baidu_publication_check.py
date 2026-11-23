@@ -1,9 +1,8 @@
 """Public-work proof checks use fixtures, never claim platform acceptance."""
 from datetime import datetime,timezone
 import unittest
-from wt_media_agent.platforms.baidu.publication_check import (
-    is_exact_target_url, read_public_work_id, verify_public_metadata,
-)
+from wt_media_agent.clients.baidu.publication import is_exact_target_url, read_public_work_id
+from wt_media_agent.platforms.baidu.publication_check import verify_public_metadata
 
 TARGET='https://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
 PUBLIC='https://mbd.baidu.com/newspage/data/videolanding?nid=sv_7000395122085014122'

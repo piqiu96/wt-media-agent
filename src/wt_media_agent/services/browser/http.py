@@ -25,7 +25,9 @@ def profile_proxy(config):
     return f'{schemes[kind]}://{auth}{host}:{port}'
 
 class ProfileHttpSession:
-    def __init__(self, config, *, session_factory=None):
+    def __init__(self, config, *, allowed_endpoints, cookie_domains, headers=None, session_factory=None):
+        self.allowed_endpoints = frozenset(allowed_endpoints)
+        self.cookie_domains = frozenset(cookie_domains)
         proxy = profile_proxy(config)
         fingerprint = config.get('browserFingerPrint') or {}
         ua = fingerprint.get('userAgent')
@@ -44,8 +46,8 @@ class ProfileHttpSession:
             session_factory = Session
         self.session = session_factory(trust_env=False)
         self.proxy = proxy
-        self.headers = {'User-Agent': ua, 'Accept': 'application/json, text/plain, */*',
-                        'Referer': 'https://baijiahao.baidu.com/builder/rc/content'}
+        self.headers = {'Accept': 'application/json, text/plain, */*',
+                        **(headers or {}), 'User-Agent': ua}
         chrome = re.search(r'Chrome/(\d+)', ua)
         if chrome:
             major = chrome.group(1)
@@ -63,15 +65,14 @@ class ProfileHttpSession:
             if isinstance(expires, (int, float)) and expires > 0 and expires <= time.time():
                 continue
             domain = str(cookie.get('domain', '')).lstrip('.')
-            if domain != 'baidu.com' and not domain.endswith('.baidu.com'):
+            if not any(domain == root or domain.endswith('.' + root) for root in self.cookie_domains):
                 continue
             if cookie.get('name') and isinstance(cookie.get('value'), str):
                 self.session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'], path=cookie.get('path') or '/')
 
     def get_json(self, url):
         parsed = urlsplit(url)
-        allowed = {('baijiahao.baidu.com', '/pcui/article/lists'), ('image.baidu.com', '/user/logininfo')}
-        if parsed.scheme != 'https' or (parsed.netloc, parsed.path) not in allowed or parsed.fragment or parsed.username:
+        if parsed.scheme != 'https' or (parsed.netloc, parsed.path) not in self.allowed_endpoints or parsed.fragment or parsed.username:
             raise ProfileHttpError('unexpected platform endpoint')
         try:
             response = self.session.get(url, headers=self.headers, proxy=self.proxy, impersonate='chrome',
