@@ -14,6 +14,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 from typing import Optional, Protocol
 from urllib import parse as urlparse
@@ -1071,6 +1072,18 @@ def _answer_sigterm(httpd: ThreadingHTTPServer) -> object:
     return signal.signal(signal.SIGTERM, request_stop)
 
 
+
+class LocalAgentHTTPServer(ThreadingHTTPServer):
+    """Bind the local API without HTTPServer's synchronous reverse DNS lookup."""
+
+    def server_bind(self):
+        # The API uses its configured loopback address, not a DNS host name.
+        # getfqdn() can block for tens of seconds inside a frozen macOS Agent,
+        # longer than Desktop's startup deadline, before it starts listening.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
@@ -1100,7 +1113,7 @@ def serve(
         cloud_base_url=cloud_base_url,
         profile_operations=profile_operations,
     )
-    httpd = ThreadingHTTPServer((host, port), make_handler(api))
+    httpd = LocalAgentHTTPServer((host, port), make_handler(api))
     # **One line, and without it the join below is a no-op.** `ThreadingMixIn`
     # tracks a request thread so `server_close()` can join it, but its tracker
     # refuses daemon threads -- `_Threads.append` returns early `if thread.daemon`
