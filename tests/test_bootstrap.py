@@ -31,6 +31,7 @@ from support import LoggingStateTestCase, UnusedBitBrowser
 from wt_media_agent.bootstrap import cloud as cloud_mode
 from wt_media_agent.bootstrap.app import build_components
 from wt_media_agent.local_api.server import LocalApiServer, make_handler
+from wt_media_agent.local_api.publication_run import publication_run_response
 from wt_media_agent.runtime.config import load_config
 from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 
@@ -246,6 +247,24 @@ class ModeSurfaceWiringTests(ComponentTestCase):
                 )
 
                 loops.assert_called_once_with(components)
+
+    def test_both_api_modes_reach_the_original_publication_scene_checks(self):
+        for name in ("sidecar", "local"):
+            components, serve, _ = self._drive(
+                self._mode(name), WT_MEDIA_AGENT_RUN_RUNNER="true"
+            )
+            job = serve.call_args.kwargs.get("publication_job")
+            for operation in ("scene", "resume"):
+                with self.subTest(mode=name, operation=operation):
+                    status, payload = publication_run_response(
+                        job, "test-token", "9", "34", operation,
+                        {"publication_id": "11", "expected_revision": "7"},
+                    )
+                    # A configured executor must check the original scene and
+                    # refuse its absence, rather than report missing execution.
+                    self.assertEqual(status, 409)
+                    self.assertEqual(payload["error"]["code"], "publication_scene_unavailable")
+                    self.assertIs(job, components.publications.job)
 
     def test_neither_api_mode_starts_a_loop_unless_it_was_asked_to(self):
         """Paired control: the switch is what decides, so the arms above mean something."""
