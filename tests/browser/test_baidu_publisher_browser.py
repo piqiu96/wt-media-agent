@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from wt_media_agent.platforms.baidu.publisher import BrowserPublisher, PlatformFormError
 from wt_media_agent.platforms.publish import PublishPayload
@@ -46,9 +47,11 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.cover=self.folder/'cover'
         self.cover.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aoykAAAAASUVORK5CYII='))
         self.cover_response=self.cover.read_bytes()
+        self.portrait_cover=self.folder/'portrait-cover'
+        self.portrait_cover.write_bytes(self.cover_response)
         self.video=self.folder/'video.mp4'
         self.video.write_bytes(b'fixture video; not a real platform upload')
-        self.payload=PublishPayload(self.video,self.cover,{'description':'确认描述','topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid')
+        self.payload=PublishPayload(self.video,self.cover,{'description':'确认描述','topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid',portrait_cover=self.portrait_cover)
         self.session=BrowserSession(self.endpoint).__enter__()
         self.addCleanup(self.session.close)
         self.page=self.session.page
@@ -60,6 +63,16 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
                 route.fulfill(content_type='text/html',body=self.home)
             elif request.url=='https://baijiahao.baidu.com/builder/rc/edit':
                 route.fulfill(content_type='text/html',body=FIXTURE)
+            elif request.url == 'https://baijiahao.baidu.com/materialui/video/compuploadvideo':
+                route.fulfill(content_type='application/json',body='{"error_code":0,"mediaId":"fixture-new-video"}')
+            elif request.url == 'https://baijiahao.baidu.com/pcui/video/process':
+                route.fulfill(content_type='application/json',body='{"errno":0,"data":{"status":"PUBLISHED","img_frame":["fixture-frame"]}}')
+            elif request.url == 'https://baijiahao.baidu.com/pcui/picture/processproxy':
+                index = parse_qs(request.post_data)['index'][0]
+                route.fulfill(content_type='application/json', body=json.dumps({
+                    'errno': 0, 'ret': {'url': 'https://baijiahao.baidu.com/fixture-cover/' + index}}))
+            elif request.url == 'https://baijiahao.baidu.com/fixture-recommendation':
+                route.fulfill(content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="gray"/></svg>')
             elif request.url.startswith('https://baijiahao.baidu.com/fixture-cover/'):
                 route.fulfill(content_type='image/png',body=self.cover_response)
             elif request.url=='https://baijiahao.baidu.com/pcui/article/publish?type=video' and request.method=='POST':
@@ -74,6 +87,170 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
 
     def fill(self):
         self.publisher.fill_fields(self.page,self.payload,stopped=lambda:False)
+
+    def check_public_reference(self, *, anonymous_public, link_scheme="https", decoy_links=(), list_pages=None, page_number_override=None, nonpreview_ids=()):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
+        from wt_media_agent.platforms.publication_check import PublicationCheckControl
+        from wt_media_agent.services.browser.http import ProfileHttpError
+        from contextlib import nullcontext
+        from wt_media_agent.platforms.publication_check import PublicationReference
+        import shutil
+        encoder=shutil.which('ffmpeg')
+        self.assertIsNotNone(encoder,'ffmpeg is required for real isolated media checks')
+        video=self.folder/'public-proof.mp4'
+        subprocess.run([encoder,'-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=black:s=32x32:d=1',
+                        '-c:v','libx264','-pix_fmt','yuv420p','-movflags','faststart',str(video)],check=True)
+        media=video.read_bytes()
+        target='https://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        public='https://mbd.baidu.com/newspage/data/videolanding?nid=sv_7000395122085014122'
+        media_url='https://mbd.baidu.com/fixture/public-proof.mp4'
+        visits=[]
+        list_pages=list_pages or [[target.replace('https:',link_scheme+':',1)]]
+        list_visits=[]
+        self.public_check_list_visits=list_visits
+        def fixture(route):
+            request=route.request
+            if request.url=='https://baijiahao.baidu.com/builder/rc/content':
+                body='<meta charset="utf-8"><div id="list"></div><ul><li class="cheetah-pagination-item-active" title="1"></li><li class="cheetah-pagination-next" title="下一页" aria-disabled="false"><button onclick="load(current+1)">下一页</button></li></ul><script>const pages='+json.dumps(list_pages)+';const decoys='+json.dumps(list(decoy_links))+';let current=1;async function load(n){await fetch("/pcui/article/lists?currentPage="+n).then(r=>r.json());await new Promise(resolve=>setTimeout(resolve,30));current=n;document.querySelector("#list").innerHTML=[...pages[n-1],...decoys].map(link=>`<a href="${link}">指定稿件</a>`).join("");document.querySelector(".cheetah-pagination-next").setAttribute("aria-disabled",String(n===pages.length));document.querySelector(".cheetah-pagination-item-active").setAttribute("title",String(n));}load(1);</script>'
+                route.fulfill(content_type='text/html',body=body)
+            elif urlsplit(request.url).hostname=='baijiahao.baidu.com' and urlsplit(request.url).path=='/pcui/article/lists':
+                number=int(parse_qs(urlsplit(request.url).query)['currentPage'][0]);list_visits.append(number)
+                records=[{'article_id':parse_qs(urlsplit(link).query)['id'][0],'url':link} for link in list_pages[number-1]]+[{'article_id':value} for value in nonpreview_ids]
+                route.fulfill(content_type='application/json',body=json.dumps({'errno':0,'data':{'list':records,'page':{'currentPage':(page_number_override or {}).get(number,number),'pageSize':10,'totalPage':len(list_pages),'totalCount':sum(map(len,list_pages))}}}))
+            elif request.url==target:
+                self.external.append(request.url);route.abort()
+            elif request.url==public:
+                authenticated='fixture_session=private-test' in request.all_headers().get('cookie','')
+                visits.append(authenticated)
+                if not anonymous_public and not authenticated:
+                    route.fulfill(status=403,body='Login required')
+                else:
+                    metadata={'id':'7000395122085014122','title':'确认描述 #测试话题','publish_time':1795169573,'duration':1,'playurl':media_url}
+                    route.fulfill(content_type='text/html',body='<meta charset="utf-8"><script>window.fixturePublic={curVideoMeta:'+json.dumps(metadata,ensure_ascii=False)+'};</script><video preload="metadata" src="'+media_url+'"></video>')
+            elif request.url==media_url:
+                route.fulfill(content_type='video/mp4',body=media)
+            else:
+                self.external.append(request.url);route.abort()
+        self.page.unroute('**/*')
+        self.page.context.route('**/*',fixture)
+        self.page.context.add_cookies([{'name':'fixture_session','value':'private-test','domain':'.baidu.com','path':'/','secure':True}])
+        browser=self.page.context.browser
+        original=browser.new_context
+        contexts=[]
+        def anonymous_context(**kwargs):
+            self.assertEqual(kwargs['storage_state'],{'cookies':[],'origins':[]})
+            context=original(**kwargs)
+            context.route('**/*',fixture)
+            contexts.append(context)
+            return context
+        page=self.page
+        class OwnedSession:
+            def __enter__(self):return SimpleNamespace(page=page)
+            def __exit__(self,*_):pass
+        reader=BaiduPublicationChecker(browser_session_factory=lambda _:OwnedSession(),
+            identity_reader=lambda _:{'login_status':'normal','platform_account_id':'fixture-uid'})
+        original_goto=page.goto
+        navigations=[]
+        self.public_check_navigations=navigations
+        def navigate(url, **kwargs):
+            navigations.append(url)
+            # Simulate the HTTP redirect boundary; Playwright route handlers do
+            # not intercept redirected requests. All browser traffic stays isolated.
+            return original_goto(public if url==target else url, **kwargs)
+        with patch.object(browser,'new_context',side_effect=anonymous_context), patch.object(page,'goto',side_effect=navigate):
+            result=reader.check(PublicationReference('fixture-uid','1882371730190912814',dict(self.payload.content)),PublicationCheckControl(
+                current=lambda:True, browser_fallback_allowed=True,
+                read_environment=lambda:(_ for _ in ()).throw(ProfileHttpError('fixture browser required')),
+                browser=lambda:nullcontext(self.endpoint)))
+        if result.conclusion=='uncertain':
+            self.assertEqual(navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
+            self.assertEqual(visits,[])
+            self.assertEqual(len(contexts),0)
+            self.assertEqual(result.work_id,'')
+            self.assertEqual(result.work_url,'')
+            self.assertIsNone(result.published_at)
+        else:
+            self.assertEqual(navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10',target])
+            self.assertEqual(visits,[True,False])
+            self.assertEqual(result.target_url,target)
+        self.assertEqual(len(browser.contexts),1)
+        self.assertEqual(self.external,[])
+        self.assertEqual(list_visits,list(range(1,len(list_pages)+1)))
+        return result
+
+    def test_exact_original_link_and_real_anonymous_media_prove_public_work(self):
+        result=self.check_public_reference(anonymous_public=True)
+        self.assertEqual(result.conclusion,'published')
+        self.assertEqual(result.work_id,'7000395122085014122')
+        self.assertEqual(result.published_at.isoformat(),'2026-11-20T10:12:53+00:00')
+
+    def test_observed_http_receipt_link_is_upgraded_before_public_verification(self):
+        target='http://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        result=self.check_public_reference(anonymous_public=True, link_scheme='http', decoy_links=(
+            target.replace('baijiahao.baidu.com','baijiahao.baidu.com.evil.test'),
+            target.replace('baijiahao.baidu.com','fixture-user:fixture-password@baijiahao.baidu.com'),
+            target+'&token=fixture-private', target+'#changed',
+            target.replace('1882371730190912814','1882359387756944157')))
+        self.assertEqual(result.conclusion,'published')
+        self.assertTrue(result.target_url.startswith('https://'))
+
+    def test_original_submission_on_second_page_is_verified_without_reposting(self):
+        target='http://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        result=self.check_public_reference(anonymous_public=True,list_pages=[[
+            target.replace('1882371730190912814','1882359387756944157')],[target]])
+        self.assertEqual(result.conclusion,'published')
+        self.assertEqual(result.work_id,'7000395122085014122')
+
+    def test_unrelated_nonpreviewable_record_does_not_block_pagination(self):
+        target='http://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
+        result=self.check_public_reference(anonymous_public=True,list_pages=[[
+            target.replace('1882371730190912814','1882359387756944157')],[target]],
+            nonpreview_ids=('1882000000000000001',))
+        self.assertEqual(result.conclusion,'published')
+        self.assertEqual(result.work_id,'7000395122085014122')
+
+    def test_missing_original_does_not_use_another_work_after_last_page(self):
+        other='http://baijiahao.baidu.com/builder/preview/s?id=1882359387756944157'
+        result=self.check_public_reference(anonymous_public=True,list_pages=[[other],[other.replace('4157','4158')]])
+        self.assertEqual(result.conclusion,'uncertain')
+        self.assertEqual(result.reason,'原账号内容列表未找到指定投稿')
+        self.assertIn('不能据此认定投稿失败',result.basis)
+        self.assertEqual(self.public_check_list_visits,[1,2])
+        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
+        self.assertEqual(self.external,[])
+
+    def test_repeated_page_number_does_not_loop_or_register_another_work(self):
+        from wt_media_agent.platforms.publication_check import PublicationCheckError
+        other='http://baijiahao.baidu.com/builder/preview/s?id=1882359387756944157'
+        target=other.replace('1882359387756944157','1882371730190912814')
+        with self.assertRaises(PublicationCheckError):
+            self.check_public_reference(anonymous_public=True,list_pages=[[other],[target]],page_number_override={2:1})
+        self.assertEqual(self.public_check_list_visits,[1,2])
+        self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
+        self.assertEqual(self.external,[])
+
+    def test_authenticated_preview_with_anonymous_login_refusal_stays_reviewing(self):
+        result=self.check_public_reference(anonymous_public=False)
+        self.assertEqual(result.conclusion,'reviewing')
+        self.assertEqual(result.work_id,'')
+        self.assertIsNone(result.published_at)
+
+    def test_metadata_without_decoded_video_frame_cannot_prove_public_work(self):
+        from wt_media_agent.platforms.baidu.publication_check import PUBLIC_METADATA
+        self.page.set_content('<video></video>')
+        self.page.evaluate("""() => {
+          const url='https://mbd.baidu.com/fixture/metadata-only.mp4';
+          window.fixturePublic={curVideoMeta:{id:'7000395122085014122',title:'title',
+            publish_time:1795169573,duration:30,playurl:url}};
+          const video=document.querySelector('video');
+          // Deterministically model HAVE_METADATA with no decoded current frame.
+          for(const [key,value] of Object.entries({currentSrc:url,readyState:1,
+              duration:30,videoWidth:0,videoHeight:0}))
+            Object.defineProperty(video,key,{value});
+        }""")
+        self.assertFalse(self.page.evaluate(PUBLIC_METADATA,'7000395122085014122'))
 
     def test_fields_cover_dialogs_and_one_matching_receipt(self):
         self.fill()
@@ -103,6 +280,45 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertNotIn('private unexpected content',str(captured.output))
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
 
+    def test_cover_configuration_waits_for_current_uploaded_video_processing(self):
+        self.page.context.add_init_script('window.fixtureVideoProcessingDelayed=true')
+        entered=[]
+        self.publisher.timeout=3
+        self.publisher.fill_fields=lambda *a,**kw: entered.append(self.page.evaluate('window.fixtureVideoProcessed===true'))
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(entered,[True])
+
+    def test_public_result_owner_recheck_uses_current_profile_context(self):
+        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
+        from wt_media_agent.platforms.publication_check import PublicationReference
+        context = self.page.context
+        context.route('https://image.baidu.com/user/logininfo?**', lambda route: route.fulfill(
+            content_type='application/json', body='{"data":{"user":{"user_id":6572476037}}}'))
+        before = len(context.pages)
+        reader = BaiduPublicationChecker()
+        reader._verify_owner(PublicationReference('6572476037','1882371730190912814',{}),
+                             lambda: True, page=self.page)
+        self.assertEqual(len(context.pages), before)
+        self.assertFalse(self.page.is_closed())
+
+    def test_identity_recheck_reuses_active_browser_context_and_closes_own_tab(self):
+        from wt_media_agent.platforms.baidu.identity import read_baidu_identity
+        context = self.page.context
+        context.route('https://image.baidu.com/user/logininfo?**', lambda route: route.fulfill(
+            content_type='application/json', body='{"data":{"user":{"user_id":6572476037}}}'))
+        before = len(context.pages)
+        self.assertEqual(read_baidu_identity(self.endpoint, browser_context=context),
+                         {'login_status':'normal', 'platform_account_id':'6572476037'})
+        self.assertEqual(len(context.pages), before)
+        self.assertFalse(self.page.is_closed())
+
+    def test_recommended_image_is_not_frozen_before_selected_cover_arrives(self):
+        self.page.evaluate('window.fixtureIntermediateRecommendation=true')
+        self.fill()
+        self.assertTrue(all('/fixture-cover/' in source for source in self.publisher._covers))
+        self.publisher.submit()
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 1)
+
     def test_temporary_cover_preview_is_not_frozen_before_platform_upload_finishes(self):
         self.fill()
         self.assertTrue(all(value.startswith('https://') for value in self.publisher._covers))
@@ -123,6 +339,32 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.publisher.submit()
         self.assertEqual(self.publisher.read_receipt(),{'platform_work_id':'1862233438702758904'})
         self.assertEqual(self.page.evaluate('window.finalClicks'),1)
+
+    def test_observed_http_cover_preview_preserves_confirmed_image(self):
+        self.publisher.timeout = 2
+        self.fill()
+        self.page.route('http://baijiahao.baidu.com/fixture-cover/*',
+                        lambda route: route.fulfill(content_type='image/png', body=self.cover_response))
+        self.page.locator('[data-testid=cover-preview] img').first.evaluate(
+            "e=>e.src='http://baijiahao.baidu.com/fixture-cover/0?http-preview=1'")
+        self.page.wait_for_function("document.querySelector('[data-testid=cover-preview] img').complete")
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt(), {'platform_work_id': '1862233438702758904'})
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 1)
+
+    def test_http_dom_cover_matches_exact_browser_upgraded_response(self):
+        self.publisher.timeout = 2
+        self.fill()
+        self.page.route('http://baijiahao.baidu.com/fixture-cover/*',
+                        lambda route: route.fulfill(status=302, headers={
+                            'location': route.request.url.replace('http:', 'https:', 1)}))
+        self.page.locator('[data-testid=cover-preview] img').first.evaluate(
+            "e=>e.src='http://baijiahao.baidu.com/fixture-cover/0?upgraded=1'")
+        self.page.wait_for_function("document.querySelector('[data-testid=cover-preview] img').complete")
+        self.publisher._image_responses = {key: value for key, value in
+            self.publisher._image_responses.items() if not key.startswith('http:')}
+        self.publisher.submit()
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 1)
 
     def test_changed_cover_bytes_never_submit_even_when_the_url_is_unchanged(self):
         self.fill()
@@ -156,6 +398,24 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.page.locator('input[type=file][accept=".mp4"]').set_input_files(str(self.video))
         self.assertEqual(self.page.evaluate('window.selectedVideoSize'),64*1024*1024)
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+        self.assertEqual(self.external,[])
+
+    def test_human_pause_keeps_same_editor_and_blocks_manual_publish(self):
+        self.home+='<div class="passMod_dialog-wrapper">security verification</div>'
+        waits=[]
+        def human(show):
+            waits.append(self.page.url)
+            show()
+            blocked=self.page.evaluate("fetch('/pcui/article/publish?type=video',{method:'POST'}).then(()=>false).catch(()=>true)")
+            self.assertTrue(blocked)
+            self.page.locator('.passMod_dialog-wrapper').evaluate('(node)=>node.remove()')
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False,wait_for_human=human)
+        self.assertEqual(waits,['https://baijiahao.baidu.com/builder/rc/home'])
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'),self.video.stat().st_size)
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+        self.publisher.submit()
+        self.assertEqual(self.publisher.read_receipt()['platform_work_id'],'1862233438702758904')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),1)
         self.assertEqual(self.external,[])
 
     def test_full_navigation_upload_and_fill_do_not_submit(self):
@@ -285,7 +545,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def test_publication_text_is_not_treated_as_video_upload_status(self):
         self.payload=PublishPayload(self.video,self.cover,{
             'description':'上传中也能剪辑：胜率提升25%的游戏复盘',
-            'topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid')
+            'topics':'#测试话题','declaration':'无需声明'}, 'fixture-uid',portrait_cover=self.portrait_cover)
         self.fill()
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),
                          '上传中也能剪辑：胜率提升25%的游戏复盘 #测试话题')
@@ -326,6 +586,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.page.add_init_script('window.fixtureBlankCovers=true')
         self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
         self.assertEqual(self.page.locator('[data-testid=select-cover]').count(),0)
+        self.assertEqual(self.page.evaluate('window.coverUploadNames'),['cover-upload.png','portrait-cover-upload.png'])
         self.assertEqual(self.page.locator('[data-testid=cover-preview] img').count(),2)
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)

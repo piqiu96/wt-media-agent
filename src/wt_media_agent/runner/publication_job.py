@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Thread, RLock
 
 from wt_media_agent.runtime.constants import (
     DEFAULT_PUBLICATION_HEARTBEAT_SECONDS,
@@ -34,6 +34,33 @@ class PublicationJob:
         self.bitbrowser = bitbrowser
         self.platform_factory = platform_factory
         self.heartbeat_interval = heartbeat_interval
+        self._human_lock = RLock()
+        self._human = None
+        self._human_confirmation = None
+
+    def handle_human_action(self,token,user_id,task_id,attempt_id,revision,*,resume):
+        key = (token,user_id,task_id,attempt_id,revision)
+        with self._human_lock:
+            confirmation = self._human_confirmation
+            if resume and confirmation is not None and confirmation['key'] == key and confirmation['current']():
+                return dict(confirmation['result']) # An acknowledgement, never another execution event.
+            scene = self._human
+            if (scene is None or scene['token'] != token or not scene['current']()
+                    or scene['resume'].is_set()
+                    or (scene['identity'].user_id,scene['identity'].task_id,scene['identity'].attempt_id) != (user_id,task_id,attempt_id)
+                    or self.journal.get(scene['identity'])['phase'] not in {PublicationPhase.CLAIMED,PublicationPhase.PREPARED}):
+                raise JournalConflict('original live human scene is unavailable')
+            feedback = self.cloud.publication_human(token,task_id,attempt_id,revision,resume=resume)
+            expected = PublicationStatus.RUNNING if resume else PublicationStatus.AWAITING_HUMAN
+            if (feedback.get('attempt_id') != attempt_id or feedback.get('stop_requested') is not False
+                    or feedback.get('allow_submit') is not False or feedback.get('task_status') != expected
+                    or not scene['current']()):
+                raise JournalConflict('Cloud did not confirm the original scene')
+            result={'attempt_id':attempt_id,'status':expected}
+            if resume:
+                self._human_confirmation={'key':key,'current':scene['current'],'result':result}
+            scene['resume' if resume else 'show'].set()
+            return dict(result)
 
     def run(self, token, claim, identity, *, current=lambda: True):
         if self.journal.get(identity)['phase'] != PublicationPhase.CLAIMED:
@@ -42,8 +69,9 @@ class PublicationJob:
         prepared = None
         stop_reason = ""
         receipt = {}
+        submission_denied = False
         source = claim['attempt']['input_snapshot']
-        evidence = {key: source[key] for key in ('platform_uid', 'video_sha256', 'cover_sha256')}
+        evidence = {key: source[key] for key in ('platform_uid', 'video_sha256', 'cover_sha256', 'portrait_cover_sha256')}
         evidence['bit_profile_id'] = identity.bit_profile_id
 
         def progress(stage, seq):
@@ -65,10 +93,40 @@ class PublicationJob:
             if feedback.get('stop_requested') is not False:
                 raise JournalConflict('Cloud stopped the upload')
 
+        def wait_for_human(show):
+            if should_stop() or self.journal.get(identity)['phase'] not in {PublicationPhase.CLAIMED,PublicationPhase.PREPARED}:
+                raise JournalConflict('human continuation is unavailable after submission')
+            with self.preparation.report_lock:
+                feedback = progress(PublicationStage.AWAITING_HUMAN,self.journal.reserve_report(identity))
+            if feedback.get('stop_requested') is not False:
+                raise JournalConflict('Cloud stopped the human scene')
+            scene = {'token':token,'identity':identity,'current':lambda:not should_stop(),
+                     'show':Event(),'resume':Event()}
+            with self._human_lock:
+                if self._human is not None:
+                    raise JournalConflict('a human scene is already active')
+                self._human_confirmation = None
+                self._human = scene
+            try:
+                while not scene['resume'].wait(.1):
+                    if should_stop():
+                        raise JournalConflict('original human scene stopped')
+                    if scene['show'].is_set():
+                        scene['show'].clear()
+                        show() # Runs only on the original browser thread.
+                if should_stop():
+                    raise JournalConflict('original human scene stopped')
+            finally:
+                with self._human_lock:
+                    if self._human is scene:
+                        self._human = None
+
         def before_submit():
+            nonlocal submission_denied
             with self.preparation.report_lock:
                 seq = self.journal.advance(identity, PublicationPhase.SUBMITTING)
                 feedback = progress(PublicationStage.SUBMITTING, seq)
+                submission_denied = feedback.get('allow_submit') is False and feedback.get('stop_requested') is True
                 if feedback.get('allow_submit') is not True or feedback.get('stop_requested') is not False:
                     raise JournalConflict('no fresh submit permission')
                 self.journal.advance(identity, PublicationPhase.CLICK_STARTED)
@@ -116,9 +174,9 @@ class PublicationJob:
                     except Exception:
                         pass  # Missing verification never grants draft replacement.
             receipt = publisher.publish(
-                PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid']),
+                PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid'], portrait_cover=prepared.portrait_cover),
                 PublishControl(stopped=should_stop, on_prepared=on_prepared, before_submit=before_submit,
-                    replace_matching_draft=replace_draft),
+                    replace_matching_draft=replace_draft, wait_for_human=wait_for_human),
                 method=PublishMethod.BROWSER)
             work_id = receipt.get('platform_work_id', '')
             if not isinstance(work_id, str) or not work_id.isascii() or not work_id.isdecimal() or len(work_id) > 255 or int(work_id) <= 0 or str(int(work_id)) != work_id:
@@ -158,7 +216,7 @@ class PublicationJob:
         evidence['scene_closed'] = closed is True
         result = {'status': PublicationStatus.UNCERTAIN, 'error_code': PUBLICATION_RESULT_UNCERTAIN,
                   'error_message': PUBLICATION_RESULT_UNCERTAIN_MESSAGE, 'evidence': evidence}
-        if not receipt and closed is True and self.journal.get(identity)['phase'] in {PublicationPhase.CLAIMED, PublicationPhase.PREPARED}:
+        if not receipt and closed is True and (self.journal.get(identity)['phase'] in {PublicationPhase.CLAIMED, PublicationPhase.PREPARED} or submission_denied):
             evidence['not_submitted'] = True
             result = {'status': PublicationStatus.FAILED,
                       'error_code': stop_reason or PUBLICATION_NOT_SUBMITTED,

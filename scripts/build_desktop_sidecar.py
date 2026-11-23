@@ -260,6 +260,7 @@ def build(target: str, output_dir: Path, manifest: Path) -> Path:
         command = [
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
             "--name", name, "--paths", str(ROOT / "src"),
+            "--collect-all", "curl_cffi",
             "--distpath", str(workdir / "dist"), "--workpath", str(workdir / "work"),
             "--specpath", str(workdir / "spec"), str(ROOT / "src" / "wt_media_agent" / "sidecar_main.py"),
         ]

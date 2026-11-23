@@ -35,6 +35,21 @@ class PlatformPublishTests(unittest.TestCase):
         with self.assertRaises(PublicationInputError): self.publisher.publish(self.payload, self.control)
         self.assertEqual(self.events.count('submit'), 1)
 
+    def test_login_wait_keeps_owned_session_and_verifies_account_before_upload(self):
+        page=Mock()
+        self.session_factory.return_value.page=page
+        self.identity.side_effect=[{'login_status':'expired'}, {'login_status':'normal','platform_account_id':'uid'}, {'login_status':'normal','platform_account_id':'uid'}]
+        def human(show):
+            self.events.append('human')
+            show()
+        control=PublishControl(stopped=lambda:False,on_prepared=lambda:self.events.append('prepared'),before_submit=lambda:self.events.append('permission'),wait_for_human=human)
+        self.publisher.publish(self.payload,control)
+        self.assertEqual(self.events,['connect','human','prepared','fill','permission','submit','receipt','disconnect'])
+        self.assertEqual(self.session_factory.call_count,1)
+        self.assertEqual(self.backend.fill_form.call_count,1)
+        page.bring_to_front.assert_called_once()
+        page.goto.assert_called_once()
+
     def test_explicit_browser_uses_the_same_implementation(self):
         self.publisher.publish(self.payload, self.control, method=PublishMethod.BROWSER)
         self.assertEqual(self.events.count('submit'), 1)

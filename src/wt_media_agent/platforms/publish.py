@@ -16,6 +16,7 @@ class PublishPayload:
     cover: Path
     content: Mapping[str, Any]
     platform_uid: str
+    portrait_cover: Path | None = None
 
 
 class PublishReceipt(TypedDict):
@@ -29,6 +30,7 @@ class PublishControl:
     before_submit: Callable[[], None]
     # Runner proves the previous same-input attempt safely ended before submit.
     replace_matching_draft: bool = False
+    wait_for_human: Callable[[Callable[[], None]], None] | None = None
 
     def check_stopped(self) -> None:
         if self.stopped():

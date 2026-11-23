@@ -314,3 +314,22 @@ class BitBrowserRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ReadOnlyProfileAdmissionTests(unittest.TestCase):
+    def test_manual_window_is_never_adopted_for_periodic_check(self):
+        from wt_media_agent.clients.bitbrowser.errors import BitBrowserResponseError
+        transport=FakeTransport([{'success':True,'data':{'original':9222}}])
+        client=BitBrowserClient('http://127.0.0.1:54345',transport=transport)
+        with self.assertRaises(BitBrowserResponseError):client.open_profile_for_check('original')
+        self.assertEqual(len(transport.calls),1)
+        self.assertTrue(transport.calls[0][0].endswith('/browser/ports'))
+    def test_closed_profile_opens_once_and_racing_manual_open_does_not_fall_back(self):
+        from wt_media_agent.clients.bitbrowser.errors import BitBrowserResponseError
+        transport=FakeTransport([{'success':True,'data':{}},{'success':True,'data':{'http':'127.0.0.1:9222'}}])
+        client=BitBrowserClient('http://127.0.0.1:54345',transport=transport)
+        self.assertEqual(client.open_profile_for_check('original'),'127.0.0.1:9222')
+        self.assertEqual(len(transport.calls),2)
+        racing=FakeTransport([{'success':True,'data':{}},{'success':False,'msg':'浏览器已打开'}])
+        client=BitBrowserClient('http://127.0.0.1:54345',transport=racing)
+        with self.assertRaises(BitBrowserResponseError):client.open_profile_for_check('original')
+        self.assertEqual(len(racing.calls),2)

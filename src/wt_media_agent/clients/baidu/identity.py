@@ -20,6 +20,43 @@ LOGININFO_URL_TEMPLATE = (
 AVATAR_BASE_URL = "https://himg.bdimg.com/sys/portraitn/item/"
 
 
+def logininfo_url() -> str:
+    return LOGININFO_URL_TEMPLATE.format(time_ms=int(time.time() * 1000))
+
+
+def is_logininfo_url(raw: str) -> bool:
+    parsed = urlparse.urlsplit(raw)
+    return (parsed.scheme == 'https' and parsed.netloc == 'image.baidu.com'
+            and parsed.path == '/user/logininfo' and not parsed.fragment)
+
+
+def parse_baidu_identity(payload: object) -> dict[str, object]:
+    """Normalize both observed logininfo shapes, without accepting stale UIDs."""
+    payload = payload if isinstance(payload, dict) else {}
+    status = payload.get('status')
+    if isinstance(status, dict) and status.get('code', 0) != 0:
+        return {'platform_account_id': '', 'name': '', 'avatar_url': '',
+                'login_status': 'expired', 'message': '百度登录校验失败'}
+    data = payload.get('data')
+    user = data.get('user') if isinstance(data, dict) else None
+    user = user if isinstance(user, dict) else {}
+    value = user.get('user_id')
+    uid = str(value) if type(value) in (str, int) else ''
+    if not (uid and uid.isascii() and uid.isdecimal() and uid[0] != '0'):
+        return {'platform_account_id': '', 'name': '', 'avatar_url': '',
+                'login_status': 'not_logged_in', 'message': '未读取到百度账号UID'}
+    portrait = str(user.get('portrait') or '').strip()
+    return {'platform_account_id': uid, 'name': str(user.get('user_name') or '').strip(),
+            'avatar_url': AVATAR_BASE_URL + portrait if portrait else '',
+            'login_status': 'normal', 'message': '已读取到百度账号信息'}
+
+
+def read_identity(fetch) -> dict[str, object]:
+    """Use a supplied Profile HTTP or browser transport for the same protocol."""
+    response = fetch(logininfo_url())
+    return parse_baidu_identity(response.get('json') if response.get('status') == 200 else None)
+
+
 def identify_baidu(cookies: list[dict[str, object]]) -> dict[str, object]:
     """Identify a Baidu account via the public logininfo API."""
     cookie_by_name: dict[str, str] = {}
@@ -40,7 +77,7 @@ def identify_baidu(cookies: list[dict[str, object]]) -> dict[str, object]:
             "message": "未读取到百度登录凭证(BDUSS)",
         }
     try:
-        url = LOGININFO_URL_TEMPLATE.format(time_ms=int(time.time() * 1000))
+        url = logininfo_url()
         req = urlrequest.Request(
             url,
             headers={
@@ -54,36 +91,7 @@ def identify_baidu(cookies: list[dict[str, object]]) -> dict[str, object]:
             },
         )
         body = urlrequest.urlopen(req, timeout=10).read().decode(errors="replace")
-        payload = json.loads(body)
-        status = payload.get("status") or {}
-        if status.get("code") != 0:
-            return {
-                "platform_account_id": "",
-                "name": "",
-                "avatar_url": "",
-                "login_status": "expired",
-                "message": f"百度登录校验失败: {status.get('msg', '')}",
-            }
-        user = payload.get("data", {}).get("user") or {}
-        uid = str(user.get("user_id", "") or "").strip()
-        name = str(user.get("user_name", "") or "").strip()
-        portrait = str(user.get("portrait", "") or "").strip()
-        if not uid:
-            return {
-                "platform_account_id": "",
-                "name": "",
-                "avatar_url": "",
-                "login_status": "not_logged_in",
-                "message": "未读取到百度账号UID",
-            }
-        avatar_url = f"{AVATAR_BASE_URL}{portrait}" if portrait else ""
-        return {
-            "platform_account_id": uid,
-            "name": name,
-            "avatar_url": avatar_url,
-            "login_status": "normal",
-            "message": "已读取到百度账号信息",
-        }
+        return parse_baidu_identity(json.loads(body))
     except Exception as exc:  # noqa: BLE001 - surface readable message, never leak cookie
         return {
             "platform_account_id": "",

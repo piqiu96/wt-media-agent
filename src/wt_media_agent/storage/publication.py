@@ -60,16 +60,16 @@ class ExecutionIdentity:
 
 
 def _validated_snapshot(value: dict) -> str:
-    required = {'platform', 'platform_uid', 'video_sha256', 'video_size', 'cover_sha256', 'cover_size', 'content'}
+    required = {'platform', 'platform_uid', 'video_sha256', 'video_size', 'cover_sha256', 'cover_size', 'portrait_cover_sha256', 'portrait_cover_size', 'content'}
     if not isinstance(value, dict) or set(value) != required:
         raise ValueError('only immutable public execution inputs may be saved')
     if value['platform'] not in ('baidu', 'bilibili', 'xiaohongshu') or not isinstance(value['platform_uid'], str) or not value['platform_uid']:
         raise ValueError('platform identity is required')
-    for name in ('video_sha256', 'cover_sha256'):
+    for name in ('video_sha256', 'cover_sha256', 'portrait_cover_sha256'):
         digest = value[name]
         if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
             raise ValueError('file digest is required')
-    for name in ('video_size', 'cover_size'):
+    for name in ('video_size', 'cover_size', 'portrait_cover_size'):
         if type(value[name]) is not int or value[name] <= 0:
             raise ValueError('positive file size is required')
     content = value['content']
@@ -313,7 +313,7 @@ class PublicationJournal:
     def settle_resolved(self, identity: ExecutionIdentity, original: dict):
         if (not isinstance(original,dict) or original.get('attempt_id')!=identity.attempt_id
                 or original.get('scene_resolved') is not True
-                or original.get('resolved_status')!=PublicationStatus.FAILED or 'result_hash' not in original):
+                or original.get('resolved_status') not in (PublicationStatus.FAILED, PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED) or 'result_hash' not in original):
             raise JournalConflict('Cloud has not explicitly resolved this original scene')
         with self.database.session.begin() as session:
             row,state=self._state(session,identity)

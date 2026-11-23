@@ -159,6 +159,18 @@ class BitBrowserClient:
         """
         self._post("/browser/open-url", {"id": profile_id, "url": url})
 
+    def open_profile_for_check(self, profile_id: str) -> str:
+        """Open only a closed Profile; never adopt a manual or racing window."""
+        ports = self._check_success(self._post('/browser/ports', {'ids': [profile_id]}))
+        if ports.get(profile_id):
+            raise BitBrowserResponseError('Profile is already open; read-only check deferred')
+        # Unlike publication preparation, an already-opening response is a refusal.
+        data = self._check_success(self._post_with_timeout('/browser/open', {'id': profile_id}, self._mutation_timeout()))
+        endpoint = str(data.get('http') or '').strip()
+        if not endpoint:
+            raise BitBrowserResponseError('New check Profile returned no owned endpoint')
+        return endpoint
+
     def open_profile_with_devtools(self, profile_id: str) -> str:
         """Open a profile and return its DevTools http endpoint (host:port).
 
@@ -251,6 +263,16 @@ class BitBrowserClient:
                 f"无法读取窗口 {profile_id} 的当前指纹，为保护浏览器身份不执行更新"
             )
         return data
+
+    def read_request_environment(self, profile_id: str) -> dict[str, object]:
+        """Sensitive local-only settings; caller must not log or persist the result."""
+        data = self._read_profile_runtime_fields(profile_id)
+        keys = ('proxyType', 'proxyMethod', 'host', 'port', 'proxyUserName', 'proxyPassword', 'browserFingerPrint', 'cookie')
+        return {key: data.get(key) for key in keys}
+
+    def is_profile_closed(self, profile_id: str) -> bool:
+        ports = self._check_success(self._post('/browser/ports', {'ids': [profile_id]}))
+        return not bool(ports.get(profile_id))
 
     def update_profile(self, profile_id: str, config: dict[str, object]) -> None:
         """Update an existing browser profile.

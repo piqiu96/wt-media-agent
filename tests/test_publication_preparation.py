@@ -41,7 +41,7 @@ def cloud_claim(replayed=False, owner='3'):
  frozen.update(profile_id='37',bit_profile_id='actual-bit-profile',bit_main_user_id='main-3',content=content)
  return {'task':{'id':'9','operator_id':owner,'platform':'baidu','current_attempt_id':'1','status':'running'},
          'attempt':{'id':'1','publication_id':'9','executor_user_id':owner,'status':'running','stage':'claimed','input_snapshot':frozen},
-         'replayed':replayed,'files':{name:{'url':'https://storage.test/'+name,'sha256':s[name+'_sha256'],'size':s[name+'_size']} for name in ('video','cover')}}
+         'replayed':replayed,'files':{name:{'url':'https://storage.test/'+name,'sha256':s[name+'_sha256'],'size':s[name+'_size']} for name in ('video','cover','portrait_cover')}}
 
 class FakeCloud:
  base_url='https://cloud.test'
@@ -64,6 +64,16 @@ class PublicationPreparationTests(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.db=Path(self.tmp.name)/'a.db';apply_migrations(self.db)
   self.j=PublicationJournal(Database(self.db));self.keys=PublicationClaimStore(Database(self.db));self.cloud=FakeCloud();self.bit=FakeBit();self.p=self.new_preparer()
  def new_preparer(self):return PublicationPreparation(self.cloud,self.bit,self.j,self.keys,Path(self.tmp.name)/'files',cloud_env='dev')
+ def test_template_cover_audit_keeps_actual_frozen_file_and_confirmed_text(self):
+  self.cloud.value['attempt']['input_snapshot']['content']['cover_render']={
+   'template_id':'9007199254740993','published_revision':2,'title':'封面主标题',
+   'background_output_id':'42','background_image_asset_id':'0','render_input_hash':'a'*64}
+  value,i=self.p.claim('memory-token','3')
+  saved=self.j.get(i)['input']
+  self.assertEqual(saved['content'],snapshot()['content'])
+  self.assertEqual(saved['cover_sha256'],value['attempt']['input_snapshot']['cover_sha256'])
+  self.assertEqual(value['attempt']['input_snapshot']['content']['cover_render']['template_id'],'9007199254740993')
+  self.assertEqual(self.bit.scans,0)
  def test_parallel_request_key_is_one_durable_identity(self):
   with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:values=list(pool.map(lambda _:PublicationClaimStore(Database(self.db)).pending('dev','3'),range(16)))
   self.assertEqual(len(set(values)),1)

@@ -35,7 +35,7 @@
 
 - `bootstrap/app.py` 统一装配运行资源；Local、Cloud 和 Sidecar 入口复用核心能力，按运行模式启用服务。
 - File-transfer Runner 组织下载租约，Executor 实际执行；Client、Service 和 Storage 提供底层能力，不反向依赖执行器。浏览器短操作走 Local API 同步调用。
-- `platforms/` 承载独立平台业务能力，按能力定义协议、按平台实现，可组合 API 与浏览器。基础 API 请求归 `clients/`，公共会话/CDP/Cookie 归 `services/browser/`；平台能力不依赖任务存储或 Cloud 任务客户端（ADR-0034）。发布通过必填执行控制衔接停止、准备阶段和提交许可，不新增 workflow。
+- `platforms/` 承载独立平台业务能力，按能力定义协议、按平台实现，可组合 API 与浏览器。基础 API 请求归 `clients/`，公共会话/CDP/Cookie 归 `services/browser/`；平台能力不依赖任务存储或 Cloud 任务客户端（ADR-0034）。发布与原稿核验分别在平台实现外定义能力接口；平台内部按完整职责组织，不按 API/浏览器手段拆出对外能力。发布通过必填执行控制衔接停止、准备阶段和提交许可；原稿核验内部选择 API/浏览器，runner 提供受控资源入口并保留任务授权、互斥和上报，不新增 workflow。
 - Agent 不直接连接 Cloud MySQL，不自行裁决正式业务状态；执行成功不等于业务成功。
 - 运行期读取 `config/`，`config_online/` 仅作发布替换源；凭据不进入可分发配置。
 - Agent 自己装配和保存日志；Desktop 不全量转存 Agent 日志。

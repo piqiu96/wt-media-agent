@@ -11,10 +11,9 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from wt_media_agent.clients.baidu.identity import identify_baidu
+from wt_media_agent.platforms.baidu.identity import read_baidu_identity
 from wt_media_agent.platforms.publish import PublicationInputError, PublishControl, PublishPayload, PublishReceipt
 from wt_media_agent.runtime.constants import PublishMethod
-from wt_media_agent.services.browser.cdp import read_live_cookies
 from wt_media_agent.services.browser.session import BrowserSession
 
 
@@ -49,7 +48,7 @@ def image_upload_file(source: Path) -> Path:
         suffix = '.webp'
     else:
         raise PlatformFormError('cover image type is not supported')
-    target = source.with_name('cover-upload' + suffix)
+    target = source.with_name(source.name + '-upload' + suffix)
     shutil.copyfile(source, target)
     target.chmod(0o600)
     return target
@@ -82,6 +81,8 @@ class BrowserPublisher:
         self.page = None
         self.timeout = timeout
         self._stopped = lambda: False
+        self._wait_for_human = None
+        self._human_seconds = 0.0
         self._ready = False
         self._submitted = False
         self._description = None
@@ -89,9 +90,13 @@ class BrowserPublisher:
         self._covers = []
         self._cover_images = []
         self._image_responses = {}
+        self._video_media_id = None
+        self._video_processed = False
+        self._initial_video_covers = []
         self._capture = {'count': 0}
         self._request = None
         self._diagnostic_path = None
+        self._protected_page = None
 
     def _record_failure(self, filename=None):
         # A local, owner-private attempt artifact; never attach it to Cloud
@@ -138,8 +143,17 @@ class BrowserPublisher:
         url = urlsplit(self.page.url)
         if url.scheme != 'https' or url.netloc != 'baijiahao.baidu.com':
             raise PlatformFormError('editor origin changed')
-        if self.page.locator('.passMod_dialog-wrapper:visible').count():
-            raise PlatformFormError('platform requires human security verification')
+        while self.page.locator('.passMod_dialog-wrapper:visible').count():
+            if self._submitted or self._wait_for_human is None:
+                raise PlatformFormError('platform requires human security verification')
+            start = time.monotonic()
+            self._wait_for_human(self.page.bring_to_front)
+            self._human_seconds += time.monotonic() - start
+            if self._stopped() or self.page.is_closed():
+                raise PlatformFormError('original human scene stopped')
+            url = urlsplit(self.page.url)
+            if url.scheme != 'https' or url.netloc != 'baijiahao.baidu.com':
+                raise PlatformFormError('editor origin changed')
         return url.path
 
     def _wait(self, condition, *, timeout=None, stage=None, cover_index=None):
@@ -150,7 +164,9 @@ class BrowserPublisher:
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         try:
             while True:
+                human_before = self._human_seconds
                 self._check()
+                deadline += self._human_seconds - human_before
                 value = condition()
                 if value:
                     if stage:
@@ -166,7 +182,8 @@ class BrowserPublisher:
                             stage, cover_index, type(error).__name__)
             raise
 
-    def fill_form(self, page, payload, *, stopped, replace_matching_draft=False):
+    def fill_form(self, page, payload, *, stopped, replace_matching_draft=False, wait_for_human=None):
+        self._wait_for_human = wait_for_human
         try:
             self._fill_form(page, payload, stopped=stopped, replace_matching_draft=replace_matching_draft)
         except Exception:
@@ -180,6 +197,8 @@ class BrowserPublisher:
         self._diagnostic_path = payload.video.parent / 'editor-failure.png'
         if stopped():
             raise PlatformFormError('publication stopped before editor')
+        self.protect_scene(page)
+        page.on('response', self._remember_video_response)
         page.goto('https://baijiahao.baidu.com/builder/rc/home', wait_until='domcontentloaded')
         self._check()
         video_entry = page.get_by_text('发布视频', exact=True)
@@ -210,8 +229,10 @@ class BrowserPublisher:
             # Baidu restores an unsent editor across browser restarts. Preserve
             # other drafts; a matching one still needs a fresh video upload,
             # full field verification and the current attempt's submit grant.
-            if (replace_matching_draft is not True or editor.count() != 1
-                    or editor.inner_text() != publication_description(payload.content)):
+            description_matches = editor.count() == 1 and editor.inner_text() == publication_description(payload.content)
+            logger.info('baidu_publication_restored_editor replacement_allowed=%s editor_count=%s description_matches=%s',
+                        replace_matching_draft is True, editor.count(), description_matches)
+            if replace_matching_draft is not True or not description_matches:
                 self._record_failure()
                 raise PlatformFormError('new editor unexpectedly contains a prior video')
             prior_sources = page.locator('video').evaluate_all('(es) => es.map(e => e.currentSrc || e.src).filter(Boolean)')
@@ -223,6 +244,7 @@ class BrowserPublisher:
             # The restored editor exposes both Replace and Add-video inputs.
             # Select this video's action, never the separate .cover-add input.
             video_input = page.locator('#cover-tabs-container > :not(.cover-add) input[type=file][accept*=".mp4"]')
+        self._initial_video_covers = page.locator('[data-testid=cover-preview] img').evaluate_all('(es)=>es.map(e=>e.src)')
         video_input.set_input_files(str(payload.video.resolve()))
         if prior_sources is not None:
             self._wait(lambda: self._upload_ready() and page.locator('video').evaluate_all(
@@ -230,7 +252,48 @@ class BrowserPublisher:
                 prior_sources), stage='restored_video_replaced')
         else:
             self._wait(self._upload_ready)
+        self._wait(self._video_covers_ready, stage='video_processing_and_initial_covers')
         self.fill_fields(page, payload, stopped=stopped)
+
+    def _remember_video_response(self, response):
+        url = urlsplit(response.url)
+        if (response.request.method != 'POST' or url.scheme != 'https'
+                or url.netloc != 'baijiahao.baidu.com' or not response.ok
+                or url.path not in ('/materialui/video/compuploadvideo', '/pcui/video/process')):
+            return
+        from playwright.sync_api import Error as BrowserError
+        try:
+            body = response.json()
+        except (ValueError, BrowserError):
+            # An unreadable/aborted response never confirms processing.
+            return
+        if not isinstance(body, dict):
+            return
+        if url.path == '/materialui/video/compuploadvideo':
+            media_id = body.get('mediaId')
+            if str(body.get('error_code')) == '0' and type(media_id) in (str, int) and str(media_id):
+                self._video_media_id = str(media_id)
+                self._video_processed = False
+            return
+        raw = response.request.post_data or ''
+        try:
+            request_body = json.loads(raw)
+        except ValueError:
+            request_body = {key: values[0] for key, values in parse_qs(raw).items() if len(values) == 1}
+        data = body.get('data')
+        if (isinstance(request_body, dict) and self._video_media_id is not None
+                and str(request_body.get('mediaId')) == self._video_media_id
+                and body.get('errno') == 0 and isinstance(data, dict)
+                and data.get('status') == 'PUBLISHED' and data.get('img_frame')):
+            # This status describes video processing, not publication success.
+            self._video_processed = True
+
+    def _video_covers_ready(self):
+        if not self._upload_ready() or not self._video_processed:
+            return False
+        return self.page.locator('[data-testid=cover-preview] img').evaluate_all(
+            '(es, previous) => es.length === 2 && es.every(e => /^https?:/.test(e.src) && e.complete && e.naturalWidth > 0 && !previous.includes(e.src))',
+            self._initial_video_covers)
 
     def _upload_ready(self):
         upload = self.page.locator('#cover-tabs-container')
@@ -249,9 +312,12 @@ class BrowserPublisher:
                 and self.page.get_by_role('button', name='发布', exact=True).is_enabled())
 
     def fill_fields(self, page, payload, *, stopped):
+        if payload.portrait_cover is None:
+            raise PlatformFormError('confirmed portrait cover is missing')
         if self._ready or self._submitted:
             raise PlatformFormError('form preparation cannot be replayed')
         self.page, self._stopped = page, stopped
+        self.protect_scene(page)
         if self._check() != '/builder/rc/edit':
             raise PlatformFormError('not the video editor')
         self._description = publication_description(payload.content)
@@ -274,11 +340,10 @@ class BrowserPublisher:
         self._check()
         dialog.get_by_role('button', name='确定', exact=True).click(timeout=5000)
         self._wait(lambda: page.get_by_placeholder('请选择创作声明', exact=True).input_value() == self._declaration)
-        upload = image_upload_file(payload.cover)
-        for index in range(2):
+        for index, source in enumerate((payload.cover, payload.portrait_cover)):
+            upload = image_upload_file(source)
             self._check()
             cover_control = page.locator('[data-testid=cover-preview], [data-testid=select-cover]').nth(index)
-            previous_preview = cover_control.locator('img').evaluate_all('(es) => es.map(e => e.src)')
             cover_control.click(timeout=5000)
             dialog.wait_for(state='visible', timeout=5000)
             file_input = dialog.locator('input[type=file][accept="image/*"]').last
@@ -294,23 +359,37 @@ class BrowserPublisher:
                 stage='cover_upload_decode', cover_index=index)
             self._record_failure(filename=f'cover-selection-{index}.png')
             self._check()
-            dialog.get_by_role('button', name='确定', exact=True).click(timeout=5000)
+            def selected_cover_processed(response):
+                url = urlsplit(response.url)
+                return (response.request.method == 'POST' and url.scheme == 'https'
+                        and url.netloc == 'baijiahao.baidu.com'
+                        and url.path == '/pcui/picture/processproxy')
+            with page.expect_response(selected_cover_processed, timeout=self.timeout * 1000) as processed:
+                dialog.get_by_role('button', name='确定', exact=True).click(timeout=5000)
+            response = processed.value
+            data = response.json() if response.ok else {}
+            result = data.get('ret') if isinstance(data, dict) and data.get('errno') == 0 else None
+            expected_source = result.get('url') if isinstance(result, dict) else None
+            if (not isinstance(expected_source, str)
+                    or urlsplit(expected_source).scheme not in ('https', 'http')
+                    or not urlsplit(expected_source).hostname):
+                raise PlatformFormError('selected cover upload was not confirmed')
             self._wait(lambda: dialog.count() == 0, stage='cover_dialog_closed', cover_index=index)
             preview = cover_control.locator('img')
-            source_kind = preview.evaluate_all("(es) => es.length !== 1 ? 'missing_or_multiple' : es[0].src.startsWith('blob:') ? 'temporary' : es[0].src.startsWith('https://') ? 'uploaded' : 'other'")
+            source_kind = preview.evaluate_all("(es) => es.length !== 1 ? 'missing_or_multiple' : es[0].src.startsWith('blob:') ? 'temporary' : es[0].src.startsWith('https://') || es[0].src.startsWith('http://') ? 'uploaded' : 'other'")
             logger.info('baidu_publication_cover_preview cover_index=%s source_kind=%s', index, source_kind)
             # Baidu first renders a local blob, then replaces it with the
-            # uploaded cover URL. Freeze only the decoded HTTPS image in this
-            # exact slot; a temporary preview is not upload completion.
+            # uploaded cover URL. Freeze only the decoded network image in this
+            # exact slot matching the selected upload response. Recommended images
+            # and temporary previews cannot confirm the selected local file.
             # Missing images keep polling without hiding later stop signals.
             value = self._wait(lambda: preview.evaluate_all(
-                '(es, previous) => es.length === 1 && es[0].src.startsWith("https://") && es[0].complete && es[0].naturalWidth > 0 && !previous.includes(es[0].src) ? es[0].src : null',
-                previous_preview), stage='cover_preview_replaced', cover_index=index)
+                '(es, expected) => es.length === 1 && es[0].src.replace(/^http:/, "https:") === expected.replace(/^http:/, "https:") && es[0].complete && es[0].naturalWidth > 0 ? es[0].src : null',
+                expected_source), stage='cover_preview_replaced', cover_index=index)
             self._covers.append(value)
             self._cover_images.append(self._cover_image(preview))
         self._ready = True
         self._assert_form()
-        self._arm_receipt()
 
     def _remember_image_response(self, response):
         if (response.request.resource_type != 'image'
@@ -322,7 +401,18 @@ class BrowserPublisher:
             self._image_responses[previous.url] = response
             previous = previous.redirected_from
 
+    def _observed_image_response(self, source):
+        url = urlsplit(source)._replace(fragment='')
+        response = self._image_responses.get(url.geturl())
+        # Chromium upgrades mixed-content images before issuing the request.
+        # The DOM can retain http: while only the exact https: URL was loaded.
+        if response is None and url.scheme == 'http':
+            response = self._image_responses.get(url._replace(scheme='https').geturl())
+        return response
+
     def _cover_image(self, image):
+        # Baidu may replace the preview with an HTTP image. Accept only a
+        # response already observed in this browser; never fetch it on the host.
         # Reuse the image this browser already loaded, including its Profile
         # proxy/session. URL rotation is allowed only for identical image bytes.
         # Hashes stay in memory; no image/URL enters reports or logs.
@@ -331,8 +421,8 @@ class BrowserPublisher:
             nonlocal previous_state
             state = image.evaluate('(e) => ({source:e.src, ready:e.complete && e.naturalWidth > 0})')
             source = state['source']
-            kind = ('https' if source.startswith('https://') else 'local' if source.startswith(('data:image/', 'blob:')) else 'other')
-            observed = urlsplit(source)._replace(fragment='').geturl() in self._image_responses
+            kind = (urlsplit(source).scheme if source.startswith(('https://', 'http://')) else 'local' if source.startswith(('data:image/', 'blob:')) else 'other')
+            observed = self._observed_image_response(source) is not None
             signature = (kind, state['ready'], observed)
             if signature != previous_state:
                 logger.info('baidu_publication_cover_source kind=%s decoded=%s response_observed=%s', *signature)
@@ -341,7 +431,7 @@ class BrowserPublisher:
                 return None
             if source.startswith(('data:image/', 'blob:')):
                 return source
-            if source.startswith('https://') and urlsplit(source)._replace(fragment='').geturl() in self._image_responses:
+            if source.startswith(('https://', 'http://')) and observed:
                 return source
             return None
         source = self._wait(loaded_source, timeout=min(self.timeout, 10), stage='cover_image_loaded')
@@ -355,8 +445,8 @@ class BrowserPublisher:
                 if (!data.byteLength || data.byteLength > 32 * 1024 * 1024) throw new Error('invalid cover size');
                 return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)));
             }"""))
-        response = self._image_responses.get(urlsplit(source)._replace(fragment='').geturl())
-        if not source.startswith('https://') or response is None:
+        response = self._observed_image_response(source)
+        if not source.startswith(('https://', 'http://')) or response is None:
             raise PlatformFormError('uploaded cover response was not observed')
         if not response.ok or not response.headers.get('content-type', '').lower().startswith('image/'):
             raise PlatformFormError('confirmed cover cannot be read')
@@ -391,7 +481,12 @@ class BrowserPublisher:
         return (request.method == 'POST' and url.scheme == 'https' and url.netloc == 'baijiahao.baidu.com'
                 and url.path == '/pcui/article/publish' and parse_qs(url.query).get('type') == ['video'])
 
-    def _arm_receipt(self):
+    def protect_scene(self,page):
+        if self._protected_page is page:
+            return
+        if self._protected_page is not None:
+            raise PlatformFormError('original publication scene cannot be replaced')
+        self._protected_page=page
         def requested(request):
             if not self._submitted or not self._is_publish(request):
                 return
@@ -424,9 +519,9 @@ class BrowserPublisher:
                 forwarded += 1
                 route.fallback()
 
-        self.page.route('https://baijiahao.baidu.com/pcui/article/publish?*', guard)
-        self.page.on('request', requested)
-        self.page.on('response', responded)
+        page.route('https://baijiahao.baidu.com/pcui/article/publish?*', guard)
+        page.on('request', requested)
+        page.on('response', responded)
 
     def submit(self):
         if self._submitted:
@@ -457,11 +552,6 @@ class BrowserPublisher:
 
 
 
-def read_baidu_identity(endpoint):
-    """Compose local Cookie access and the existing basic identity API client."""
-    return identify_baidu(read_live_cookies(endpoint))
-
-
 class BaiduPublisher:
     """One publication, with an explicit implementation and mandatory controls.
 
@@ -473,12 +563,19 @@ class BaiduPublisher:
                  identity_reader=None, browser_factory=None):
         self.endpoint = endpoint
         self.browser_session_factory = browser_session_factory
-        self.identity_reader = identity_reader or read_baidu_identity
+        self.identity_reader = identity_reader
         self.browser_factory = browser_factory or BrowserPublisher
         self._started = False
 
-    def _verify_identity(self, expected_uid):
-        observed = self.identity_reader(self.endpoint)
+    def _read_identity(self, page=None):
+        if self.identity_reader is not None:
+            return self.identity_reader(self.endpoint)
+        if page is None:
+            return read_baidu_identity(self.endpoint)
+        return read_baidu_identity(self.endpoint, browser_context=page.context)
+
+    def _verify_identity(self, expected_uid, *, page=None):
+        observed = self._read_identity(page)
         if (observed.get('login_status') != 'normal'
                 or observed.get('platform_account_id') != expected_uid):
             raise PublicationInputError('live platform UID differs or login unavailable')
@@ -493,16 +590,41 @@ class BaiduPublisher:
             raise PublicationInputError('expected platform UID is required')
         self._started = True
         control.check_stopped()
-        self._verify_identity(payload.platform_uid)
-        control.check_stopped()
-        control.on_prepared()
-        control.check_stopped()
-        implementation = self.browser_factory()
-        with self.browser_session_factory(self.endpoint) as session:
-            implementation.fill_form(session.page, payload, stopped=control.stopped,
-                                     replace_matching_draft=control.replace_matching_draft)
+        observed = self._read_identity()
+        initially_ready = observed.get('login_status') == 'normal'
+        if initially_ready:
+            if observed.get('platform_account_id') != payload.platform_uid:
+                raise PublicationInputError('live platform UID differs')
+            control.on_prepared()
             control.check_stopped()
-            self._verify_identity(payload.platform_uid)
+        elif control.wait_for_human is None:
+            raise PublicationInputError('platform login requires human verification')
+        implementation = self.browser_factory()
+        def human(show):
+            if control.wait_for_human is None:
+                raise PublicationInputError('human continuation is unavailable')
+            control.wait_for_human(show)
+            control.check_stopped()
+            self._verify_identity(payload.platform_uid, page=session.page)
+        with self.browser_session_factory(self.endpoint) as session:
+            implementation.protect_scene(session.page)
+            while observed.get('login_status') != 'normal':
+                if control.wait_for_human is None:
+                    raise PublicationInputError('platform login requires human verification')
+                control.check_stopped()
+                session.page.goto('https://baijiahao.baidu.com/builder/rc/home',wait_until='domcontentloaded')
+                control.wait_for_human(session.page.bring_to_front)
+                control.check_stopped()
+                observed = self._read_identity(session.page)
+            if observed.get('platform_account_id') != payload.platform_uid:
+                raise PublicationInputError('live platform UID differs')
+            if not initially_ready:
+                control.on_prepared()
+                control.check_stopped()
+            implementation.fill_form(session.page, payload, stopped=control.stopped,
+                                     replace_matching_draft=control.replace_matching_draft, wait_for_human=human)
+            control.check_stopped()
+            self._verify_identity(payload.platform_uid, page=session.page)
             control.check_stopped()
             control.before_submit()
             control.check_stopped()

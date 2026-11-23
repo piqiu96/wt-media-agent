@@ -8,7 +8,7 @@ info:
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
   # Bumped by CHG-20261028-099: retire generic task preflight/permit routes and proxy-check.
-  version: 2026.10.30.3
+  version: 2026.11.21.2
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -19,8 +19,8 @@ info:
     Token that the Desktop obtained from Cloud and handed to
     `POST /api/v1/agent-token`. That token lives in memory only: this API never
     echoes it back, never writes it to disk, and answers `400 agent_token_required`
-    when none has been provided. Every other route is local-only and never talks to
-    Cloud.
+    when none has been provided. Publication scene actions also call Cloud to verify
+    the current session, original task, attempt and revision before proceeding.
 
     Errors use `{error: {code, message?, retryable?, recovery_action?}}`; codes are
     listed in `contracts/local-error-codes/`.
@@ -634,8 +634,128 @@ paths:
         '502':
           description: Live browser read unavailable; no stored fallback.
 
+  /api/v1/publication-draft/{draft_type}:
+    parameters:
+      - {in: path, name: draft_type, required: true, schema: {type: string, enum: [task]}}
+      - in: header
+        name: X-Publication-User-ID
+        required: true
+        schema: {type: string, pattern: '^[1-9][0-9]*$'}
+        description: Filled only by the authenticated native bridge from Cloud's issued user_id. Never taken from a page-selected owner or unverified token claims. Environment is Agent configuration.
+    get:
+      operationId: getPublicationDraft
+      summary: Read current user's new task input; not a Cloud task.
+      responses:
+        '200': {description: Current input or empty input, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationDraftEnvelope'}}}}
+        '401': {description: Runtime bearer required. This route refuses operation when runtime authentication is unconfigured.}
+        '403': {description: Missing trusted user identity.}
+        '503': {description: Storage not configured.}
+    put:
+      operationId: savePublicationDraft
+      summary: Compare and save one input; never overwrite a newer revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payload, expected_revision]
+              properties:
+                payload: {type: object, description: 'Input only, maximum 2MiB encoded JSON. No credentials, signed URLs or resource snapshots.'}
+                expected_revision: {type: string, pattern: '^(0|[1-9][0-9]*)$'}
+      responses:
+        '200': {description: Saved or immediate identical request replay, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationDraftEnvelope'}}}}
+        '400': {description: Invalid input or unsupported type.}
+        '401': {description: Runtime bearer required.}
+        '403': {description: Missing trusted user identity.}
+        '409': {description: draft_revision_conflict; read and compare, never retry with a new revision automatically.}
+        '413': {description: Input exceeds size limit.}
+        '503': {description: Storage unavailable.}
+    delete:
+      operationId: clearPublicationDraft
+      summary: Clear input after confirmed creation or explicit discard, retaining its monotonic revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_revision]
+              properties:
+                expected_revision: {type: string, pattern: '^(0|[1-9][0-9]*)$'}
+      responses:
+        '200': {description: Cleared input; an old autosave cannot restore it, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationDraftEnvelope'}}}}
+        '400': {description: Invalid input.}
+        '401': {description: Runtime bearer required.}
+        '403': {description: Missing trusted user identity.}
+        '409': {description: draft_revision_conflict; input retained.}
+        '503': {description: Storage unavailable.}
+  /api/v1/publication-run/{attempt_id}/scene:
+    post:
+      operationId: showPublicationScene
+      summary: Bring only the still-live original human scene to front.
+      description: Requires configured runtime authentication and native authenticated user. Never creates an attempt, opens a replacement browser or uploads again. Missing scene, changed identity/input, stop request or submission barrier refuses continuation. A missing resume reply can be retried with the exact original revision while the original scene is still waiting.
+      parameters:
+        - {in: path, name: attempt_id, required: true, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+        - {in: header, name: X-Publication-User-ID, required: true, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [publication_id, expected_revision]
+              properties:
+                publication_id: {type: string, pattern: '^[1-9][0-9]*$'}
+                expected_revision: {type: string, pattern: '^[1-9][0-9]*$'}
+      responses:
+        '200': {description: Original attempt identity and current status in data; no submission permit.}
+        '400': {description: Invalid identity or input.}
+        '401': {description: Runtime bearer required.}
+        '403': {description: Current native user required.}
+        '409': {description: Original scene or authorization changed.}
+        '503': {description: Local execution or Cloud unavailable; preserve scene and retry exact operation.}
+  /api/v1/publication-run/{attempt_id}/resume:
+    post:
+      operationId: resumePublication
+      summary: Continue the same paused call stack after strict Cloud and live account checks.
+      description: Requires configured runtime authentication and native authenticated user. Never creates an attempt, opens a replacement browser or uploads again. Missing scene, changed identity/input, stop request or submission barrier refuses continuation. A missing resume reply can be retried with the exact original revision while the original scene is still waiting.
+      parameters:
+        - {in: path, name: attempt_id, required: true, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+        - {in: header, name: X-Publication-User-ID, required: true, schema: {type: string, pattern: '^[1-9][0-9]*$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [publication_id, expected_revision]
+              properties:
+                publication_id: {type: string, pattern: '^[1-9][0-9]*$'}
+                expected_revision: {type: string, pattern: '^[1-9][0-9]*$'}
+      responses:
+        '200': {description: Original attempt identity and current status in data; no submission permit.}
+        '400': {description: Invalid identity or input.}
+        '401': {description: Runtime bearer required.}
+        '403': {description: Current native user required.}
+        '409': {description: Original scene or authorization changed.}
+        '503': {description: Local execution or Cloud unavailable; preserve scene and retry exact operation.}
 components:
   schemas:
+    PublicationDraftEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [payload, revision, saved_at, schema_version]
+          properties:
+            payload: {type: object, nullable: true}
+            revision: {type: string, pattern: '^(0|[1-9][0-9]*)$'}
+            saved_at: {type: string, nullable: true, format: date-time}
+            schema_version: {type: integer, enum: [1]}
     Health:
       type: object
       required: [status, service, mode]

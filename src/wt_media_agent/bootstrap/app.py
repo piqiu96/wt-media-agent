@@ -42,11 +42,14 @@ from wt_media_agent.storage.database import Database
 from wt_media_agent.storage.checkpoint_store import CheckpointStore
 from wt_media_agent.storage.migration import apply_migrations
 from wt_media_agent.storage.save_directory import SaveDirectoryStore
+from wt_media_agent.storage.publication_draft import PublicationDraftStore
 from wt_media_agent.storage.publication import PublicationJournal
 from wt_media_agent.runner.publication import PublicationExecution
 from wt_media_agent.storage.publication import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
 from wt_media_agent.runner.publication_job import PublicationJob
+from wt_media_agent.runner.publication_check import PublicationCheckJob
+from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
 from wt_media_agent.runner.publication_loop import PublicationLoop
 from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
@@ -61,6 +64,7 @@ class Components:
     cloud: CloudAgentClient
     store: CheckpointStore
     save_directories: SaveDirectoryStore
+    publication_draft: PublicationDraftStore
     agent_token: AgentToken
     transfers: TransferRunner
     publication_journal: PublicationJournal
@@ -196,6 +200,11 @@ def build_components(config: AgentConfig | None = None) -> Components:
             raise ValueError('platform publisher is not available')
         return BaiduPublisher
 
+    def publication_checker_factory(platform):
+        if platform != 'baidu':
+            raise ValueError('platform public checker is not available')
+        return BaiduPublicationChecker
+
     return Components(
         config=config,
         state=state,
@@ -203,12 +212,14 @@ def build_components(config: AgentConfig | None = None) -> Components:
         cloud=cloud,
         store=store,
         save_directories=save_directories,
+        publication_draft=PublicationDraftStore(database, environment=config.environment),
         agent_token=agent_token,
         transfers=transfers,
         publication_journal=publication_journal,
         publication_execution=publication_execution,
         database=database,
         publications=PublicationLoop(agent_token, publication_preparation,
-            PublicationJob(publication_preparation, bitbrowser, publisher_factory)),
+            PublicationJob(publication_preparation, bitbrowser, publisher_factory),
+            PublicationCheckJob(cloud, bitbrowser, publication_journal, publication_checker_factory)),
         publication_preparation=publication_preparation,
     )

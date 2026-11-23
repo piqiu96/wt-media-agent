@@ -31,6 +31,7 @@ from support import LoggingStateTestCase, UnusedBitBrowser
 from wt_media_agent.bootstrap import cloud as cloud_mode
 from wt_media_agent.bootstrap.app import build_components
 from wt_media_agent.local_api.server import LocalApiServer, make_handler
+from wt_media_agent.local_api.publication_run import publication_run_response
 from wt_media_agent.runtime.config import load_config
 from wt_media_agent.runtime.constants import TASK_TYPE_MATERIAL_DOWNLOAD
 
@@ -71,6 +72,18 @@ class AssemblyTests(ComponentTestCase):
         super().setUp()
         self.components = self.build()
         self.config = self.components.config
+
+    def test_draft_uses_runtime_environment_independent_of_cloud_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            shared = dict(WT_MEDIA_AGENT_DATA_DIR=directory, WT_MEDIA_CLOUD_ENV='prod')
+            first = self.build(WT_MEDIA_ENV='test', **shared)
+            self.addCleanup(first.close)
+            first.publication_draft.put('9', 'task', {'description': 'test input'}, '0')
+            second = self.build(WT_MEDIA_ENV='pre', **shared)
+            self.addCleanup(second.close)
+            self.assertEqual(first.publication_draft.environment, 'test')
+            self.assertEqual(second.publication_draft.environment, 'pre')
+            self.assertIsNone(second.publication_draft.get('9', 'task')['payload'])
 
     def test_the_download_executor_reads_what_the_two_routes_write(self):
         """One object at each end, which is the whole of the assembly's job here.
@@ -220,6 +233,7 @@ class ModeSurfaceWiringTests(ComponentTestCase):
                 self.assertIs(kwargs.get("state"), components.state)
                 self.assertIs(kwargs.get("checkpoint_store"), components.store)
                 self.assertIs(kwargs.get("save_directory_store"), components.save_directories)
+                self.assertIs(kwargs.get("publication_draft"), components.publication_draft)
                 # The Agent Token the local route writes and the download loop
                 # reads is one object; a mode that passed a fresh holder would
                 # leave both ends working and nothing ever claimed.
@@ -233,6 +247,24 @@ class ModeSurfaceWiringTests(ComponentTestCase):
                 )
 
                 loops.assert_called_once_with(components)
+
+    def test_both_api_modes_reach_the_original_publication_scene_checks(self):
+        for name in ("sidecar", "local"):
+            components, serve, _ = self._drive(
+                self._mode(name), WT_MEDIA_AGENT_RUN_RUNNER="true"
+            )
+            job = serve.call_args.kwargs.get("publication_job")
+            for operation in ("scene", "resume"):
+                with self.subTest(mode=name, operation=operation):
+                    status, payload = publication_run_response(
+                        job, "test-token", "9", "34", operation,
+                        {"publication_id": "11", "expected_revision": "7"},
+                    )
+                    # A configured executor must check the original scene and
+                    # refuse its absence, rather than report missing execution.
+                    self.assertEqual(status, 409)
+                    self.assertEqual(payload["error"]["code"], "publication_scene_unavailable")
+                    self.assertIs(job, components.publications.job)
 
     def test_neither_api_mode_starts_a_loop_unless_it_was_asked_to(self):
         """Paired control: the switch is what decides, so the arms above mean something."""
