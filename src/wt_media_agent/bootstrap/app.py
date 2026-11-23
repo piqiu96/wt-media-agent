@@ -49,8 +49,7 @@ from wt_media_agent.storage.publication import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
 from wt_media_agent.runner.publication_job import PublicationJob
 from wt_media_agent.runner.publication_check import PublicationCheckJob
-from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
-from wt_media_agent.platforms.baidu.publication_api import BaiduPublicationApiReader
+from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
 from wt_media_agent.runner.publication_loop import PublicationLoop
 from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 
@@ -201,15 +200,10 @@ def build_components(config: AgentConfig | None = None) -> Components:
             raise ValueError('platform publisher is not available')
         return BaiduPublisher
 
-    def publication_reader_factory(platform):
+    def publication_checker_factory(platform):
         if platform != 'baidu':
-            raise ValueError('platform public reader is not available')
-        return BaiduPublicationReader
-
-    def publication_api_reader_factory(platform):
-        if platform != 'baidu':
-            raise ValueError('platform API reader is not available')
-        return lambda profile: BaiduPublicationApiReader(bitbrowser.read_request_environment(profile))
+            raise ValueError('platform public checker is not available')
+        return BaiduPublicationChecker
 
     return Components(
         config=config,
@@ -226,6 +220,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         database=database,
         publications=PublicationLoop(agent_token, publication_preparation,
             PublicationJob(publication_preparation, bitbrowser, publisher_factory),
-            PublicationCheckJob(cloud, bitbrowser, publication_journal, publication_reader_factory, api_reader_factory=publication_api_reader_factory)),
+            PublicationCheckJob(cloud, bitbrowser, publication_journal, publication_checker_factory)),
         publication_preparation=publication_preparation,
     )

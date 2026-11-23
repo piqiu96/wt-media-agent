@@ -2,7 +2,7 @@
 import tempfile,unittest
 from pathlib import Path
 from wt_media_agent.platforms.baidu.publisher import BrowserPublisher, image_upload_file
-from wt_media_agent.platforms.baidu.content import PlatformFormError, publication_description
+from wt_media_agent.platforms.baidu.publisher import PlatformFormError, publication_description
 
 class BrowserPublisherTests(unittest.TestCase):
     def test_old_video_processing_cannot_confirm_the_current_upload(self):

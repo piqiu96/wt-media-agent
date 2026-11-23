@@ -91,8 +91,11 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def check_public_reference(self, *, anonymous_public, link_scheme="https", decoy_links=(), list_pages=None, page_number_override=None, nonpreview_ids=()):
         from types import SimpleNamespace
         from unittest.mock import patch
-        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
-        from wt_media_agent.platforms.publish import PublicationReference
+        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
+        from wt_media_agent.platforms.publication_check import PublicationCheckControl
+        from wt_media_agent.services.browser.http import ProfileHttpError
+        from contextlib import nullcontext
+        from wt_media_agent.platforms.publication_check import PublicationReference
         import shutil
         encoder=shutil.which('ffmpeg')
         self.assertIsNotNone(encoder,'ffmpeg is required for real isolated media checks')
@@ -146,7 +149,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         class OwnedSession:
             def __enter__(self):return SimpleNamespace(page=page)
             def __exit__(self,*_):pass
-        reader=BaiduPublicationReader(self.endpoint,browser_session_factory=lambda _:OwnedSession(),
+        reader=BaiduPublicationChecker(browser_session_factory=lambda _:OwnedSession(),
             identity_reader=lambda _:{'login_status':'normal','platform_account_id':'fixture-uid'})
         original_goto=page.goto
         navigations=[]
@@ -157,7 +160,10 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
             # not intercept redirected requests. All browser traffic stays isolated.
             return original_goto(public if url==target else url, **kwargs)
         with patch.object(browser,'new_context',side_effect=anonymous_context), patch.object(page,'goto',side_effect=navigate):
-            result=reader.read(PublicationReference('fixture-uid','1882371730190912814',dict(self.payload.content)),current=lambda:True)
+            result=reader.check(PublicationReference('fixture-uid','1882371730190912814',dict(self.payload.content)),PublicationCheckControl(
+                current=lambda:True, browser_fallback_allowed=True,
+                read_environment=lambda:(_ for _ in ()).throw(ProfileHttpError('fixture browser required')),
+                browser=lambda:nullcontext(self.endpoint)))
         if result.conclusion=='uncertain':
             self.assertEqual(navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
             self.assertEqual(visits,[])
@@ -216,10 +222,10 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.external,[])
 
     def test_repeated_page_number_does_not_loop_or_register_another_work(self):
-        from wt_media_agent.platforms.publish import PublicationInputError
+        from wt_media_agent.platforms.publication_check import PublicationCheckError
         other='http://baijiahao.baidu.com/builder/preview/s?id=1882359387756944157'
         target=other.replace('1882359387756944157','1882371730190912814')
-        with self.assertRaises(PublicationInputError):
+        with self.assertRaises(PublicationCheckError):
             self.check_public_reference(anonymous_public=True,list_pages=[[other],[target]],page_number_override={2:1})
         self.assertEqual(self.public_check_list_visits,[1,2])
         self.assertEqual(self.public_check_navigations,['https://baijiahao.baidu.com/pcui/article/lists?currentPage=1&pageSize=10'])
@@ -283,13 +289,13 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(entered,[True])
 
     def test_public_result_owner_recheck_uses_current_profile_context(self):
-        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationReader
-        from wt_media_agent.platforms.publish import PublicationReference
+        from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
+        from wt_media_agent.platforms.publication_check import PublicationReference
         context = self.page.context
         context.route('https://image.baidu.com/user/logininfo?**', lambda route: route.fulfill(
             content_type='application/json', body='{"data":{"user":{"user_id":6572476037}}}'))
         before = len(context.pages)
-        reader = BaiduPublicationReader(self.endpoint)
+        reader = BaiduPublicationChecker()
         reader._verify_owner(PublicationReference('6572476037','1882371730190912814',{}),
                              lambda: True, page=self.page)
         self.assertEqual(len(context.pages), before)

@@ -25,10 +25,9 @@ class BaiduPublicationClient:
         self.session.close()
 
 
-class BrowserReadRequired(RuntimeError):
-    def __init__(self, reason='api'):
-        super().__init__(reason)
-        self.reason = reason
+class BaiduPublicationApiError(RuntimeError):
+    """The platform API did not provide a usable original-submission response."""
+
 
 def list_url(number):
     return 'https://baijiahao.baidu.com/pcui/article/lists?' + urlencode({'currentPage': number, 'pageSize': 10})
@@ -42,7 +41,7 @@ def find_submission(fetch, submission_id, *, current):
         response = fetch(list_url(number))
         body = response.get('json')
         if response.get('status') != 200 or not isinstance(body, dict) or type(body.get('errno')) is not int or body['errno'] != 0:
-            raise BrowserReadRequired()
+            raise BaiduPublicationApiError()
         data = body.get('data')
         if not isinstance(data, dict) or not isinstance(data.get('page'), dict) or not isinstance(data.get('list'), list):
             raise ValueError('platform list shape changed')

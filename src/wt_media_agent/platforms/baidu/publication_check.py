@@ -2,13 +2,13 @@
 from datetime import datetime, timezone
 from math import isfinite
 
-from wt_media_agent.platforms.baidu.content import publication_description
 from wt_media_agent.clients.baidu.publication import (
     is_submission_id, is_exact_target_url, read_public_work_id, observed_target,
-    find_submission, list_url,
+    find_submission, list_url, BaiduPublicationClient, BaiduPublicationApiError,
 )
 from wt_media_agent.platforms.baidu.identity import read_baidu_identity
-from wt_media_agent.platforms.publish import PublicationInputError, PublicationReference, PublicWorkObservation
+from wt_media_agent.platforms.publication_check import PublicationCheckError, PublicationReference, PublicWorkObservation, PublicationCheckControl
+from wt_media_agent.services.browser.http import ProfileHttpError
 from wt_media_agent.services.browser.session import BrowserSession
 
 
@@ -25,7 +25,6 @@ def verify_public_metadata(work_url, expected_description, metadata, *, now):
         return datetime.fromtimestamp(stamp, tz=timezone.utc)
     except (ValueError, OverflowError, OSError):
         return None
-
 
 
 def _read_only(route):
@@ -56,15 +55,79 @@ PUBLIC_METADATA = """expectedId => {
 }"""
 
 
-class BaiduPublicationReader:
-    def __init__(self, endpoint, *, browser_session_factory=BrowserSession, identity_reader=None):
-        self.endpoint = endpoint
+class _BrowserReadRequired(RuntimeError):
+    def __init__(self, reason='api'):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class BaiduPublicationChecker:
+    def __init__(self, *, client_factory=BaiduPublicationClient, browser_session_factory=BrowserSession, identity_reader=None):
+        self.client_factory = client_factory
+        self.endpoint = None
         self.browser_session_factory = browser_session_factory
         self.identity_reader = identity_reader
 
+    def check(self, reference: PublicationReference, control: PublicationCheckControl) -> PublicWorkObservation:
+        if not control.current():
+            raise PublicationCheckError('publication check identity changed')
+        if not is_submission_id(reference.submission_id):
+            raise PublicationCheckError('original submission identity is missing')
+        try:
+            return self._read_api(reference, control)
+        except _BrowserReadRequired as required:
+            public_proof = required.reason == 'public_proof'
+        except BaiduPublicationApiError:
+            public_proof = False
+        if not control.browser_fallback_allowed and not public_proof:
+            return PublicWorkObservation('uncertain', '接口读取需人工核对，已停止自动核验',
+                '本机接口仍不可用，原任务已经尝试过浏览器接口兜底，不再反复打开窗口', lookup_result='blocked')
+        if not control.current():
+            raise PublicationCheckError('publication check identity changed')
+        with control.browser() as endpoint:
+            self.endpoint = endpoint
+            observation = self._read_browser(reference, current=control.current)
+        if public_proof and observation.conclusion == 'reviewing':
+            return PublicWorkObservation('uncertain', '指定作品公开依据尚未齐全，请人工核实',
+                '列表接口已显示发布，但匿名可播放媒体或实际发布时间未能完整核实；停止反复开窗，保留审核中', lookup_result='blocked')
+        return observation
+
+    def _read_api(self, reference, control):
+        current = control.current
+        try:
+            client = self.client_factory(control.read_environment())
+        except ProfileHttpError:
+            raise _BrowserReadRequired() from None
+        try:
+            if not current():
+                raise PublicationCheckError('publication identity changed')
+            identity = client.read_identity()
+            if identity['login_status'] != 'normal':
+                raise _BrowserReadRequired()
+            uid = identity['platform_account_id']
+            if uid != reference.platform_uid:
+                return PublicWorkObservation('uncertain', '账号身份不一致，请核对原账号',
+                    '当前登录态与原投稿账号UID不一致，停止自动核验，不上传或重新投稿', lookup_result='blocked')
+            row = client.find_submission(reference.submission_id, current=current)
+            if not current():
+                raise PublicationCheckError('publication identity changed')
+            if row is None:
+                return PublicWorkObservation('uncertain', '原账号内容列表未找到指定投稿',
+                    '已核对原账号并完成列表接口实际分页，没有找到原投稿；不据此判定失败或重新投稿', lookup_result='not_found')
+            target = observed_target(reference.submission_id, row.get('url'))
+            if reference.target_url and target and reference.target_url != target:
+                raise PublicationCheckError('original target changed')
+            if row.get('is_published') == 1 and row.get('status') == 'publish':
+                raise _BrowserReadRequired('public_proof')
+            return PublicWorkObservation('reviewing', '平台已接收，等待指定作品公开',
+                '原账号UID及列表接口原投稿ID匹配，公开媒体和实际发布时间尚待完整核验',
+                reference.submission_id, target or reference.target_url, lookup_result='found')
+        finally:
+            client.close()
+
     def _verify_owner(self, reference, current, *, page=None):
         if not current():
-            raise PublicationInputError('publication check identity changed')
+            raise PublicationCheckError('publication check identity changed')
         if self.identity_reader is not None:
             observed = self.identity_reader(self.endpoint)
         elif page is not None:
@@ -73,12 +136,12 @@ class BaiduPublicationReader:
             observed = read_baidu_identity(self.endpoint, browser_session_factory=self.browser_session_factory)
         if (observed.get('login_status') != 'normal'
                 or observed.get('platform_account_id') != reference.platform_uid):
-            raise PublicationInputError('publication check live account differs')
+            raise PublicationCheckError('publication check live account differs')
 
     def _locate_target(self, page, reference, current):
         if reference.target_url:
             if not is_exact_target_url(reference.submission_id, reference.target_url):
-                raise PublicationInputError('original target differs from receipt')
+                raise PublicationCheckError('original target differs from receipt')
             return reference.target_url
         # Visit JSON once to establish the platform origin. All pagination is GET fetch,
         # never navigation to the work-list UI or a click on a pagination control.
@@ -95,12 +158,12 @@ class BaiduPublicationReader:
         try:
             row = find_submission(fetch, reference.submission_id, current=current)
         except ValueError:
-            raise PublicationInputError('original submission list changed') from None
+            raise PublicationCheckError('original submission list changed') from None
         if row is None:
             return None
         target = observed_target(reference.submission_id, row.get('url'))
         if not target:
-            raise PublicationInputError('original record has no verified target link')
+            raise PublicationCheckError('original record has no verified target link')
         return target
 
     def _anonymous_proof(self, browser, work_url, description):
@@ -120,10 +183,14 @@ class BaiduPublicationReader:
         finally:
             anonymous.close()
 
-    def read(self, reference, *, current):
+    def _read_browser(self, reference, *, current):
         if not is_submission_id(reference.submission_id):
-            raise PublicationInputError('original submission identity is missing')
-        description = publication_description(reference.content)
+            raise PublicationCheckError('original submission identity is missing')
+        description = reference.content.get('description')
+        topics = reference.content.get('topics', '')
+        if not isinstance(description, str) or not description.strip() or not isinstance(topics, str):
+            raise PublicationCheckError('original confirmed publication text is missing')
+        description += (' ' + topics if topics else '')
         self._verify_owner(reference, current)
         with self.browser_session_factory(self.endpoint) as session:
             page = session.page

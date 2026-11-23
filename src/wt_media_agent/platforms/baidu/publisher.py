@@ -12,13 +12,27 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from wt_media_agent.platforms.baidu.identity import read_baidu_identity
-from wt_media_agent.platforms.baidu.content import PlatformFormError, publication_description
 from wt_media_agent.platforms.publish import PublicationInputError, PublishControl, PublishPayload, PublishReceipt
 from wt_media_agent.runtime.constants import PublishMethod
 from wt_media_agent.services.browser.session import BrowserSession
 
 
 logger = logging.getLogger(__name__)
+
+
+class PlatformFormError(PublicationInputError):
+    pass
+
+
+def publication_description(content):
+    description = content.get('description')
+    topics = content.get('topics', '')
+    if not isinstance(description, str) or not description.strip() or not isinstance(topics, str):
+        raise PlatformFormError('confirmed publication text is missing')
+    value = description + (' ' + topics if topics else '')
+    if len(value) > 50:
+        raise PlatformFormError('confirmed description and topics exceed the platform editor limit')
+    return value
 
 
 def image_upload_file(source: Path) -> Path:

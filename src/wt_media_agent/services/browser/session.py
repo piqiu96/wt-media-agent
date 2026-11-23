@@ -1,5 +1,6 @@
 """One local BitBrowser connection; disconnect never proves scene closure."""
 from urllib.parse import urlsplit
+from contextlib import contextmanager
 
 
 class BrowserSession:
@@ -38,3 +39,40 @@ class BrowserSession:
 
     def __exit__(self, *_):
         self.close()
+
+
+class ProfileReadSession:
+    """Read resources for one closed Profile, under the caller's operation lock."""
+    def __init__(self, bitbrowser, profile_id):
+        self.bitbrowser = bitbrowser
+        self.profile_id = profile_id
+        self.closed = False
+        self.browser_used = False
+        self._opening_attempted = False
+
+    def __enter__(self):
+        self.closed = self.bitbrowser.is_profile_closed(self.profile_id) is True
+        if not self.closed:
+            raise RuntimeError('original Profile is occupied')
+        return self
+
+    def read_environment(self):
+        return self.bitbrowser.read_request_environment(self.profile_id)
+
+    @contextmanager
+    def browser(self):
+        if self._opening_attempted:
+            raise RuntimeError('read browser cannot be reopened')
+        self._opening_attempted = True
+        self.closed = False  # Invalidate even if the open reply is lost.
+        endpoint = self.bitbrowser.open_profile_for_check(self.profile_id)
+        self.browser_used = True
+        try:
+            yield endpoint
+        finally:
+            self.closed = self.bitbrowser.close_profile_verified(self.profile_id, endpoint) is True
+
+    def __exit__(self, exc_type, *_):
+        if exc_type is None and not self._opening_attempted:
+            self.closed = False
+            self.closed = self.bitbrowser.is_profile_closed(self.profile_id) is True

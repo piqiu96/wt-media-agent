@@ -4,8 +4,10 @@ from datetime import datetime,timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from wt_media_agent.platforms.publish import PublicWorkObservation
+from wt_media_agent.platforms.publication_check import PublicWorkObservation
 from wt_media_agent.runner.publication_check import PublicationCheckJob
+from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
+from wt_media_agent.clients.baidu.publication import BaiduPublicationApiError
 from wt_media_agent.runtime.profile_operation import ProfileOperations
 
 TARGET='https://baijiahao.baidu.com/builder/preview/s?id=1882371730190912814'
@@ -18,9 +20,13 @@ class PublicCheckJobTests(unittest.TestCase):
         self.bit=Mock();self.bit.scan_profiles.return_value=SimpleNamespace(profiles=[SimpleNamespace(bit_profile_id='original-profile',main_user_id='bit-owner')])
         self.bit.open_profile_for_check.return_value='127.0.0.1:9999'
         self.bit.close_profile_verified.return_value=True
+        self.bit.is_profile_closed.return_value=True
         self.reader=Mock();self.reader.read.return_value=PublicWorkObservation('published','指定作品已经公开','原账号、指定原链接、匿名媒体、确认内容和平台时间均已匹配','1882371730190912814',TARGET,'7000395122085014122',PUBLIC,datetime(2026,11,20,10,12,53,tzinfo=timezone.utc))
         self.journal=SimpleNamespace(profile_operations=ProfileOperations())
-        self.job=PublicationCheckJob(self.cloud,self.bit,self.journal,lambda platform:lambda endpoint:self.reader)
+        self.checker=BaiduPublicationChecker()
+        self.checker._read_api=Mock(side_effect=BaiduPublicationApiError())
+        self.checker._read_browser=self.reader.read
+        self.job=PublicationCheckJob(self.cloud,self.bit,self.journal,lambda platform:lambda:self.checker)
     def test_public_check_never_registers_attempt_or_downloads_or_publishes(self):
         original=copy.deepcopy(self.claim)
         self.job.tick('token','9',current=lambda:True)
@@ -134,7 +140,7 @@ class PublicCheckJobTests(unittest.TestCase):
 
     def enable_api(self, result):
         self.api=Mock();self.api.read.return_value=result
-        self.job.api_reader_factory=lambda platform:lambda profile:self.api
+        self.checker._read_api=self.api.read
         self.bit.is_profile_closed.return_value=True
     def test_api_missing_does_not_open_browser_and_reports_precise_lookup(self):
         self.enable_api(PublicWorkObservation('uncertain','原账号内容列表未找到指定投稿','原账号身份和列表接口分页均完成，暂未找到指定投稿',lookup_result='not_found'))
@@ -149,19 +155,19 @@ class PublicCheckJobTests(unittest.TestCase):
         self.bit.open_profile_for_check.assert_not_called()
         self.assertEqual(self.cloud.observe_publication.call_args.args[2]['lookup_result'],'found')
     def test_fallback_uses_owned_browser_and_records_usage(self):
-        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
-        self.enable_api(None);self.api.read.side_effect=BrowserReadRequired()
+        from wt_media_agent.clients.baidu.publication import BaiduPublicationApiError
+        self.enable_api(None);self.api.read.side_effect=BaiduPublicationApiError()
         self.job.tick('token','9',current=lambda:True)
         self.bit.open_profile_for_check.assert_called_once()
         self.assertTrue(self.cloud.observe_publication.call_args.args[2]['browser_used'])
 
     def test_api_fallback_close_failure_cannot_reuse_prior_closed_evidence(self):
-        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
+        from wt_media_agent.clients.baidu.publication import BaiduPublicationApiError
         from wt_media_agent.clients.bitbrowser.errors import BitBrowserUnavailableError
         for error in (BitBrowserUnavailableError('private close failure'), TimeoutError('private timeout')):
             with self.subTest(error=type(error).__name__):
                 self.enable_api(None)
-                self.api.read.side_effect = BrowserReadRequired()
+                self.api.read.side_effect = BaiduPublicationApiError()
                 self.bit.close_profile_verified.side_effect = error
                 self.job.tick('token', '9', current=lambda: True)
                 value = self.cloud.observe_publication.call_args.args[2]['observation']
@@ -170,9 +176,9 @@ class PublicCheckJobTests(unittest.TestCase):
                 self.assertNotIn('work_url', value)
 
     def test_api_fallback_open_failure_invalidates_prior_closed_evidence(self):
-        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
+        from wt_media_agent.clients.baidu.publication import BaiduPublicationApiError
         self.enable_api(None)
-        self.api.read.side_effect = BrowserReadRequired()
+        self.api.read.side_effect = BaiduPublicationApiError()
         self.bit.open_profile_for_check.side_effect = TimeoutError('open reply lost')
         self.job.tick('token', '9', current=lambda: True)
         value = self.cloud.observe_publication.call_args.args[2]['observation']
@@ -180,8 +186,8 @@ class PublicCheckJobTests(unittest.TestCase):
         self.assertFalse(value['evidence']['scene_closed'])
         self.bit.close_profile_verified.assert_not_called()
     def test_used_fallback_does_not_reopen_after_restart(self):
-        from wt_media_agent.clients.baidu.publication import BrowserReadRequired
-        self.enable_api(None);self.api.read.side_effect=BrowserReadRequired()
+        from wt_media_agent.clients.baidu.publication import BaiduPublicationApiError
+        self.enable_api(None);self.api.read.side_effect=BaiduPublicationApiError()
         self.claim['browser_fallback_allowed']=False
         self.job.tick('token','9',current=lambda:True)
         self.bit.open_profile_for_check.assert_not_called()
