@@ -113,11 +113,15 @@ class PublicationCheckJob:
             raise ValueError('original check settlement acknowledgement differs')
         self._change(user, state, 'settled')
 
-    def tick(self, token, user, *, current):
+    def tick(self, token, user, *, current, recovery_only=False):
         if not self._lock.acquire(blocking=False):
             return
         try:
             state = self.records.get(self.cloud_env, user)
+            # Window-free recovery is independent of real session validity.
+            # It cannot revalidate an active grant, read a platform or close a scene.
+            if recovery_only and (state is None or state['phase'] not in {'claiming', 'settling', 'packet'}):
+                return
             if state and state['phase'] != 'settled':
                 if state['phase'] == 'claiming':
                     if not self._change(user, state, 'settling'):
