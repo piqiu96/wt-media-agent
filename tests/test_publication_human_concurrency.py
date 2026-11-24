@@ -1,6 +1,7 @@
 """Multiple original human stacks backed by real SQLite; no platform acceptance."""
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Event, Thread, get_ident
 from types import SimpleNamespace
@@ -88,9 +89,61 @@ class HumanConcurrencyTests(unittest.TestCase):
             self.job.handle_human_action('token','3','11','11','5',resume=True)
         self.assertTrue(thread.is_alive());self.assertEqual(self.j.get(self.ids[0])['phase'],'prepared')
         self.resume_ack=True;self.action(self.ids[0]);thread.join(2);self.assertFalse(thread.is_alive())
+    def test_resume_waits_for_automatic_capacity_and_reuses_the_same_reservation_after_lost_ack(self):
+        identity = self.ids[0]
+        parked = Event()
+        reserved = set()
+        used_slots = 5
+
+        def park(actual):
+            self.assertEqual(actual, identity)
+            parked.set()
+
+        @contextmanager
+        def resume(actual):
+            self.assertEqual(actual, identity)
+            admitted = actual.key in reserved or used_slots < self.job.capacity['automatic_slots']
+            if admitted:
+                reserved.add(actual.key)
+            yield admitted
+
+        admission = SimpleNamespace(park=park, resume=Mock(side_effect=resume))
+        self.job.automatic_admission = admission
+        thread = self.start(identity)
+        self.assertTrue(parked.wait(2), "job should release automatic capacity after the reliable park ACK")
+        args = ('token', '3', '11', '11', '5')
+
+        self.assertEqual(self.job.handle_human_action(*args, resume=False)['status'], 'awaiting_human')
+        admission.resume.assert_not_called()
+        self.cloud.publication_human.reset_mock()
+        with self.assertRaisesRegex(JournalConflict, "automatic publication capacity is busy"):
+            self.job.handle_human_action(*args, resume=True)
+        admission.resume.assert_called_once_with(identity)
+        self.cloud.publication_human.assert_not_called()
+        self.assertTrue(thread.is_alive())
+        self.assertEqual(self.j.get(identity)['phase'], 'prepared')
+
+        used_slots = 4
+        self.cloud.publication_human.side_effect = TimeoutError('lost resume ACK')
+        with self.assertRaises(TimeoutError):
+            self.job.handle_human_action(*args, resume=True)
+        self.assertEqual(reserved, {identity.key})
+        self.assertTrue(thread.is_alive())
+        used_slots = 5
+        self.cloud.publication_human.side_effect = self.human
+        self.assertEqual(self.job.handle_human_action(*args, resume=True)['status'], 'running')
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.results['11']['status'], 'reviewing')
+        self.assertEqual(self.cloud.publication_human.call_count, 2)
+        original_request, replay = self.cloud.publication_human.call_args_list
+        self.assertEqual(replay, original_request)
+
     def test_lost_parking_ack_never_authorizes_human_resume(self):
         self.lose_park=True
+        self.job.automatic_admission = Mock()
         thread=self.start(self.ids[0]);thread.join(2)
+        self.job.automatic_admission.park.assert_not_called()
         self.assertFalse(thread.is_alive())
         with self.assertRaises(JournalConflict):self.job.handle_human_action('token','3','11','11','5',resume=True)
         self.assertNotEqual(self.results['11']['status'],'reviewing')

@@ -146,8 +146,8 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(result[0]['status'],'reviewing')
         self.assertEqual((self.platform.fills,self.platform.clicks),(1,1))
         self.assertEqual(calls,[False,True])
-        ack=self.job.handle_human_action('memory-only-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'5',resume=True)
-        self.assertEqual(ack['attempt_id'],self.i.attempt_id)
+        with self.assertRaises(JournalConflict):
+            self.job.handle_human_action('memory-only-token',self.i.user_id,self.i.task_id,self.i.attempt_id,'5',resume=True)
         self.assertEqual(calls,[False,True])
         self.assertEqual((self.platform.fills,self.platform.clicks),(1,1))
         with self.assertRaises(JournalConflict):
