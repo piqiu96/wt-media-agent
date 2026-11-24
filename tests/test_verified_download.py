@@ -48,3 +48,33 @@ class VerifiedDownloadTests(unittest.TestCase):
             with self.assertRaises(ResourceVerificationError) as error: download_verified(self.grant, self.target)
         self.assertNotIn('signature', str(error.exception))
         self.assertFalse(self.target.with_suffix('.part').exists())
+
+    def test_cancelled_identity_before_connect_never_reads_or_replaces_file(self):
+        with patch('wt_media_agent.services.files.verified_download.open_source') as source:
+            with self.assertRaises(ResourceVerificationError):
+                download_verified(self.grant,self.target,current=lambda:False)
+            source.assert_not_called()
+            self.assertFalse(self.target.exists())
+
+    def test_slow_drip_exceeding_total_deadline_removes_part_and_keeps_original(self):
+        self.target.parent.mkdir();self.target.write_bytes(b'previous')
+        now=[10.0]
+        class SlowStream(io.BytesIO):
+            def read(stream,size):
+                now[0]+=2
+                return super(SlowStream,stream).read(1)
+        with patch('wt_media_agent.services.files.verified_download.time.monotonic',side_effect=lambda:now[0]), \
+             patch('wt_media_agent.services.files.verified_download.open_source',return_value=SlowStream(self.body)):
+            with self.assertRaises(ResourceVerificationError):download_verified(self.grant,self.target,deadline=13.0)
+        self.assertEqual(self.target.read_bytes(),b'previous')
+        self.assertFalse(self.target.with_suffix('.part').exists())
+
+    def test_identity_loss_after_chunk_never_commits_completed_download(self):
+        active=[True]
+        class SwitchingStream(io.BytesIO):
+            def read(stream,size):
+                chunk=super(SwitchingStream,stream).read(size);active[0]=False;return chunk
+        with patch('wt_media_agent.services.files.verified_download.open_source',return_value=SwitchingStream(self.body)):
+            with self.assertRaises(ResourceVerificationError):download_verified(self.grant,self.target,current=lambda:active[0])
+        self.assertFalse(self.target.exists())
+        self.assertFalse(self.target.with_suffix('.part').exists())

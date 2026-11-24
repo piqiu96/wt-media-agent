@@ -5,6 +5,8 @@ replayed claim or process restart is reconciliation work, never browser work.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+import math
+import time
 from wt_media_agent.runner.publication import PublicationDelivery
 from pathlib import Path
 from threading import RLock
@@ -38,9 +40,12 @@ class PreparedPublication:
 
 
 class PublicationPreparation:
-    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str, capacity=None):
+    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str, capacity=None, preparation_timeout=900.0):
         self.cloud_env=_environment(cloud_env)
         self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self._report_locks={};self._locks_guard=RLock()
+        if type(preparation_timeout) not in (int, float) or not math.isfinite(preparation_timeout) or preparation_timeout <= 0:
+            raise ValueError('positive preparation timeout required')
+        self.preparation_timeout=preparation_timeout
         self.capacity=capacity or {'automatic_slots':5,'window_slots':10}
 
     @contextmanager
@@ -81,8 +86,9 @@ class PublicationPreparation:
         state=self.journal.get(identity)
         if state['phase']!=PublicationPhase.CLAIMED:
             raise JournalConflict('preparation cannot be replayed')
+        deadline=time.monotonic()+self.preparation_timeout
         def check_current():
-            if not current():
+            if not current() or time.monotonic() >= deadline:
                 raise CloudExecutionStopped('credentials_changed')
         check_current()
         task=claim['task'];i=claim['attempt']['input_snapshot']
@@ -99,7 +105,7 @@ class PublicationPreparation:
         portrait_cover=folder/'portrait-cover'
         for name, target in (('video',video),('cover',cover),('portrait_cover',portrait_cover)):
             check_current()
-            download_verified(grants[name],target)
+            download_verified(grants[name],target,current=current,deadline=deadline)
         check_current()
         endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
         self._prepared.add(identity.key)
