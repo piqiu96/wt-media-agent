@@ -156,6 +156,8 @@ class PublicationCheckJob:
                     else:
                         safe = self._safe_claim(claim, user)
                         accepted = self._change(user, state, 'active', claim=safe)
+                        if not accepted:
+                            settling = self._change(user, state, 'settling')
             if settling:
                 self._settle_unreceived(token, user, self.records.get(self.cloud_env, user))
             if failure is not None:
@@ -183,7 +185,8 @@ class PublicationCheckJob:
         disposition = 'not_opened'
         try:
             with self.profile_operations.registration(profile_id):
-                if self.publication_occupied(profile_id):
+                own = (self.records._key(self.cloud_env, user), state['request_key'])
+                if self.publication_occupied(profile_id) or self.records.profile_occupied(profile_id, exclude=own):
                     return
                 actual = self.records.get(self.cloud_env, user)
                 if actual != state:
@@ -192,6 +195,8 @@ class PublicationCheckJob:
                 if len([p for p in profiles if p.bit_profile_id == profile_id and p.main_user_id == source['bit_main_user_id']]) != 1:
                     return
                 if state['phase'] == 'possible_open':
+                    if not current():
+                        return
                     # Never open again. A missing original endpoint cannot prove socket closure.
                     if not state.get('endpoint') or self.bitbrowser.close_profile_verified(profile_id, state['endpoint']) is not True:
                         return

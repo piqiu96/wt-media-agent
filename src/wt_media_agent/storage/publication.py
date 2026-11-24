@@ -101,6 +101,32 @@ def _safe_result(value: dict) -> None:
     visit(value)
 
 
+def _lock_profile_admission(session):
+    # SQLite serializes writers before either existing record source is read.
+    # No lease or new state row: even a zero-row UPDATE takes its writer barrier.
+    session.execute(update(AgentMetadata).where(AgentMetadata.key == 'publication.profile_admission').values(value=AgentMetadata.value))
+
+
+def _publication_profile_occupied(session, profile_id, exclude=None):
+    query = select(Checkpoint.id).where(Checkpoint.bit_profile_id == profile_id,
+        Checkpoint.task_type == TASK_TYPE_PUBLICATION,
+        Checkpoint.checkpoint_status != PublicationCheckpointStatus.SETTLED)
+    if exclude is not None:
+        query = query.where(~((Checkpoint.cloud_env == exclude.cloud_env) & (Checkpoint.user_id == exclude.user_id) &
+            (Checkpoint.task_id == exclude.task_id) & (Checkpoint.attempt_id == exclude.attempt_id)))
+    return session.scalar(query.limit(1)) is not None
+
+
+def _check_profile_occupied(session, profile_id, exclude=None):
+    for row in session.scalars(select(AgentMetadata).where(AgentMetadata.key.startswith('publication.check.'))):
+        state = json.loads(row.value)
+        if exclude == (row.key, state['request_key']):
+            continue
+        if state['phase'] != 'settled' and state.get('claim', {}).get('attempt', {}).get('input_snapshot', {}).get('bit_profile_id') == profile_id:
+            return True
+    return False
+
+
 class PublicationJournal:
     def __init__(self, database: Database, *, agent_id: str = ''):
         self.database = database
@@ -130,12 +156,14 @@ class PublicationJournal:
         if result.rowcount != 1:
             raise JournalConflict('execution state changed concurrently')
 
-    def profile_in_use(self, profile_id: str) -> bool:
+    def profile_in_use(self, profile_id: str, *, exclude=None) -> bool:
         with self.database.session() as session:
-            return session.scalar(select(Checkpoint.id).where(
-                Checkpoint.bit_profile_id==profile_id,
-                Checkpoint.task_type==TASK_TYPE_PUBLICATION,
-                Checkpoint.checkpoint_status!=PublicationCheckpointStatus.SETTLED).limit(1)) is not None
+            return _publication_profile_occupied(session, profile_id, exclude)
+
+    def profile_available(self, identity):
+        with self.database.session() as session:
+            return not (_publication_profile_occupied(session, identity.bit_profile_id, identity)
+                        or _check_profile_occupied(session, identity.bit_profile_id))
 
     def retained_window_count(self) -> int:
         """Count physical scenes in every local owner/environment scope.
@@ -167,8 +195,11 @@ class PublicationJournal:
         digest=hashlib.sha256(encoded.encode()).hexdigest()
         state={'identity':asdict(identity),'input':json.loads(encoded),'phase':PublicationPhase.CLAIMED,'report_seq':0}
         now=utc_now_iso()
-        # Insert first: uniqueness is the arbiter, even with deferred transactions.
         with self.database.session.begin() as session:
+            _lock_profile_admission(session)
+            if (_publication_profile_occupied(session, identity.bit_profile_id, identity)
+                    or _check_profile_occupied(session, identity.bit_profile_id)):
+                raise JournalConflict('Profile has an unresolved local holder')
             inserted=self.database.insert_if_absent(session, Checkpoint, dict(cloud_env=identity.cloud_env,user_id=identity.user_id,
                 task_id=identity.task_id,task_type=TASK_TYPE_PUBLICATION,agent_id=self.agent_id,attempt_id=identity.attempt_id,
                 bit_profile_id=identity.bit_profile_id,checkpoint_status=PublicationCheckpointStatus.OPEN,input_hash=digest,

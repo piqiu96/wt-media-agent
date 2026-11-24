@@ -4,7 +4,8 @@ import uuid
 from sqlalchemy import select, update
 from wt_media_agent.storage.database import retry_write
 from wt_media_agent.storage.models import AgentMetadata
-from wt_media_agent.storage.publication import PublicationClaimStore
+from wt_media_agent.storage.publication import (PublicationClaimStore, _lock_profile_admission,
+    _publication_profile_occupied, _check_profile_occupied)
 from wt_media_agent.utils.time import utc_now_iso
 
 
@@ -46,6 +47,12 @@ class PublicationCheckStore:
     def transition(self, environment, user, request_key, phase, next_phase, **changes):
         key = self._key(environment, user)
         with self.database.session.begin() as session:
+            if phase == 'claiming' and next_phase == 'active':
+                _lock_profile_admission(session)
+                profile_id = changes.get('claim', {}).get('attempt', {}).get('input_snapshot', {}).get('bit_profile_id')
+                if profile_id and (_publication_profile_occupied(session, profile_id) or
+                                   _check_profile_occupied(session, profile_id, (key, request_key))):
+                    return False
             row = session.get(AgentMetadata, key)
             if row is None:
                 return False
@@ -57,15 +64,9 @@ class PublicationCheckStore:
                 .values(value=_json(state), updated_at=utc_now_iso()))
             return changed.rowcount == 1
 
-    def profile_occupied(self, profile_id):
-        # Cross-environment local exclusion: a real window belongs to this machine.
+    def profile_occupied(self, profile_id, *, exclude=None):
         with self.database.session() as session:
-            values = session.scalars(select(AgentMetadata.value).where(AgentMetadata.key.startswith('publication.check.')))
-            for raw in values:
-                state = json.loads(raw)
-                if state['phase'] != 'settled' and state.get('claim', {}).get('attempt', {}).get('input_snapshot', {}).get('bit_profile_id') == profile_id:
-                    return True
-        return False
+            return _check_profile_occupied(session, profile_id, exclude)
 
     def retained_window_count(self):
         """Potentially usable local reservations, across every owner/environment."""

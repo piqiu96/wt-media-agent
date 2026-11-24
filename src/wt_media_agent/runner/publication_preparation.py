@@ -107,7 +107,11 @@ class PublicationPreparation:
             check_current()
             download_verified(grants[name],target,current=current,deadline=deadline)
         check_current()
-        endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
+        with self.journal.profile_operations.registration(identity.bit_profile_id):
+            if not self.journal.profile_available(identity):
+                raise JournalConflict('Profile has another unresolved local holder')
+            check_current()
+            endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
         self._prepared.add(identity.key)
         return PreparedPublication(identity,video,cover,endpoint,portrait_cover)
 
