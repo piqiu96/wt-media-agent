@@ -137,6 +137,27 @@ class PublicationJournal:
                 Checkpoint.task_type==TASK_TYPE_PUBLICATION,
                 Checkpoint.checkpoint_status!=PublicationCheckpointStatus.SETTLED).limit(1)) is not None
 
+    def retained_window_count(self) -> int:
+        """Count physical scenes in every local owner/environment scope.
+
+        An undelivered report can already prove a physical window closed. All
+        other unresolved claims remain conservative capacity reservations;
+        database or malformed-record failures propagate and prevent admission.
+        """
+        with self.database.session() as session:
+            rows = session.execute(select(Checkpoint, Result).outerjoin(
+                Result, Result.checkpoint_id == Checkpoint.id).where(
+                    Checkpoint.task_type == TASK_TYPE_PUBLICATION,
+                    Checkpoint.checkpoint_status != PublicationCheckpointStatus.SETTLED))
+            count = 0
+            for checkpoint, result in rows:
+                if result is not None:
+                    value = json.loads(result.result_json)['result']
+                    if value.get('evidence', {}).get('scene_closed') is True:
+                        continue
+                count += 1
+            return count
+
     def register(self, identity: ExecutionIdentity, frozen_input: dict) -> bool:
         with self.profile_operations.registration(identity.bit_profile_id):
             return self._register(identity, frozen_input)

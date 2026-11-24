@@ -35,6 +35,21 @@ class PublicationExecutionTests(unittest.TestCase):
         self.journal = PublicationJournal(Database(self.db))
         self.owner = identity()
 
+    def test_retained_window_capacity_counts_all_owners_until_verified_closed(self):
+        from dataclasses import replace
+        first = self.owner
+        second = replace(first, cloud_env='prod', user_id='4', task_id='10', bit_profile_id='other-profile')
+        self.journal.register(first, snapshot())
+        self.journal.register(second, snapshot())
+        self.assertEqual(self.journal.retained_window_count(), 2)
+        # A closed physical scene frees window capacity even while its report
+        # awaits Cloud ACK; unknown scenes retain it across local owners.
+        self.journal.save_result(first, {'status':'failed','evidence':{'scene_closed':True,'not_submitted':True}}, report_seq=1)
+        reopened = PublicationJournal(Database(self.db))
+        self.assertEqual(reopened.retained_window_count(), 1)
+        reopened.save_result(second, {'status':'uncertain','evidence':{'scene_closed':False}}, report_seq=1)
+        self.assertEqual(reopened.retained_window_count(), 1)
+
     def test_draft_replacement_requires_latest_same_profile_safe_settled_input(self):
         from dataclasses import replace
         def check(*, old_changes=None, new_input=None, result=None, settle=True, delivered=True, manual_resolution=False):
