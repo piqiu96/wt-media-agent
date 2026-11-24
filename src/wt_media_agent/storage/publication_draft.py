@@ -24,7 +24,7 @@ class PublicationDraftStore:
     def _scope(self, user_id, draft_type):
         if not isinstance(user_id, str) or not re.fullmatch(r'[1-9][0-9]*', user_id):
             raise ValueError('verified user required')
-        if draft_type != 'task':
+        if draft_type not in {'task', 'batch'}:
             raise ValueError('unsupported draft type')
         return dict(environment=self.environment, user_id=user_id, draft_type=draft_type)
 

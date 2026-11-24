@@ -8,7 +8,7 @@ info:
   # permit finish, profile CRUD, cookie read; scan observations now carry `observed_at`.
   # Bumped by CHG-20261015-098 (round 3): platform id `baijiahao` renamed to `baidu`.
   # Bumped by CHG-20261028-099: retire generic task preflight/permit routes and proxy-check.
-  version: 2026.11.21.2
+  version: 2026.11.25.1
   description: |
     The loopback API the Desktop drives on this machine. Every route requires the
     local runtime token (`Authorization: Bearer <runtime token>`) when one is
@@ -636,7 +636,7 @@ paths:
 
   /api/v1/publication-draft/{draft_type}:
     parameters:
-      - {in: path, name: draft_type, required: true, schema: {type: string, enum: [task]}}
+      - {in: path, name: draft_type, required: true, schema: {type: string, enum: [task, batch]}}
       - in: header
         name: X-Publication-User-ID
         required: true
@@ -644,7 +644,7 @@ paths:
         description: Filled only by the authenticated native bridge from Cloud's issued user_id. Never taken from a page-selected owner or unverified token claims. Environment is Agent configuration.
     get:
       operationId: getPublicationDraft
-      summary: Read current user's new task input; not a Cloud task.
+      summary: Read current user's unsubmitted task or batch input; not a Cloud business record.
       responses:
         '200': {description: Current input or empty input, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationDraftEnvelope'}}}}
         '401': {description: Runtime bearer required. This route refuses operation when runtime authentication is unconfigured.}

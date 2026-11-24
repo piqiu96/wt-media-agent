@@ -62,6 +62,23 @@ class PublicationDraftTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as executor:
             self.assertEqual(sorted(executor.map(save, ['甲', '乙'])), [False, True])
 
+    def test_batch_restart_isolation_and_late_save_after_clear(self):
+        payload = {'request_key': 'batch-original', 'config': {'candidates': [{'row_key': 'r1'}]}}
+        saved = self.store.put('9', 'batch', payload, '0')
+        self.store.put('9', 'task', {'description': '独立任务'}, '0')
+        self.db.close()
+        self.db = Database(self.path)
+        apply_migrations(self.db)
+        self.store = PublicationDraftStore(self.db, environment='dev')
+        self.assertEqual(self.store.get('9', 'batch'), saved)
+        self.assertIsNone(self.store.get('10', 'batch')['payload'])
+        self.assertIsNone(PublicationDraftStore(self.db, environment='prod').get('9', 'batch')['payload'])
+        self.store.clear('9', 'batch', '1')
+        with self.assertRaises(DraftConflict):
+            self.store.put('9', 'batch', payload, '1')
+        self.assertEqual(self.store.get('9', 'task')['payload'], {'description': '独立任务'})
+        self.assertEqual(self.store.get('9', 'batch')['revision'], '2')
+
     def test_payload_and_scope_validation(self):
         for user, kind, payload, revision in [
             ('', 'task', {}, '0'), ('9', 'plan', {}, '0'), ('9', 'task', [], '0'),
