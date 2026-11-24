@@ -174,6 +174,36 @@ class EnvLayerTest(unittest.TestCase):
         self.assertEqual(cfg.log_file, str(cfg.paths.logs_dir / "agent.log"))
 
 
+class PublicationCapacityConfigTest(unittest.TestCase):
+    def test_defaults_are_five_automatic_and_ten_total_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load(config_dir=Path(tmp))
+        self.assertEqual(config.publication_automatic_slots, 5)
+        self.assertEqual(config.publication_window_slots, 10)
+
+    def test_environment_overrides_the_file_per_setting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_config(root, "[publication]\nautomatic_slots = 1\nwindow_slots = 13\n")
+            config = load(config_dir=root, env={"WT_MEDIA_PUBLICATION_WINDOW_SLOTS": "64"})
+        self.assertEqual(config.publication_automatic_slots, 1)
+        self.assertEqual(config.publication_window_slots, 64)
+
+    def test_rejects_nonintegers_and_out_of_range_counts_by_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for setting in ("automatic_slots", "window_slots"):
+                path = f"publication.{setting}"
+                key = f"WT_MEDIA_PUBLICATION_{setting.upper()}"
+                for value in ("true", "2.0", "2.5", "0", "-1", "65"):
+                    with self.subTest(setting=setting, value=value):
+                        write_config(root, f"[publication]\n{setting} = {value}\n")
+                        with self.assertRaisesRegex(ConfigError, f"^{path}:"):
+                            load(config_dir=root)
+                        with self.assertRaisesRegex(ConfigError, f"^{path}:"):
+                            load(config_dir=root, env={key: value})
+
+
 class InvalidValueTest(unittest.TestCase):
     def test_non_numeric_port_from_env_names_the_key(self):
         with self.assertRaises(ConfigError) as caught:

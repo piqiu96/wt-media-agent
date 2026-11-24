@@ -36,6 +36,8 @@ from wt_media_agent.runtime.constants import (
     DEFAULT_LOCAL_API_PORT,
     DEFAULT_LOG_MAX_RECORD_BYTES,
     DEFAULT_LOG_RETENTION_DAYS,
+    DEFAULT_PUBLICATION_AUTOMATIC_SLOTS,
+    DEFAULT_PUBLICATION_WINDOW_SLOTS,
 )
 from wt_media_agent.runtime.paths import RuntimePaths, is_frozen, repository_root
 
@@ -187,6 +189,16 @@ def _as_positive_int(raw: object) -> int:
     return value
 
 
+def _as_publication_slots(raw: object) -> int:
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.isascii() and text.isdecimal():
+            raw = _as_int(text)
+    if type(raw) is not int or not 1 <= raw <= 64:
+        raise ConfigError("expected an integer from 1 to 64")
+    return raw
+
+
 def _as_optional_float(raw: object) -> float | None:
     """Optional override: unset or unparseable both mean "not configured".
 
@@ -257,6 +269,10 @@ _SPEC: tuple[Field, ...] = (
     # not how much of it there is.
     Field("log_max_record_bytes", "logging.max_record_bytes", ("WT_MEDIA_LOG_MAX_RECORD_BYTES",), DEFAULT_LOG_MAX_RECORD_BYTES, _as_positive_int),
     Field("log_retention_days", "logging.retention_days", ("WT_MEDIA_LOG_RETENTION_DAYS",), DEFAULT_LOG_RETENTION_DAYS, _as_positive_int),
+    Field("publication_automatic_slots", "publication.automatic_slots", ("WT_MEDIA_PUBLICATION_AUTOMATIC_SLOTS",),
+          DEFAULT_PUBLICATION_AUTOMATIC_SLOTS, _as_publication_slots),
+    Field("publication_window_slots", "publication.window_slots", ("WT_MEDIA_PUBLICATION_WINDOW_SLOTS",),
+          DEFAULT_PUBLICATION_WINDOW_SLOTS, _as_publication_slots),
     # Environment-only. A value in the TOML is ignored by construction.
     Field("runtime_token", "runtime_token", ("WT_MEDIA_AGENT_RUNTIME_TOKEN",), "", _as_str, secret=True),
 )
@@ -292,6 +308,8 @@ class AgentConfig:
     cloud_env: str = DEFAULT_CLOUD_ENV
     database_synchronous: str = DEFAULT_DATABASE_SYNCHRONOUS
     database_timeout_seconds: float = DEFAULT_DATABASE_TIMEOUT_SECONDS
+    publication_automatic_slots: int = DEFAULT_PUBLICATION_AUTOMATIC_SLOTS
+    publication_window_slots: int = DEFAULT_PUBLICATION_WINDOW_SLOTS
 
     @property
     def local_api_address(self) -> str:
