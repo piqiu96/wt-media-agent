@@ -31,7 +31,7 @@ class Cloud:
             if self.lose_result: raise ConnectionError('lost result response')
             self.stored_hash=packet['result_hash']
             return {'attempt_id':packet['attempt_id'],'result_hash':packet['result_hash'],'task_status':packet['result']['status']}
-        return {'stop_requested':False}
+        return {'stop_requested':False, **({'scene_parked':True} if packet.get('scene_parked') is True else {})}
 
 
     def original_publication_attempt(self,token,task,attempt):
@@ -41,8 +41,11 @@ class Cloud:
 
 class Preparation:
     def __init__(self,journal,cloud,ident,root):
-        self.journal=journal;self.cloud_env=ident.cloud_env;self.cloud=cloud;self.report_lock=RLock();self.ident=ident;self.root=root;self.fresh=True
-    def prepare(self,token,value,ident):
+        self.journal=journal;self.cloud_env=ident.cloud_env;self.cloud=cloud;self._locks_guard=RLock();self._report_locks={};self.ident=ident;self.root=root;self.fresh=True
+    def reporting(self,ident):
+        from wt_media_agent.runner.publication_preparation import PublicationPreparation
+        return PublicationPreparation.reporting(self,ident)
+    def prepare(self,token,value,ident,**kwargs):
         return SimpleNamespace(identity=ident,video=self.root/'video',cover=self.root/'cover',portrait_cover=self.root/'portrait-cover',endpoint='127.0.0.1:9999')
     def mark_ready(self, token, ident):
         from wt_media_agent.runner.publication_preparation import PublicationPreparation
@@ -120,9 +123,9 @@ class PublicationJobTests(unittest.TestCase):
             wait_for_human(shown.set)
         self.platform.fill_form = fill
         calls=[]
-        def check(token,task,attempt,revision,*,resume=False):
+        def check(token,task,attempt,revision,*,resume=False,capacity=None):
             calls.append(resume)
-            return {'stop_requested':False,'allow_submit':False,'task_status':'running' if resume else 'awaiting_human','attempt_id':attempt}
+            return {'stop_requested':False,'allow_submit':False,'task_status':'running' if resume else 'awaiting_human','attempt_id':attempt,'scene_parked':not resume}
         self.cloud.publication_human = check
         worker=Thread(target=lambda:result.append(self.run_job()),daemon=True)
         worker.start()
@@ -163,7 +166,7 @@ class PublicationJobTests(unittest.TestCase):
                 self.live_identity.return_value={'login_status':'normal','platform_account_id':'changed-account'}
             return value
         self.job.cloud.report_publication=report
-        self.job.cloud.publication_human=lambda *args,**kw:{'stop_requested':False,'allow_submit':False,'task_status':'running','attempt_id':self.i.attempt_id}
+        self.job.cloud.publication_human=lambda *args,**kw:{'stop_requested':False,'allow_submit':False,'task_status':'running','attempt_id':self.i.attempt_id,'scene_parked':False}
         result=[]
         thread=Thread(target=lambda:result.append(self.run_job()),daemon=True);thread.start()
         for _ in range(200):

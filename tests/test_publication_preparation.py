@@ -46,7 +46,7 @@ def cloud_claim(replayed=False, owner='3'):
 class FakeCloud:
  base_url='https://cloud.test'
  def __init__(self):self.value=cloud_claim();self.keys=[];self.reports=[];self.fail_claim=False;self.fail_report=False
- def claim_publication(self,token,key):
+ def claim_publication(self,token,key,*,capacity=None):
   self.keys.append(key)
   if self.fail_claim:raise ConnectionError('lost response')
   return copy.deepcopy(self.value)
