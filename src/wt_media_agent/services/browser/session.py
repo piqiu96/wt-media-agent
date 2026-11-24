@@ -65,10 +65,11 @@ class ProfileReadSession:
     def browser(self):
         if self._opening_attempted:
             raise RuntimeError('read browser cannot be reopened')
-        self._before_open()
-        self._opening_attempted = True
-        self.closed = False  # Invalidate even if the open reply is lost.
-        endpoint = self.bitbrowser.open_profile_for_check(self.profile_id)
+        def before_open():
+            self._before_open()
+            self._opening_attempted = True
+            self.closed = False  # Invalidate even if the actual open reply is lost.
+        endpoint = self.bitbrowser.open_profile_for_check(self.profile_id, before_open=before_open)
         self.browser_used = True
         try:
             self._opened(endpoint)

@@ -32,7 +32,9 @@ class PublicCheckJobTests(unittest.TestCase):
         self.path=Path(self.temp.name)/'agent.db'
         self.db=Database(self.path);apply_migrations(self.db)
         self.bit=Mock();self.bit.scan_profiles.return_value=SimpleNamespace(profiles=[SimpleNamespace(bit_profile_id='original-profile',main_user_id='bit-owner')])
-        self.bit.open_profile_for_check.return_value='127.0.0.1:9999'
+        def opened(profile, *, before_open=lambda:None):
+            before_open();return '127.0.0.1:9999'
+        self.bit.open_profile_for_check.side_effect=opened
         self.bit.close_profile_verified.return_value=True
         self.bit.is_profile_closed.return_value=True
         self.reader=Mock();self.reader.read.return_value=PublicWorkObservation('published','指定作品已经公开','原账号、指定原链接、匿名媒体、确认内容和平台时间均已匹配','1882371730190912814',TARGET,'7000395122085014122',PUBLIC,datetime(2026,11,20,10,12,53,tzinfo=timezone.utc))
@@ -117,7 +119,9 @@ class PublicCheckJobTests(unittest.TestCase):
         self.assertEqual(self.cloud.release_publication_check.call_args.args[2]['profile_disposition'],'closed')
         self.assertEqual(self.state()['phase'],'settled')
     def test_open_response_lost_never_opens_again_or_guesses_closed(self):
-        self.bit.open_profile_for_check.side_effect=TimeoutError('private lost reply')
+        def lost(profile, *, before_open=lambda:None):
+            before_open();raise TimeoutError('private lost reply')
+        self.bit.open_profile_for_check.side_effect=lost
         self.run_check();self.restart();self.run_check()
         self.bit.open_profile_for_check.assert_called_once()
         self.bit.close_profile_verified.assert_not_called()
@@ -180,7 +184,8 @@ class PublicCheckJobTests(unittest.TestCase):
             PublicationCheckJob(self.cloud,self.bit,SimpleNamespace(profile_operations=ProfileOperations(),profile_in_use=lambda _:False),lambda _:None,cloud_env='dev')
 
     def test_possible_open_is_durable_before_external_open(self):
-        def opening(profile):
+        def opening(profile, *, before_open=lambda:None):
+            before_open()
             self.assertEqual(self.state()['phase'],'possible_open')
             return '127.0.0.1:9999'
         self.bit.open_profile_for_check.side_effect=opening
