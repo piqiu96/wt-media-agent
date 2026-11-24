@@ -69,6 +69,40 @@ class VerifiedDownloadTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(),b'previous')
         self.assertFalse(self.target.with_suffix('.part').exists())
 
+    def test_real_http_slow_drip_obeys_total_deadline_before_body_finishes(self):
+        import http.client
+        import socket
+        import threading
+        import time
+        from wt_media_agent.clients.transfer.source import SourceStream
+        receiver, sender = socket.socketpair()
+        self.addCleanup(receiver.close); self.addCleanup(sender.close)
+        receiver.settimeout(.06)
+        sender.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n')
+        response = http.client.HTTPResponse(receiver); response.begin()
+        stream = SourceStream(response=response, url_length=100, range_honoured=True, start_offset=0)
+        stopped = threading.Event()
+        def drip():
+            try:
+                for _ in range(100):
+                    if stopped.wait(.01): return
+                    sender.sendall(b'a')
+            except OSError:
+                pass
+        worker = threading.Thread(target=drip, daemon=True); worker.start()
+        self.addCleanup(stopped.set)
+        grant = dict(self.grant,size=100,sha256=hashlib.sha256(b'a'*100).hexdigest())
+        started = time.monotonic()
+        try:
+            with patch('wt_media_agent.services.files.verified_download.open_source',return_value=stream):
+                with self.assertRaises(ResourceVerificationError):
+                    download_verified(grant,self.target,deadline=started+.12)
+        finally:
+            stopped.set(); worker.join(1)
+        self.assertLess(time.monotonic()-started,.5)
+        self.assertFalse(self.target.exists())
+        self.assertFalse(self.target.with_suffix('.part').exists())
+
     def test_identity_loss_after_chunk_never_commits_completed_download(self):
         active=[True]
         class SwitchingStream(io.BytesIO):

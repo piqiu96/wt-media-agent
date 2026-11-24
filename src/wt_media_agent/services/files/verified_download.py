@@ -33,7 +33,7 @@ def download_verified(grant: dict, target: Path, *, current=lambda: True, deadli
             part.chmod(0o600)
             while True:
                 check_current()
-                chunk=response.read(128*1024)
+                chunk=getattr(response, 'read_available', response.read)(128*1024)
                 check_current()
                 if not chunk: break
                 count+=len(chunk)
