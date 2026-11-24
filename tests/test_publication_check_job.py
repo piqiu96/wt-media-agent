@@ -195,15 +195,15 @@ class PublicCheckJobTests(unittest.TestCase):
         self.cloud.observe_publication.side_effect=observe
         self.run_check()
         self.assertEqual(self.state()['phase'],'settled')
-    def test_active_restart_with_new_same_owner_session_preserves_original_snapshot(self):
+    def test_active_restart_revalidates_original_session_and_preserves_snapshot(self):
         self.journal.profile_operations.occupied=lambda _:True
         self.job.publication_occupied=self.journal.profile_operations.occupied
         self.run_check()
         key=self.state()['request_key']
         self.journal.profile_operations.occupied=lambda _:False
         self.restart()
-        self.job.tick('new-session-token','9',current=lambda:True)
-        self.cloud.claim_publication_check.assert_called_once()
+        self.job.tick('token','9',current=lambda:True)
+        self.assertEqual(self.cloud.claim_publication_check.call_count,2)
         self.assertEqual(self.state()['request_key'],key)
         self.bit.open_profile_for_check.assert_called_once()
         reference=self.reader.read.call_args.args[0]
@@ -250,3 +250,27 @@ class PublicCheckJobTests(unittest.TestCase):
         self.reader.read.side_effect=reading
         self.run_check()
         self.assertEqual(self.state()['phase'],'settled')
+
+    def test_new_session_active_replay_rejection_only_settles_without_platform_read(self):
+        from wt_media_agent.clients.cloud.errors import CloudError
+        self.job.publication_occupied=lambda _:True
+        self.run_check()
+        original_key=self.state()['request_key']
+        self.job.publication_occupied=lambda _:False
+        self.restart()
+        self.cloud.claim_publication_check.side_effect=CloudError('publication_profile_use_conflict','old session refused')
+        self.job.tick('new-same-owner-token','9',current=lambda:True)
+        self.bit.open_profile_for_check.assert_not_called();self.reader.read.assert_not_called()
+        self.cloud.observe_publication.assert_not_called()
+        self.assertEqual(self.cloud.claim_publication_check.call_args.args,('new-same-owner-token',original_key))
+        self.assertTrue(self.cloud.release_publication_check.call_args.args[2]['release_only'])
+    def test_revoked_active_snapshot_never_opens_or_checks_platform(self):
+        self.job.publication_occupied=lambda _:True
+        self.run_check()
+        self.restart()
+        self.claim['task']['revision']='8'
+        self.claim['expected_revision']='8'
+        self.run_check()
+        self.bit.open_profile_for_check.assert_not_called();self.reader.read.assert_not_called()
+        self.cloud.observe_publication.assert_not_called()
+        self.cloud.release_publication_check.assert_called_once()

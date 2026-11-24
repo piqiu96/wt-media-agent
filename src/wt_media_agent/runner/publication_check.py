@@ -127,6 +127,24 @@ class PublicationCheckJob:
                     return self._settle_unreceived(token, user, state)
                 if state['phase'] == 'packet':
                     return self._flush(token, user, state, current)
+                if state['phase'] == 'active' and current():
+                    try:
+                        replay = self.cloud.claim_publication_check(token, state['request_key'], capacity=state['capacity'])
+                    except CloudError:
+                        # A current same-owner replacement session can only settle this
+                        # never-opened local reservation, not inherit the old work grant.
+                        return self._read(token, user, state, lambda: False, recovering=True)
+                    if replay and replay.get('reservation_state') == 'released':
+                        if not self._ack_matches(replay, state['claim']):
+                            raise ValueError('replayed check acknowledgement differs')
+                        self._change(user, state, 'settled')
+                        return
+                    try:
+                        original = self._safe_claim(replay, user)
+                    except (ValueError, TypeError, AttributeError):
+                        original = None
+                    if original != state['claim']:
+                        return self._read(token, user, state, lambda: False, recovering=True)
                 return self._read(token, user, state, current, recovering=True)
             if not current():
                 return
