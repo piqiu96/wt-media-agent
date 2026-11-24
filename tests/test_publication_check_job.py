@@ -217,3 +217,36 @@ class PublicCheckJobTests(unittest.TestCase):
         self.run_check()
         self.cloud.release_publication_check.assert_called_once()
         self.bit.open_profile_for_check.assert_called_once()
+    def test_denied_admission_does_not_rotate_key_and_recovery_ignores_guard(self):
+        from contextlib import contextmanager
+        @contextmanager
+        def denied():yield False
+        self.job.admission_guard=denied
+        self.run_check()
+        self.cloud.claim_publication_check.assert_not_called()
+        self.assertIsNone(self.state())
+        state=self.job.records.begin('dev','9',{})
+        self.job.records.transition('dev','9',state['request_key'],'claiming','settling')
+        self.run_check()
+        self.assertEqual(self.state()['phase'],'settled')
+        self.assertEqual(self.state()['request_key'],state['request_key'])
+        self.run_check()
+        self.assertEqual(self.state()['request_key'],state['request_key'])
+    def test_admission_guard_covers_claim_and_accept_but_not_read_or_observe(self):
+        from contextlib import contextmanager
+        guarded=[False]
+        @contextmanager
+        def guard():
+            guarded[0]=True
+            try:yield True
+            finally:guarded[0]=False
+        self.job.admission_guard=guard
+        def claim(*args,**kwargs):
+            self.assertTrue(guarded[0]);return self.claim
+        self.cloud.claim_publication_check.side_effect=claim
+        original=self.reader.read.return_value
+        def reading(*args,**kwargs):
+            self.assertFalse(guarded[0]);return original
+        self.reader.read.side_effect=reading
+        self.run_check()
+        self.assertEqual(self.state()['phase'],'settled')

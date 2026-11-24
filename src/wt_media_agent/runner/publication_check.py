@@ -2,6 +2,7 @@
 from __future__ import annotations
 import logging
 from datetime import timezone
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Lock
 from typing import Mapping
@@ -16,7 +17,7 @@ def _identity(value):
     return isinstance(value, str) and value.isascii() and value.isdecimal() and str(int(value)) == value and 0 < int(value) < 2**64
 
 class PublicationCheckJob:
-    def __init__(self, cloud, bitbrowser, journal, checker_factory, *, cloud_env, capacity=None, records=None):
+    def __init__(self, cloud, bitbrowser, journal, checker_factory, *, cloud_env, capacity=None, records=None, admission_guard=None):
         self.cloud = cloud
         self.bitbrowser = bitbrowser
         self.profile_operations = journal.profile_operations
@@ -26,6 +27,7 @@ class PublicationCheckJob:
         self.cloud_env = cloud_env
         self.capacity = capacity or {'automatic_slots': 1, 'window_slots': 1}
         self._lock = Lock()
+        self.admission_guard = admission_guard
 
     def _claim_identity(self, claim, user):
         if not isinstance(claim, Mapping):
@@ -128,26 +130,38 @@ class PublicationCheckJob:
                 return self._read(token, user, state, current, recovering=True)
             if not current():
                 return
-            state = self.records.begin(self.cloud_env, user, self.capacity)
-            # Another owner-bound worker may already have begun this key.
-            if state['phase'] != 'claiming':
-                return
-            try:
-                claim = self.cloud.claim_publication_check(token, state['request_key'], capacity=state['capacity'])
-            except Exception:
-                if self._change(user, state, 'settling'):
-                    self._settle_unreceived(token, user, self.records.get(self.cloud_env, user))
-                raise
-            if claim is None:
-                self._change(user, state, 'settled')
-                return
-            if claim.get('reservation_state') in {'released', 'cancelled'}:
-                self._change(user, state, 'settling')
-                return self._settle_unreceived(token, user, self.records.get(self.cloud_env, user))
-            safe = self._safe_claim(claim, user)
-            if not self._change(user, state, 'active', claim=safe):
-                return  # A late active reply never reverses a durable settlement decision.
-            return self._read(token, user, self.records.get(self.cloud_env, user), current, recovering=False)
+            failure = None
+            accepted = False
+            settling = False
+            # Only admission and durable acceptance share the machine-wide window barrier.
+            # Existing recovery above must never wait for capacity to become available.
+            guard = self.admission_guard() if self.admission_guard is not None else nullcontext(True)
+            with guard as admitted:
+                if not admitted or not current():
+                    return
+                state = self.records.begin(self.cloud_env, user, self.capacity)
+                if state['phase'] != 'claiming':
+                    return
+                try:
+                    claim = self.cloud.claim_publication_check(token, state['request_key'], capacity=state['capacity'])
+                except Exception as error:
+                    failure = error
+                    settling = self._change(user, state, 'settling')
+                else:
+                    if claim is None:
+                        self._change(user, state, 'settled')
+                        return
+                    if claim.get('reservation_state') in {'released', 'cancelled'}:
+                        settling = self._change(user, state, 'settling')
+                    else:
+                        safe = self._safe_claim(claim, user)
+                        accepted = self._change(user, state, 'active', claim=safe)
+            if settling:
+                self._settle_unreceived(token, user, self.records.get(self.cloud_env, user))
+            if failure is not None:
+                raise failure
+            if accepted:
+                return self._read(token, user, self.records.get(self.cloud_env, user), current, recovering=False)
         finally:
             self._lock.release()
 

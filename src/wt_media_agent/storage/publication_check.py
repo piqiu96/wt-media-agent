@@ -66,3 +66,19 @@ class PublicationCheckStore:
                 if state['phase'] != 'settled' and state.get('claim', {}).get('attempt', {}).get('input_snapshot', {}).get('bit_profile_id') == profile_id:
                     return True
         return False
+
+    def retained_window_count(self):
+        """Potentially usable local reservations, across every owner/environment."""
+        with self.database.session() as session:
+            values = session.scalars(select(AgentMetadata.value).where(AgentMetadata.key.startswith('publication.check.')))
+            count = 0
+            for raw in values:
+                state = json.loads(raw)
+                if not state.get('claim') or state['phase'] == 'settled':
+                    continue
+                packet = state.get('packet', {})
+                closed = (state['phase'] == 'packet' and packet.get('profile_disposition') in {'not_opened', 'closed'}
+                          and (packet.get('release_only') is True or packet.get('observation', {}).get('evidence', {}).get('scene_closed') is True))
+                if not closed:
+                    count += 1
+            return count

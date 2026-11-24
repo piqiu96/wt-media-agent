@@ -53,3 +53,14 @@ class CheckStoreTests(unittest.TestCase):
         self.assertTrue(self.store.profile_occupied('original'))
         self.store.transition('dev','9',key,'active','settled')
         self.assertFalse(self.store.profile_occupied('original'))
+
+    def test_retained_windows_count_all_owners_but_not_closed_packets(self):
+        for env,user in [('dev','9'),('prod','10')]:
+            key=self.store.begin(env,user,{})['request_key']
+            self.store.transition(env,user,key,'claiming','active',claim={'attempt':{'input_snapshot':{'bit_profile_id':user}}})
+        self.assertEqual(self.store.retained_window_count(),2)
+        state=self.store.get('dev','9')
+        self.store.transition('dev','9',state['request_key'],'active','packet',packet={'release_only':True,'profile_disposition':'closed'})
+        self.assertEqual(self.store.retained_window_count(),1)
+        self.store.begin('dev','11',{})
+        self.assertEqual(self.store.retained_window_count(),1)
