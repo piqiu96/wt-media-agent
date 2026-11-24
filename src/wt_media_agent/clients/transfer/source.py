@@ -165,8 +165,21 @@ class SourceStream:
 
     def read(self, size: int) -> bytes:
         """Read up to `size` bytes; `b""` at the end of the body."""
+        return self._read(size, available=False)
+
+    def read_available(self, size: int) -> bytes:
+        """Return after one underlying HTTP body read, without filling a chunk.
+
+        HTTPResponse.read(size) can wait indefinitely on a steadily trickling
+        peer. read1 returns each available fragment so callers can recheck the
+        absolute deadline and execution identity between socket reads.
+        """
+        return self._read(size, available=True)
+
+    def _read(self, size: int, *, available: bool) -> bytes:
         try:
-            return self.response.read(size)
+            reader = getattr(self.response, 'read1', self.response.read) if available else self.response.read
+            return reader(size)
         except TimeoutError as exc:
             raise SourceStalledError("no bytes arrived before the timeout") from exc
         except OSError as exc:

@@ -5,9 +5,12 @@ replayed claim or process restart is reconciliation work, never browser work.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+import math
+import time
 from wt_media_agent.runner.publication import PublicationDelivery
 from pathlib import Path
 from threading import RLock
+from contextlib import contextmanager
 from wt_media_agent.runtime.constants import (
     PublicationPhase,
     PublicationReport,
@@ -37,13 +40,24 @@ class PreparedPublication:
 
 
 class PublicationPreparation:
-    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str):
+    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str, capacity=None, preparation_timeout=900.0):
         self.cloud_env=_environment(cloud_env)
-        self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self.report_lock=RLock()
+        self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self._report_locks={};self._locks_guard=RLock()
+        if type(preparation_timeout) not in (int, float) or not math.isfinite(preparation_timeout) or preparation_timeout <= 0:
+            raise ValueError('positive preparation timeout required')
+        self.preparation_timeout=preparation_timeout
+        self.capacity=capacity or {'automatic_slots':5,'window_slots':10}
 
-    def claim(self, token: str, user_id: str):
+    @contextmanager
+    def reporting(self, identity):
+        with self._locks_guard:
+            lock = self._report_locks.setdefault(identity.key, RLock())
+        with lock:
+            yield
+
+    def claim(self, token: str, user_id: str, *, capacity=None):
         key=self.claims.pending(self.cloud_env,user_id)
-        value=self.cloud.claim_publication(token,key)
+        value=self.cloud.claim_publication(token,key,capacity=capacity or self.capacity)
         if value is None:
             self.claims.acknowledge(self.cloud_env,user_id,key)
             return None
@@ -65,13 +79,18 @@ class PublicationPreparation:
         self._fresh.add(identity.key)
         return value,identity
 
-    def prepare(self, token: str, claim, identity: ExecutionIdentity) -> PreparedPublication:
+    def prepare(self, token: str, claim, identity: ExecutionIdentity, *, current=lambda: True) -> PreparedPublication:
         if identity.key not in self._fresh:
             raise JournalConflict('preparation requires a fresh claim in this process')
         self._fresh.remove(identity.key)
         state=self.journal.get(identity)
         if state['phase']!=PublicationPhase.CLAIMED:
             raise JournalConflict('preparation cannot be replayed')
+        deadline=time.monotonic()+self.preparation_timeout
+        def check_current():
+            if not current() or time.monotonic() >= deadline:
+                raise CloudExecutionStopped('credentials_changed')
+        check_current()
         task=claim['task'];i=claim['attempt']['input_snapshot']
         profile=next((p for p in self.bitbrowser.scan_profiles().profiles if p.bit_profile_id==identity.bit_profile_id),None)
         if profile is None or profile.main_user_id!=i['bit_main_user_id']:
@@ -84,9 +103,15 @@ class PublicationPreparation:
         folder=self.directory/identity.key.replace(':','-')
         video=folder/'video.mp4';cover=folder/'cover'
         portrait_cover=folder/'portrait-cover'
-        download_verified(grants['video'],video);download_verified(grants['cover'],cover)
-        download_verified(grants['portrait_cover'],portrait_cover)
-        endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
+        for name, target in (('video',video),('cover',cover),('portrait_cover',portrait_cover)):
+            check_current()
+            download_verified(grants[name],target,current=current,deadline=deadline)
+        check_current()
+        with self.journal.profile_operations.registration(identity.bit_profile_id):
+            if not self.journal.profile_available(identity):
+                raise JournalConflict('Profile has another unresolved local holder')
+            check_current()
+            endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
         self._prepared.add(identity.key)
         return PreparedPublication(identity,video,cover,endpoint,portrait_cover)
 
@@ -95,7 +120,7 @@ class PublicationPreparation:
         source=self.journal.get(identity)['input']
         # Persist before reporting progress. Losing this response never reopens
         # the browser; this attempt then requires explicit reconciliation.
-        with self.report_lock:
+        with self.reporting(identity):
             seq=self.journal.advance(identity,PublicationPhase.PREPARED)
             feedback=self.cloud.report_publication(token,identity.task_id,PublicationReport.REPORT,{
                 'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,

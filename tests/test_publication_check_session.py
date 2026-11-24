@@ -12,7 +12,9 @@ class ProfileReadSessionTests(unittest.TestCase):
     def test_failed_open_invalidates_absence_without_closing_unknown_scene(self):
         bit = Mock()
         bit.is_profile_closed.return_value = True
-        bit.open_profile_for_check.side_effect = TimeoutError('lost open response')
+        def lost(profile, *, before_open):
+            before_open();raise TimeoutError('lost open response')
+        bit.open_profile_for_check.side_effect = lost
         resources = self.resources(bit)
         with self.assertRaises(TimeoutError), resources:
             self.assertTrue(resources.closed)
@@ -25,7 +27,9 @@ class ProfileReadSessionTests(unittest.TestCase):
     def test_failed_close_invalidates_absence_and_records_browser_use(self):
         bit = Mock()
         bit.is_profile_closed.return_value = True
-        bit.open_profile_for_check.return_value = '127.0.0.1:1234'
+        def opened(profile, *, before_open):
+            before_open();return '127.0.0.1:1234'
+        bit.open_profile_for_check.side_effect = opened
         bit.close_profile_verified.side_effect = TimeoutError('lost close response')
         resources = self.resources(bit)
         with self.assertRaises(TimeoutError), resources:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Event, Thread, RLock
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class PublicationJob:
-    def __init__(self, preparation, bitbrowser, platform_factory, *, heartbeat_interval=DEFAULT_PUBLICATION_HEARTBEAT_SECONDS, cache_cleanup=None):
+    def __init__(self, preparation, bitbrowser, platform_factory, *, heartbeat_interval=DEFAULT_PUBLICATION_HEARTBEAT_SECONDS, cache_cleanup=None, capacity=None):
         self.cache_cleanup = cache_cleanup
         self.preparation = preparation
         self.cloud = preparation.cloud
@@ -36,32 +37,50 @@ class PublicationJob:
         self.platform_factory = platform_factory
         self.heartbeat_interval = heartbeat_interval
         self._human_lock = RLock()
-        self._human = None
-        self._human_confirmation = None
+        self._human = {}
+        self.automatic_admission = None
+        self.capacity = capacity or {'automatic_slots':5,'window_slots':10}
 
-    def handle_human_action(self,token,user_id,task_id,attempt_id,revision,*,resume):
-        key = (token,user_id,task_id,attempt_id,revision)
+    def _human_key(self, user_id, task_id, attempt_id):
+        return (self.preparation.cloud_env, user_id, task_id, attempt_id)
+
+    def handle_human_action(self, token, user_id, task_id, attempt_id, revision, *, resume):
+        identity_key = self._human_key(user_id, task_id, attempt_id)
         with self._human_lock:
-            confirmation = self._human_confirmation
-            if resume and confirmation is not None and confirmation['key'] == key and confirmation['current']():
-                return dict(confirmation['result']) # An acknowledgement, never another execution event.
-            scene = self._human
-            if (scene is None or scene['token'] != token or not scene['current']()
-                    or scene['resume'].is_set()
-                    or (scene['identity'].user_id,scene['identity'].task_id,scene['identity'].attempt_id) != (user_id,task_id,attempt_id)
-                    or self.journal.get(scene['identity'])['phase'] not in {PublicationPhase.CLAIMED,PublicationPhase.PREPARED}):
+            scene = self._human.get(identity_key)
+        if scene is None:
+            raise JournalConflict('original live human scene is unavailable')
+        # No network calls under the shared scene registry lock.
+        with scene['action_lock']:
+            identity = scene['identity']
+            if (not scene['active'] or scene['token'] != token or not scene['current']()
+                    or self.journal.get(identity)['phase'] not in {PublicationPhase.CLAIMED, PublicationPhase.PREPARED}):
                 raise JournalConflict('original live human scene is unavailable')
-            feedback = self.cloud.publication_human(token,task_id,attempt_id,revision,resume=resume)
-            expected = PublicationStatus.RUNNING if resume else PublicationStatus.AWAITING_HUMAN
-            if (feedback.get('attempt_id') != attempt_id or feedback.get('stop_requested') is not False
-                    or feedback.get('allow_submit') is not False or feedback.get('task_status') != expected
-                    or not scene['current']()):
-                raise JournalConflict('Cloud did not confirm the original scene')
-            result={'attempt_id':attempt_id,'status':expected}
-            if resume:
-                self._human_confirmation={'key':key,'current':scene['current'],'result':result}
-            scene['resume' if resume else 'show'].set()
-            return dict(result)
+            confirmation = scene.get('confirmation')
+            if resume and confirmation is not None and confirmation['revision'] == revision:
+                return dict(confirmation['result'])
+            if not scene['parked'] or scene['resume'].is_set():
+                raise JournalConflict('original live human scene is unavailable')
+            gate = self.automatic_admission
+            admission = gate.resume(identity) if resume and gate is not None else nullcontext(True)
+            with admission as admitted:
+                if not admitted:
+                    raise JournalConflict('automatic publication capacity is busy')
+                with self.preparation.reporting(identity):
+                    feedback = self.cloud.publication_human(
+                        token, task_id, attempt_id, revision, resume=resume, capacity=self.capacity,
+                    )
+                expected = PublicationStatus.RUNNING if resume else PublicationStatus.AWAITING_HUMAN
+                if (feedback.get('attempt_id') != attempt_id or feedback.get('stop_requested') is not False
+                        or feedback.get('allow_submit') is not False or feedback.get('task_status') != expected
+                        or feedback.get('scene_parked') is not (False if resume else True) or not scene['current']()):
+                    raise JournalConflict('Cloud did not confirm the original scene')
+                result = {'attempt_id': attempt_id, 'status': expected}
+                if resume:
+                    scene['confirmation'] = {'revision': revision, 'result': result}
+                    scene['parked'] = False
+                scene['resume' if resume else 'show'].set()
+                return dict(result)
 
     def run(self, token, claim, identity, *, current=lambda: True):
         if self.journal.get(identity)['phase'] != PublicationPhase.CLAIMED:
@@ -75,10 +94,10 @@ class PublicationJob:
         evidence = {key: source[key] for key in ('platform_uid', 'video_sha256', 'cover_sha256', 'portrait_cover_sha256')}
         evidence['bit_profile_id'] = identity.bit_profile_id
 
-        def progress(stage, seq):
+        def progress(stage, seq, **extra):
             nonlocal stop_reason
             feedback = self.cloud.report_publication(token, identity.task_id, PublicationReport.REPORT,
-                dict(evidence, attempt_id=identity.attempt_id, report_seq=seq, stage=stage))
+                dict(evidence, attempt_id=identity.attempt_id, report_seq=seq, stage=stage, **extra))
             if feedback.get('stop_reason') == PUBLICATION_INPUT_CHANGED:
                 stop_reason = PUBLICATION_INPUT_CHANGED
             return feedback
@@ -97,34 +116,45 @@ class PublicationJob:
         def wait_for_human(show):
             if should_stop() or self.journal.get(identity)['phase'] not in {PublicationPhase.CLAIMED,PublicationPhase.PREPARED}:
                 raise JournalConflict('human continuation is unavailable after submission')
-            with self.preparation.report_lock:
-                feedback = progress(PublicationStage.AWAITING_HUMAN,self.journal.reserve_report(identity))
-            if feedback.get('stop_requested') is not False:
-                raise JournalConflict('Cloud stopped the human scene')
+            identity_key = self._human_key(identity.user_id, identity.task_id, identity.attempt_id)
             scene = {'token':token,'identity':identity,'current':lambda:not should_stop(),
-                     'show':Event(),'resume':Event()}
+                     'show':Event(),'resume':Event(),'parked':False,'active':True,'action_lock':RLock()}
+            # This is the original execution thread at its stopped pre-submit wait point.
             with self._human_lock:
-                if self._human is not None:
-                    raise JournalConflict('a human scene is already active')
-                self._human_confirmation = None
-                self._human = scene
+                if identity_key in self._human:
+                    raise JournalConflict('this original scene is already registered')
+                self._human[identity_key] = scene
             try:
+                with self.preparation.reporting(identity):
+                    feedback = progress(PublicationStage.AWAITING_HUMAN, self.journal.reserve_report(identity), scene_parked=True)
+                if feedback.get('stop_requested') is not False or feedback.get('scene_parked') is not True:
+                    raise JournalConflict('Cloud did not confirm reliable scene parking')
+                with scene['action_lock']:
+                    if should_stop():
+                        raise JournalConflict('original human scene stopped')
+                    gate = self.automatic_admission
+                    if gate is not None:
+                        gate.park(identity)
+                    scene['parked'] = True
                 while not scene['resume'].wait(.1):
                     if should_stop():
                         raise JournalConflict('original human scene stopped')
                     if scene['show'].is_set():
                         scene['show'].clear()
-                        show() # Runs only on the original browser thread.
+                        show()  # Only the original browser thread touches Playwright.
                 if should_stop():
                     raise JournalConflict('original human scene stopped')
             finally:
-                with self._human_lock:
-                    if self._human is scene:
-                        self._human = None
+                with scene['action_lock']:
+                    scene['active'] = False
+                    scene.pop('confirmation', None)
+                    with self._human_lock:
+                        if self._human.get(identity_key) is scene:
+                            del self._human[identity_key]
 
         def before_submit():
             nonlocal submission_denied
-            with self.preparation.report_lock:
+            with self.preparation.reporting(identity):
                 seq = self.journal.advance(identity, PublicationPhase.SUBMITTING)
                 feedback = progress(PublicationStage.SUBMITTING, seq)
                 submission_denied = feedback.get('allow_submit') is False and feedback.get('stop_requested') is True
@@ -138,7 +168,7 @@ class PublicationJob:
                     stopped.set()
                     return
                 try:
-                    with self.preparation.report_lock:
+                    with self.preparation.reporting(identity):
                         seq = self.journal.reserve_report(identity, keepalive=True)
                         feedback = self.cloud.report_publication(token, identity.task_id, PublicationReport.REPORT,
                             {'attempt_id': identity.attempt_id, 'report_seq': seq})
@@ -151,7 +181,7 @@ class PublicationJob:
         try:
             if should_stop():
                 raise JournalConflict('execution credentials changed')
-            with self.preparation.report_lock:
+            with self.preparation.reporting(identity):
                 feedback = progress(PublicationStage.PREPARING, self.journal.reserve_report(identity))
             if feedback.get('stop_requested') is not False:
                 raise JournalConflict('Cloud stopped the preparation')
@@ -159,7 +189,7 @@ class PublicationJob:
             pulse.start()
             # Reject unsupported platforms before resource preparation opens a Profile.
             publisher_factory = self.platform_factory(claim['task']['platform'])
-            prepared = self.preparation.prepare(token, claim, identity)
+            prepared = self.preparation.prepare(token, claim, identity, current=lambda: not should_stop())
             self.preparation.consume_prepared(prepared)
             if should_stop():
                 raise JournalConflict('execution is no longer current')
@@ -232,7 +262,7 @@ class PublicationJob:
             # only by the later public-result verification flow.
         # Save first; a network failure below only leaves this exact packet to
         # replay. It cannot re-enter preparation or the platform.
-        with self.preparation.report_lock:
+        with self.preparation.reporting(identity):
             seq = self.journal.get(identity)['report_seq'] + 1
             self.journal.save_result(identity, result, report_seq=seq)
         self.recover(token, identity.user_id)
@@ -253,7 +283,7 @@ class PublicationJob:
             try:
                 if packet is not None:
                     wire = {key: value for key, value in packet.items() if key != 'task_id'}
-                    with self.preparation.report_lock:
+                    with self.preparation.reporting(identity):
                         feedback = self.cloud.report_publication(token, identity.task_id, PublicationReport.COMPLETE, wire)
                     if (feedback.get('attempt_id'), feedback.get('result_hash')) == expected:
                         acknowledgement = feedback

@@ -46,7 +46,7 @@ def cloud_claim(replayed=False, owner='3'):
 class FakeCloud:
  base_url='https://cloud.test'
  def __init__(self):self.value=cloud_claim();self.keys=[];self.reports=[];self.fail_claim=False;self.fail_report=False
- def claim_publication(self,token,key):
+ def claim_publication(self,token,key,*,capacity=None):
   self.keys.append(key)
   if self.fail_claim:raise ConnectionError('lost response')
   return copy.deepcopy(self.value)
@@ -133,3 +133,16 @@ class PublicationPreparationTests(unittest.TestCase):
   control=PublishControl(stopped=lambda:False,on_prepared=lambda:self.p.mark_ready('memory-token',i),before_submit=lambda:self.fail('cannot submit'))
   with self.assertRaises(PublicationInputError):publisher.publish(payload,control)
   self.assertEqual(self.cloud.reports,[])
+ def test_session_loss_during_download_does_not_open_profile(self):
+  from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
+  value,i=self.p.claim('memory-token','3');active=[True]
+  def downloaded(*args,**kw):active[0]=False
+  with patch('wt_media_agent.runner.publication_preparation.download_verified',side_effect=downloaded) as download, patch.object(self.bit,'open_profile_with_devtools') as browser:
+   with self.assertRaises(CloudExecutionStopped):self.p.prepare('memory-token',value,i,current=lambda:active[0])
+   self.assertEqual(download.call_count,1);browser.assert_not_called()
+ def test_three_files_share_one_preparation_deadline(self):
+  value,i=self.p.claim('memory-token','3')
+  with patch('wt_media_agent.runner.publication_preparation.download_verified') as download:
+   self.p.prepare('memory-token',value,i)
+  self.assertEqual(download.call_count,3)
+  self.assertEqual(len({call.kwargs['deadline'] for call in download.call_args_list}),1)

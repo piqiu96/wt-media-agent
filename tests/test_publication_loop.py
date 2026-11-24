@@ -13,19 +13,26 @@ def token(user=3,exp=None,**extra):
     return f'v1.{encoded}.test-signature-not-real'
 
 
+class InlineThread:
+    def __init__(self, *, target, **kwargs): self.target = target
+    def start(self): self.target()
+    def join(self, timeout=None): pass
+
+
 class PublicationLoopTests(unittest.TestCase):
     def setUp(self):
         self.holder=AgentToken();self.calls=[];self.failure=None;self.claim=None
         def claim(t,u):
             self.calls.append(('claim',t,u))
             if self.failure:raise self.failure
-            return self.claim
+            value, self.claim = self.claim, None
+            return value
         def recover(t,u):self.calls.append(('recover',t,u))
         def run(t,c,i,*,current):self.calls.append(('run',t,c,i,current))
         self.prep=SimpleNamespace(claim=claim)
         self.job=SimpleNamespace(recover=recover,run=run)
-        self.check=SimpleNamespace(tick=lambda t,u,**kw:self.calls.append(("check",t,u)))
-        self.loop=PublicationLoop(self.holder,self.prep,self.job,self.check)
+        self.check=SimpleNamespace(tick=lambda t,u,**kw:self.calls.append(("check",t,u)) if kw["current"]() and not kw.get("recovery_only") else None)
+        self.loop=PublicationLoop(self.holder,self.prep,self.job,self.check, window_count=lambda: 0, thread_factory=InlineThread)
     def test_absent_or_malformed_token_never_calls_cloud(self):
         self.loop.tick();self.assertEqual(self.calls,[])
         for value in ('opaque','v1.not-json.s',token(user=True),token(user=0),token(exp=1)):
@@ -43,14 +50,14 @@ class PublicationLoopTests(unittest.TestCase):
         self.assertEqual(self.calls,[('recover',fresh,'3'),('claim',fresh,'3'),('check',fresh,'3')])
     def test_claim_runs_once_and_token_change_revokes_new_browser_actions(self):
         t=token();self.holder.set(t);self.claim=({'task':'fixture'},'identity');self.loop.tick()
-        run=self.calls[-1];self.assertEqual(run[:4],('run',t,*self.claim));self.assertTrue(run[4]())
+        run=next(call for call in self.calls if call[0]=='run');self.assertEqual(run[:4],('run',t,{'task':'fixture'},'identity'));self.assertTrue(run[4]())
         self.holder.set(token(user=8));self.assertFalse(run[4]())
     def test_token_replaced_during_recovery_never_claims(self):
         t=token();self.holder.set(t)
         self.job.recover=lambda t,u:self.holder.set(token(user=8))
         self.loop.tick();self.assertEqual(self.calls,[])
     def test_stop_disables_current_execution_and_new_polls(self):
-        self.holder.set(token());self.claim=({},'i');self.loop.tick();current=self.calls[-1][4]
+        self.holder.set(token());self.claim=({},'i');self.loop.tick();current=next(call for call in self.calls if call[0]=='run')[4]
         self.loop.stop();self.assertFalse(current());self.calls.clear();self.loop.tick();self.assertEqual(self.calls,[])
     def test_unverified_routing_hint_is_not_an_authentication_result(self):
         self.assertEqual(routing_user_id(token(user=123)),'123')

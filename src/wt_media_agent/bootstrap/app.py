@@ -158,8 +158,14 @@ def build_components(config: AgentConfig | None = None) -> Components:
     save_directories = SaveDirectoryStore(database)
     publication_journal = PublicationJournal(database, agent_id=config.agent_id)
     publication_execution = PublicationExecution(publication_journal)
-    publication_preparation = PublicationPreparation(cloud, bitbrowser, publication_journal,
-        PublicationClaimStore(database), config.paths.data_dir / 'publications', cloud_env=config.cloud_env)
+    publication_capacity = {
+        'automatic_slots': config.publication_automatic_slots,
+        'window_slots': config.publication_window_slots,
+    }
+    publication_preparation = PublicationPreparation(
+        cloud, bitbrowser, publication_journal, PublicationClaimStore(database),
+        config.paths.data_dir / 'publications', cloud_env=config.cloud_env, capacity=publication_capacity,
+    )
 
     # 7. The Cloud identity this process works under. Desktop exchanges its
     #    desktop session for an Agent Token and hands it here over the local
@@ -206,6 +212,35 @@ def build_components(config: AgentConfig | None = None) -> Components:
             raise ValueError('platform public checker is not available')
         return BaiduPublicationChecker
 
+    publication_job = PublicationJob(
+        publication_preparation, bitbrowser, publisher_factory, capacity=publication_capacity,
+        cache_cleanup=PublicationCacheCleanup(
+            publication_journal, cloud, publication_preparation.directory,
+            authorized=lambda token, user: agent_token.get() == token and routing_user_id(token) == user,
+        ),
+    )
+    check_job = PublicationCheckJob(
+        cloud, bitbrowser, publication_journal, publication_checker_factory,
+        cloud_env=config.cloud_env, capacity=publication_capacity,
+    )
+    # The checker already captured publication-only occupancy. Other Profile
+    # callers must also respect the checker's retained reservation.
+    publication_journal.profile_operations.occupied = (
+        lambda profile_id: publication_journal.profile_in_use(profile_id)
+        or check_job.records.profile_occupied(profile_id)
+    )
+    publications = PublicationLoop(
+        agent_token, publication_preparation, publication_job, check_job,
+        window_count=lambda: (
+            publication_journal.retained_window_count() + check_job.records.retained_window_count()
+        ),
+        max_workers=config.publication_window_slots,
+        max_automatic=config.publication_automatic_slots,
+        automatic_count=lambda excluded: (
+            publication_journal.retained_window_count(excluded_identities=excluded)
+        ),
+    )
+
     return Components(
         config=config,
         state=state,
@@ -219,10 +254,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_journal=publication_journal,
         publication_execution=publication_execution,
         database=database,
-        publications=PublicationLoop(agent_token, publication_preparation,
-            PublicationJob(publication_preparation, bitbrowser, publisher_factory,
-                cache_cleanup=PublicationCacheCleanup(publication_journal, cloud, publication_preparation.directory,
-                    authorized=lambda token, user: agent_token.get() == token and routing_user_id(token) == user)),
-            PublicationCheckJob(cloud, bitbrowser, publication_journal, publication_checker_factory)),
+        publications=publications,
         publication_preparation=publication_preparation,
     )

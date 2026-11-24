@@ -43,12 +43,14 @@ class BrowserSession:
 
 class ProfileReadSession:
     """Read resources for one closed Profile, under the caller's operation lock."""
-    def __init__(self, bitbrowser, profile_id):
+    def __init__(self, bitbrowser, profile_id, *, before_open=lambda: None, opened=lambda endpoint: None):
         self.bitbrowser = bitbrowser
         self.profile_id = profile_id
         self.closed = False
         self.browser_used = False
         self._opening_attempted = False
+        self._before_open = before_open
+        self._opened = opened
 
     def __enter__(self):
         self.closed = self.bitbrowser.is_profile_closed(self.profile_id) is True
@@ -63,11 +65,14 @@ class ProfileReadSession:
     def browser(self):
         if self._opening_attempted:
             raise RuntimeError('read browser cannot be reopened')
-        self._opening_attempted = True
-        self.closed = False  # Invalidate even if the open reply is lost.
-        endpoint = self.bitbrowser.open_profile_for_check(self.profile_id)
+        def before_open():
+            self._before_open()
+            self._opening_attempted = True
+            self.closed = False  # Invalidate even if the actual open reply is lost.
+        endpoint = self.bitbrowser.open_profile_for_check(self.profile_id, before_open=before_open)
         self.browser_used = True
         try:
+            self._opened(endpoint)
             yield endpoint
         finally:
             self.closed = self.bitbrowser.close_profile_verified(self.profile_id, endpoint) is True

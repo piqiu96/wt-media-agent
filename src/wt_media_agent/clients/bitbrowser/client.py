@@ -159,11 +159,13 @@ class BitBrowserClient:
         """
         self._post("/browser/open-url", {"id": profile_id, "url": url})
 
-    def open_profile_for_check(self, profile_id: str) -> str:
+    def open_profile_for_check(self, profile_id: str, *, before_open=lambda: None) -> str:
         """Open only a closed Profile; never adopt a manual or racing window."""
         ports = self._check_success(self._post('/browser/ports', {'ids': [profile_id]}))
         if ports.get(profile_id):
             raise BitBrowserResponseError('Profile is already open; read-only check deferred')
+        # Persist possible-open only after this read-only preflight succeeds.
+        before_open()
         # Unlike publication preparation, an already-opening response is a refusal.
         data = self._check_success(self._post_with_timeout('/browser/open', {'id': profile_id}, self._mutation_timeout()))
         endpoint = str(data.get('http') or '').strip()

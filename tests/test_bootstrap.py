@@ -124,6 +124,47 @@ class AssemblyTests(ComponentTestCase):
         self.assertIs(self.components.publication_execution.journal,journal)
         self.assertEqual(journal.pending(self.config.cloud_env,"3"),[])
 
+    def test_publication_jobs_use_configured_capacity_and_cloud_route(self):
+        components = self.build(
+            WT_MEDIA_ENV="dev", WT_MEDIA_CLOUD_ENV="pre",
+            WT_MEDIA_PUBLICATION_AUTOMATIC_SLOTS="3", WT_MEDIA_PUBLICATION_WINDOW_SLOTS="7",
+        )
+        self.addCleanup(components.close)
+        loop = components.publications
+        capacity = {"automatic_slots": 3, "window_slots": 7}
+        self.assertEqual(loop.max_workers, 7)
+        self.assertEqual(loop.preparation.capacity, capacity)
+        self.assertEqual(loop.job.capacity, capacity)
+        self.assertEqual(loop.check_job.capacity, capacity)
+        self.assertEqual(loop.preparation.cloud_env, "pre")
+        self.assertEqual(loop.check_job.cloud_env, "pre")
+
+    def test_local_profile_operations_count_both_journals_without_blocking_the_original_checker(self):
+        from test_publication_execution import snapshot
+        from wt_media_agent.runtime.profile_operation import ProfileOperationBusy
+        from wt_media_agent.storage.publication import ExecutionIdentity
+
+        journal = self.components.publication_journal
+        loop = self.components.publications
+        checker = loop.check_job
+        journal.register(ExecutionIdentity("test", "8", "101", "201", "publish-profile"), snapshot())
+        reservation = checker.records.begin("pre", "9", checker.capacity)
+        self.assertTrue(checker.records.transition(
+            "pre", "9", reservation["request_key"], "claiming", "reserved",
+            claim={"attempt": {"input_snapshot": {"bit_profile_id": "check-profile"}}},
+        ))
+
+        self.assertEqual(loop.window_count(), 2)
+        self.assertIs(checker.profile_operations, journal.profile_operations)
+        self.assertTrue(checker.publication_occupied("publish-profile"))
+        self.assertFalse(checker.publication_occupied("check-profile"))
+        for profile in ("publish-profile", "check-profile"):
+            with self.subTest(profile=profile), self.assertRaises(ProfileOperationBusy):
+                with journal.profile_operations.acquire(profile):
+                    self.fail("a general browser operation acquired a retained Profile")
+        with journal.profile_operations.acquire("unused-profile"):
+            pass
+
     def test_publication_cleanup_is_wired_to_current_owner_and_data_root(self):
         from test_publication_loop import token
         cleanup = self.components.publications.job.cache_cleanup
