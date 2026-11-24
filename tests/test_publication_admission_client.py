@@ -60,6 +60,17 @@ class PublicationAdmissionClientTests(unittest.TestCase):
         self.response['reservation_id'] = '4'
         self.assertEqual(self.client.release_publication_check('token', '1', packet), self.response)
 
+    def test_observation_requires_a_real_observation_acknowledgement(self):
+        packet = {'reservation_id':'4','generation':'3','observation':{'attempt_id':'2','expected_revision':'5'}}
+        original = {'publication_id':'1','attempt_id':'2','generation':'3','reservation_id':'4','released':True}
+        for invalid in (None, '', 'x'*64, 'F'*64, 'a'*63, True):
+            self.response = dict(original)
+            if invalid is not None: self.response['observation_hash'] = invalid
+            with self.subTest(hash=invalid), self.assertRaises(CloudUnavailableError):
+                self.client.observe_publication('token','1',packet)
+        self.response = dict(original,observation_hash='a'*64)
+        self.assertEqual(self.client.observe_publication('token','1',packet), self.response)
+
     def test_invalid_capacity_never_reaches_cloud(self):
         for capacity in [{'automatic_slots': True, 'window_slots': 10}, {'automatic_slots': 0, 'window_slots': 10},
                          {'automatic_slots': 5}, {'automatic_slots': 5, 'window_slots': 65536}]:

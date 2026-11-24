@@ -140,6 +140,10 @@ class CloudAgentClient:
         if 'reservation_id' in packet:
             _check_release_ack(acknowledgement, task_id, packet['observation']['attempt_id'],
                 packet['generation'], packet['reservation_id'])
+        observation_hash = acknowledgement.get('observation_hash')
+        if (not isinstance(observation_hash, str) or len(observation_hash) != 64
+                or any(char not in '0123456789abcdef' for char in observation_hash)):
+            raise CloudUnavailableError('publication observation acknowledgement is missing its hash')
         return acknowledgement
 
     def report_publication(self, token: str, task_id: str, operation: str, packet: dict):
