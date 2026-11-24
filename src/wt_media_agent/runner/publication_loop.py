@@ -11,6 +11,14 @@ from wt_media_agent.runtime.constants import DEFAULT_PUBLICATION_POLL_SECONDS
 
 logger = logging.getLogger(__name__)
 
+# Provider resume rejects these within its transaction without applying a resume.
+_RESUME_NOT_APPLIED = frozenset({
+    'publication_capacity_wait', 'publication_batch_parent_blocked',
+    'publication_conflict', 'publication_input_changed',
+    'publication_profile_use_conflict', 'publication_admission_closed',
+    'publication_agent_upgrade_required',
+})
+
 
 class PublicationAutomaticCapacity:
     """Local publication bounds include old owners until proven stopped."""
@@ -53,7 +61,7 @@ class PublicationAutomaticCapacity:
         except CloudError as error:
             # Only the first request's explicit no-admission result proves it
             # never resumed. A retry after a lost reply cannot erase that doubt.
-            if admitted and not original_unknown and error.code == 'publication_capacity_wait':
+            if admitted and not original_unknown and error.code in _RESUME_NOT_APPLIED:
                 self.park(identity)
             raise
 

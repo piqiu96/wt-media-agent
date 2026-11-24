@@ -142,6 +142,21 @@ class ParallelPublicationLoopTests(unittest.TestCase):
                 raise CloudError('publication_capacity_wait','full')
         self.assertFalse(gate.available())
 
+    def test_first_authoritative_resume_rejections_do_not_leak_automatic_capacity(self):
+        from wt_media_agent.runner.publication_loop import PublicationAutomaticCapacity
+        from wt_media_agent.clients.cloud.errors import CloudError
+        for code in ('publication_batch_parent_blocked','publication_conflict',
+                     'publication_input_changed','publication_profile_use_conflict',
+                     'publication_admission_closed','publication_agent_upgrade_required'):
+            with self.subTest(code=code):
+                gate = PublicationAutomaticCapacity(1,lambda parked:len({'A'}-parked))
+                gate.park('A')
+                with self.assertRaises(CloudError):
+                    with gate.resume('A') as admitted:
+                        self.assertTrue(admitted)
+                        raise CloudError(code,'not applied')
+                self.assertTrue(gate.available())
+
     def test_real_sqlite_old_owner_workers_keep_automatic_slots_after_token_change(self):
         import tempfile
         from pathlib import Path
