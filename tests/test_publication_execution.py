@@ -246,7 +246,14 @@ class PublicationExecutionTests(unittest.TestCase):
         self.journal.settle(self.owner,pending['packet']['result_hash'],task_status='published')
         other=ExecutionIdentity(self.owner.cloud_env,'3','10','2',self.owner.bit_profile_id)
         self.assertTrue(self.journal.register(other,snapshot()))
-        _,events=self.run_execution(); self.assertEqual(events,[])
+        from unittest.mock import Mock
+        prepare, preflight, submit, read_result = Mock(), Mock(), Mock(), Mock()
+        with self.assertRaises(JournalConflict):
+            PublicationExecution(self.journal).execute(self.owner, snapshot(), prepare=prepare,
+                preflight=preflight, submit=submit, read_result=read_result)
+        for action in (prepare, preflight, submit, read_result):
+            action.assert_not_called()
+        self.assertEqual(self.journal.get(other)['phase'], 'claimed')
 
     def test_url_cannot_be_used_as_cloud_environment_or_bypass_replay_guard(self):
         self.journal.register(self.owner,snapshot())

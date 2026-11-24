@@ -10,7 +10,7 @@ class CheckOpenBoundaryTests(unittest.TestCase):
     state=fixtures.PublicCheckJobTests.state
     run_check=fixtures.PublicCheckJobTests.run_check
     def client(self):
-        client=BitBrowserClient('http://127.0.0.1:54345')
+        client=BitBrowserClient('http://127.0.0.1:54345',transport=Mock(side_effect=AssertionError('unexpected network transport')))
         client._post=Mock(return_value={'success':True,'data':{}})
         client._post_with_timeout=Mock(return_value={'success':True,'data':{'http':'127.0.0.1:9999'}})
         self.bit.open_profile_for_check=client.open_profile_for_check
