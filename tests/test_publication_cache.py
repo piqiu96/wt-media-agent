@@ -48,6 +48,19 @@ class PublicationCacheTests(TestCase):
             with self.subTest(options=options):
                 self.setUp();self.settled(**options);self.cleaner.clean('token',self.i)
                 self.assertTrue((self.folder/'video.mp4').exists())
+    def test_recovered_success_with_old_open_scene_rechecks_the_exact_attempt(self):
+        packet = self.settled(closed=False)
+        self.j.settle(self.i, packet['result_hash'], task_status='published')
+        self.original['resolved_status'] = 'published'
+        self.original['scene_resolved'] = False
+        self.cleaner.sweep('token', 'dev', '3')
+        self.assertTrue(self.folder.exists())
+        self.original['scene_resolved'] = True
+        self.new_cleaner().sweep('token', 'dev', '3')
+        self.assertFalse(self.folder.exists())
+        self.assertEqual(self.j.get(self.i)['scene_resolution']['scene_resolved'], True)
+        self.assertTrue(self.calls)
+
     def test_failed_delete_retries_after_process_restart(self):
         self.settled()
         with patch.object(self.cleaner, '_remove', side_effect=PermissionError):

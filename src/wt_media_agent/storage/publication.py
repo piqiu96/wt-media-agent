@@ -330,6 +330,11 @@ class PublicationJournal:
         packet = json.loads(result.result_json) if result is not None else {}
         scene_closed = (resolution.get('scene_resolved') is True or
             packet.get('result', {}).get('evidence', {}).get('scene_closed') is True)
+        # Recovery can settle an accepted result whose immutable packet still
+        # says the scene was open. Re-read this exact attempt before deleting;
+        # a resolved success alone never proves that the scene is closed.
+        if resolved_status in (PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED) and not scene_closed:
+            return {'eligibility': 'confirm', 'status': status}
         ready = resolved_status in (PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED) and scene_closed
         return {'eligibility': 'ready' if ready else 'blocked', 'status': status}
 
