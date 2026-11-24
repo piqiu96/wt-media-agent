@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from threading import BoundedSemaphore, Event, Lock, RLock, Thread, current_thread
 
 from wt_media_agent.runtime.agent_token import routing_user_id
-from wt_media_agent.clients.cloud.errors import AgentAuthError
+from wt_media_agent.clients.cloud.errors import AgentAuthError, CloudError
 from wt_media_agent.runtime.constants import DEFAULT_PUBLICATION_POLL_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -41,13 +41,21 @@ class PublicationAutomaticCapacity:
         with self.lock:
             key = self._key(identity)
             admitted = key in self._resuming
+            original_unknown = admitted
             if not admitted and key in self._parked and self.available():
                 # The durable original claim now counts again before the HTTP
                 # request. A missing response never returns its automatic slot.
                 self._parked.remove(key)
                 self._resuming.add(key)
                 admitted = True
-        yield admitted
+        try:
+            yield admitted
+        except CloudError as error:
+            # Only the first request's explicit no-admission result proves it
+            # never resumed. A retry after a lost reply cannot erase that doubt.
+            if admitted and not original_unknown and error.code == 'publication_capacity_wait':
+                self.park(identity)
+            raise
 
     def finished(self, identity):
         with self.lock:
@@ -79,17 +87,17 @@ class PublicationLoop:
         self._single = {'recovery': False, 'check': False}
         self._active_keys = set()
         self._serial = 0
-        self.check_job.admission_guard = self.admission_guard
+        self.check_job.admission_guard = lambda: self.admission_guard(automatic=False)
 
     @contextmanager
-    def admission_guard(self):
+    def admission_guard(self, *, automatic=True):
         # Hold only while claiming and durably accepting a new identity, never
         # across a platform call. Old unknown windows in every local scope count.
         with self._claim_lock:
             count = self.window_count()
             if type(count) is not int or count < 0:
                 raise ValueError('retained window count is unavailable')
-            yield not self._stop.is_set() and count < self.max_workers and self.automatic_admission.available()
+            yield not self._stop.is_set() and count < self.max_workers and (not automatic or self.automatic_admission.available())
 
     def _spawn(self, kind, operation, token, *, reserved=False, key=None):
         window = kind != 'recovery'
@@ -152,7 +160,7 @@ class PublicationLoop:
             # Recovery never waits for a human scene or consumes a browser slot.
             def recover():
                 self.job.recover(token, user)
-                self.check_job.tick(token, user, current=lambda: False)
+                self.check_job.tick(token, user, current=current, recovery_only=True)
             self._spawn('recovery', recover, token)
             seen = set()
             for _ in range(self.max_workers):

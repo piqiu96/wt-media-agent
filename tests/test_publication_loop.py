@@ -31,7 +31,7 @@ class PublicationLoopTests(unittest.TestCase):
         def run(t,c,i,*,current):self.calls.append(('run',t,c,i,current))
         self.prep=SimpleNamespace(claim=claim)
         self.job=SimpleNamespace(recover=recover,run=run)
-        self.check=SimpleNamespace(tick=lambda t,u,**kw:self.calls.append(("check",t,u)) if kw["current"]() else None)
+        self.check=SimpleNamespace(tick=lambda t,u,**kw:self.calls.append(("check",t,u)) if kw["current"]() and not kw.get("recovery_only") else None)
         self.loop=PublicationLoop(self.holder,self.prep,self.job,self.check, window_count=lambda: 0, thread_factory=InlineThread)
     def test_absent_or_malformed_token_never_calls_cloud(self):
         self.loop.tick();self.assertEqual(self.calls,[])

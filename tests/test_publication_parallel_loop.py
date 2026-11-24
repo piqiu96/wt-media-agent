@@ -68,8 +68,8 @@ class ParallelPublicationLoopTests(unittest.TestCase):
     def test_full_window_pool_still_reconciles_original_check_without_new_work(self):
         loop = self.make_loop(2, windows=2)
         reconciled = threading.Event()
-        def check(*args, current):
-            if not current(): reconciled.set()
+        def check(*args, current, recovery_only=False):
+            if recovery_only and current(): reconciled.set()
         loop.check_job.tick = check
         loop.tick()
         self.assertTrue(all(event.wait(1) for event in self.entered))
@@ -101,6 +101,46 @@ class ParallelPublicationLoopTests(unittest.TestCase):
         self.assertFalse(gate.available())  # unknown old work remains held
         held.remove('A1')
         self.assertTrue(gate.available())
+
+    def test_check_needs_window_capacity_and_does_not_spend_publish_automatic_slots(self):
+        loop = self.make_loop(0, windows=10, held=lambda:1)
+        # One publication's automatic slot is full; an independent read-only
+        # check still fits the shared window and Profile bounds.
+        loop.automatic_admission.limit = 1
+        loop.automatic_admission.count = lambda parked:1
+        with loop.admission_guard() as admitted:
+            self.assertFalse(admitted)
+        with loop.check_job.admission_guard() as admitted:
+            self.assertTrue(admitted)
+        # A retained check consumes a window, not a publication automatic slot.
+        loop.automatic_admission.count = lambda parked:0
+        with loop.admission_guard() as admitted:
+            self.assertTrue(admitted)
+        loop.window_count = lambda:10
+        with loop.check_job.admission_guard() as admitted:
+            self.assertFalse(admitted)
+
+    def test_explicit_first_resume_capacity_rejection_returns_only_its_local_slot(self):
+        from wt_media_agent.runner.publication_loop import PublicationAutomaticCapacity
+        from wt_media_agent.clients.cloud.errors import CloudError
+        held = {'A'}
+        gate = PublicationAutomaticCapacity(1,lambda parked:len(held-parked))
+        gate.park('A')
+        with self.assertRaises(CloudError):
+            with gate.resume('A') as admitted:
+                self.assertTrue(admitted)
+                raise CloudError('publication_capacity_wait','full')
+        self.assertTrue(gate.available())
+        # An uncertain previous request cannot be disproved by a later refusal.
+        with self.assertRaises(ConnectionError):
+            with gate.resume('A') as admitted:
+                self.assertTrue(admitted)
+                raise ConnectionError('lost reply')
+        with self.assertRaises(CloudError):
+            with gate.resume('A') as admitted:
+                self.assertTrue(admitted)
+                raise CloudError('publication_capacity_wait','full')
+        self.assertFalse(gate.available())
 
     def test_real_sqlite_old_owner_workers_keep_automatic_slots_after_token_change(self):
         import tempfile

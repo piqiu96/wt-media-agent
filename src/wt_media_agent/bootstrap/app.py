@@ -238,7 +238,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         max_automatic=config.publication_automatic_slots,
         automatic_count=lambda excluded: (
             publication_journal.retained_window_count(excluded_identities=excluded)
-            + check_job.records.retained_window_count()
         ),
     )
 
