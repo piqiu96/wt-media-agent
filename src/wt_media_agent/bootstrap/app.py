@@ -47,6 +47,7 @@ from wt_media_agent.storage.publication import PublicationJournal
 from wt_media_agent.runner.publication import PublicationExecution
 from wt_media_agent.storage.publication import PublicationClaimStore
 from wt_media_agent.runner.publication_preparation import PublicationPreparation
+from wt_media_agent.runner.publication_cache import PublicationCacheCleanup
 from wt_media_agent.runner.publication_job import PublicationJob
 from wt_media_agent.runner.publication_check import PublicationCheckJob
 from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
@@ -219,7 +220,9 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_execution=publication_execution,
         database=database,
         publications=PublicationLoop(agent_token, publication_preparation,
-            PublicationJob(publication_preparation, bitbrowser, publisher_factory),
+            PublicationJob(publication_preparation, bitbrowser, publisher_factory,
+                cache_cleanup=PublicationCacheCleanup(publication_journal, cloud, publication_preparation.directory,
+                    authorized=lambda token, user: agent_token.get() == token and routing_user_id(token) == user)),
             PublicationCheckJob(cloud, bitbrowser, publication_journal, publication_checker_factory)),
         publication_preparation=publication_preparation,
     )

@@ -309,6 +309,65 @@ class PublicationJournal:
                 return True
         return False
 
+    @staticmethod
+    def _retain_file_digests(state):
+        source = state.get('input', {})
+        if source:
+            state['file_digests'] = {key: source[key] for key in
+                ('video_sha256', 'cover_sha256', 'portrait_cover_sha256') if key in source}
+
+    @staticmethod
+    def _cache_cleanup_state(row, state, result):
+        status = state.get('cache_cleanup', {}).get('status')
+        if status == 'complete' or state['phase'] != PublicationPhase.SETTLED or row.report_pending:
+            return {'eligibility': 'blocked', 'status': status}
+        if result is not None and not result.delivered:
+            return {'eligibility': 'blocked', 'status': status}
+        resolution = state.get('scene_resolution', {})
+        resolved_status = resolution.get('resolved_status') or state.get('resolved_status')
+        if resolved_status is None:
+            return {'eligibility': 'confirm', 'status': status}
+        packet = json.loads(result.result_json) if result is not None else {}
+        scene_closed = (resolution.get('scene_resolved') is True or
+            packet.get('result', {}).get('evidence', {}).get('scene_closed') is True)
+        # Recovery can settle an accepted result whose immutable packet still
+        # says the scene was open. Re-read this exact attempt before deleting;
+        # a resolved success alone never proves that the scene is closed.
+        if resolved_status in (PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED) and not scene_closed:
+            return {'eligibility': 'confirm', 'status': status}
+        ready = resolved_status in (PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED) and scene_closed
+        return {'eligibility': 'ready' if ready else 'blocked', 'status': status}
+
+    def cache_cleanup_state(self, identity):
+        with self.database.session() as session:
+            row, state = self._state(session, identity)
+            result = session.scalar(select(Result).where(Result.checkpoint_id == row.id))
+            return self._cache_cleanup_state(row, state, result)
+
+    def cache_cleanup_candidates(self, cloud_env, user_id):
+        with self.database.session() as session:
+            rows = session.scalars(select(Checkpoint).where(
+                Checkpoint.cloud_env == _environment(cloud_env), Checkpoint.user_id == user_id,
+                Checkpoint.task_type == TASK_TYPE_PUBLICATION,
+                Checkpoint.checkpoint_status == PublicationCheckpointStatus.SETTLED,
+                Checkpoint.report_pending == 0).order_by(Checkpoint.id)).all()
+            return [ExecutionIdentity(**state['identity']) for row in rows
+                    if (state := json.loads(row.checkpoint_json)).get('cache_cleanup', {}).get('status') != 'complete'
+                    and (state.get('scene_resolution', {}).get('resolved_status') or state.get('resolved_status'))
+                    in (None, PublicationStatus.REVIEWING, PublicationStatus.PUBLISHED)]
+
+    @retry_write
+    def record_cache_cleanup(self, identity, status):
+        if status not in ('pending', 'failed', 'complete'):
+            raise ValueError('invalid cache cleanup status')
+        with self.database.session.begin() as session:
+            row, state = self._state(session, identity)
+            result = session.scalar(select(Result).where(Result.checkpoint_id == row.id))
+            if self._cache_cleanup_state(row, state, result)['eligibility'] != 'ready':
+                raise JournalConflict('original attempt is not eligible for cleanup')
+            state['cache_cleanup'] = {'status': status, 'updated_at': utc_now_iso()}
+            self._write(session, row, state)
+
     @retry_write
     def settle_resolved(self, identity: ExecutionIdentity, original: dict):
         if (not isinstance(original,dict) or original.get('attempt_id')!=identity.attempt_id
@@ -323,6 +382,7 @@ class PublicationJournal:
             saved=session.scalar(select(Result).where(Result.checkpoint_id==row.id))
             if saved is not None and cloud_hash is None and json.loads(saved.result_json)['result']['status']==PublicationStatus.REVIEWING:
                 raise JournalConflict('manual failure conflicts with an unacknowledged receipt')
+            self._retain_file_digests(state)
             state['phase']=PublicationPhase.SETTLED
             state['scene_resolution']={key:original[key] for key in ('attempt_id','result_hash','scene_resolved','resolved_status')}
             if not row.report_pending:
@@ -338,7 +398,9 @@ class PublicationJournal:
             row,state=self._state(session,identity)
             if not state.get('result_hash') or state['result_hash']!=result_hash or row.report_pending:
                 raise JournalConflict('result must be durably acknowledged before resolution')
+            self._retain_file_digests(state)
             state['phase']=PublicationPhase.SETTLED
+            state['resolved_status']=task_status
             state.pop('input',None)
             self._write(session,row,state,checkpoint_status=PublicationCheckpointStatus.SETTLED,task_payload_json=None)
 

@@ -124,6 +124,20 @@ class AssemblyTests(ComponentTestCase):
         self.assertIs(self.components.publication_execution.journal,journal)
         self.assertEqual(journal.pending(self.config.cloud_env,"3"),[])
 
+    def test_publication_cleanup_is_wired_to_current_owner_and_data_root(self):
+        from test_publication_loop import token
+        cleanup = self.components.publications.job.cache_cleanup
+        self.assertIs(cleanup.journal, self.components.publication_journal)
+        self.assertIs(cleanup.cloud, self.components.cloud)
+        self.assertEqual(cleanup.directory, self.config.paths.data_dir / 'publications')
+        current = token(user=3)
+        self.assertFalse(cleanup.authorized(current, '3'))
+        self.components.agent_token.set(current)
+        self.assertTrue(cleanup.authorized(current, '3'))
+        self.assertFalse(cleanup.authorized(current, '4'))
+        self.components.agent_token.set(token(user=4))
+        self.assertFalse(cleanup.authorized(current, '3'))
+
     def test_the_database_lives_under_the_configured_data_directory(self):
         path = self.components.database.path
 
