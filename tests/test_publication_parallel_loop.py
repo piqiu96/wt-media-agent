@@ -65,6 +65,79 @@ class ParallelPublicationLoopTests(unittest.TestCase):
         self.assertEqual(self.claimed, [])
         self.assertTrue(self.recovered.wait(1))
 
+    def test_full_window_pool_still_reconciles_original_check_without_new_work(self):
+        loop = self.make_loop(2, windows=2)
+        reconciled = threading.Event()
+        def check(*args, current):
+            if not current(): reconciled.set()
+        loop.check_job.tick = check
+        loop.tick()
+        self.assertTrue(all(event.wait(1) for event in self.entered))
+        reconciled.clear()
+        loop.tick()
+        self.assertTrue(reconciled.wait(1))
+
+    def test_automatic_capacity_is_shared_after_switching_owner(self):
+        from wt_media_agent.runner.publication_loop import PublicationAutomaticCapacity
+        held = {'A1', 'A2', 'A3', 'A4', 'A5'}
+        gate = PublicationAutomaticCapacity(5, lambda parked: len(held - parked))
+        self.assertFalse(gate.available())
+        # Only a reliably parked original scene may free a local automatic slot.
+        gate.park('A1')
+        self.assertTrue(gate.available())
+        held.add('B1')
+        self.assertFalse(gate.available())
+        with gate.resume('A1') as admitted:
+            self.assertFalse(admitted)
+        held.remove('B1')
+        with gate.resume('A1') as admitted:
+            self.assertTrue(admitted)
+        # A lost resume reply retains the original reservation; replay does
+        # not spend a second automatic slot or permit a sixth operation.
+        with gate.resume('A1') as admitted:
+            self.assertTrue(admitted)
+        self.assertFalse(gate.available())
+        gate.finished('A1')
+        self.assertFalse(gate.available())  # unknown old work remains held
+        held.remove('A1')
+        self.assertTrue(gate.available())
+
+    def test_real_sqlite_old_owner_workers_keep_automatic_slots_after_token_change(self):
+        import tempfile
+        from pathlib import Path
+        from dataclasses import replace
+        from wt_media_agent.storage.database import Database
+        from wt_media_agent.storage.migration import apply_migrations
+        from wt_media_agent.storage.publication import PublicationJournal
+        from test_publication_execution import identity, snapshot
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'agent.sqlite3'; apply_migrations(path)
+            database = Database(path); journal = PublicationJournal(database)
+            held, entered = [], [threading.Event() for _ in range(5)]
+            release = threading.Event(); holder = AgentToken(); holder.set(token())
+            def claim(t, user):
+                i = len(held)
+                owner = replace(identity(),user_id=user,task_id=str(100+i),attempt_id=str(100+i),bit_profile_id=f'profile-{i}')
+                journal.register(owner,snapshot()); held.append(owner)
+                return {}, owner
+            def run(t, c, owner, *, current):
+                index = int(owner.task_id)-100
+                if index < len(entered): entered[index].set()
+                release.wait(3)
+            loop = PublicationLoop(holder,SimpleNamespace(claim=claim),
+                SimpleNamespace(run=run,recover=lambda *args:None),
+                SimpleNamespace(tick=lambda *args,**kwargs:None),window_count=journal.retained_window_count,
+                max_workers=10,max_automatic=5,
+                automatic_count=lambda parked:journal.retained_window_count(excluded_identities=parked))
+            try:
+                loop.tick(); self.assertTrue(all(event.wait(1) for event in entered))
+                self.assertEqual(len(held),5)
+                holder.set(token(user=8)); loop.tick()
+                self.assertEqual(len(held),5)
+                self.assertEqual(journal.retained_window_count(),5)
+            finally:
+                release.set(); loop.stop(); database.close()
+
     def test_stop_revokes_all_live_original_calls(self):
         loop = self.make_loop(2, windows=3)
         loop.tick()

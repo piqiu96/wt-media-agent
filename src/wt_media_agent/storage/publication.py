@@ -165,7 +165,7 @@ class PublicationJournal:
             return not (_publication_profile_occupied(session, identity.bit_profile_id, identity)
                         or _check_profile_occupied(session, identity.bit_profile_id))
 
-    def retained_window_count(self) -> int:
+    def retained_window_count(self, *, excluded_identities=()) -> int:
         """Count physical scenes in every local owner/environment scope.
 
         An undelivered report can already prove a physical window closed. All
@@ -179,6 +179,9 @@ class PublicationJournal:
                     Checkpoint.checkpoint_status != PublicationCheckpointStatus.SETTLED))
             count = 0
             for checkpoint, result in rows:
+                key = f'{checkpoint.cloud_env}-{checkpoint.user_id}-{checkpoint.task_id}-{checkpoint.attempt_id}'
+                if key in excluded_identities:
+                    continue
                 if result is not None:
                     value = json.loads(result.result_json)['result']
                     if value.get('evidence', {}).get('scene_closed') is True:

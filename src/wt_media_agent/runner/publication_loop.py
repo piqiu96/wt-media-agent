@@ -12,9 +12,53 @@ from wt_media_agent.runtime.constants import DEFAULT_PUBLICATION_POLL_SECONDS
 logger = logging.getLogger(__name__)
 
 
+class PublicationAutomaticCapacity:
+    """Local publication bounds include old owners until proven stopped."""
+    def __init__(self, limit, count, *, lock=None):
+        self.limit, self.count = limit, count
+        self.lock = lock if lock is not None else RLock()
+        self._parked, self._resuming = set(), set()
+
+    @staticmethod
+    def _key(identity):
+        return getattr(identity, 'key', identity)
+
+    def available(self):
+        with self.lock:
+            count = self.count(frozenset(self._parked))
+            if type(count) is not int or count < 0:
+                raise ValueError('automatic publication capacity is unavailable')
+            return count < self.limit
+
+    def park(self, identity):
+        with self.lock:
+            key = self._key(identity)
+            self._resuming.discard(key)
+            self._parked.add(key)
+
+    @contextmanager
+    def resume(self, identity):
+        with self.lock:
+            key = self._key(identity)
+            admitted = key in self._resuming
+            if not admitted and key in self._parked and self.available():
+                # The durable original claim now counts again before the HTTP
+                # request. A missing response never returns its automatic slot.
+                self._parked.remove(key)
+                self._resuming.add(key)
+                admitted = True
+        yield admitted
+
+    def finished(self, identity):
+        with self.lock:
+            key = self._key(identity)
+            self._parked.discard(key)
+            self._resuming.discard(key)
+
+
 class PublicationLoop:
     def __init__(self, agent_token, preparation, job, check_job, *, window_count,
-                 max_workers=10, interval=DEFAULT_PUBLICATION_POLL_SECONDS, thread_factory=Thread):
+                 max_workers=10, max_automatic=None, automatic_count=None, interval=DEFAULT_PUBLICATION_POLL_SECONDS, thread_factory=Thread):
         if interval <= 0 or type(max_workers) is not int or not 1 <= max_workers <= 64:
             raise ValueError('publication polling and bounded window capacity are required')
         self.agent_token, self.preparation, self.job, self.check_job = agent_token, preparation, job, check_job
@@ -24,6 +68,12 @@ class PublicationLoop:
         self._stop = Event()
         self._refused_token = None
         self._poll_lock, self._claim_lock, self._state_lock = Lock(), RLock(), RLock()
+        max_automatic = max_workers if max_automatic is None else max_automatic
+        if type(max_automatic) is not int or not 1 <= max_automatic <= 64:
+            raise ValueError('bounded automatic publication capacity is required')
+        self.automatic_admission = PublicationAutomaticCapacity(
+            max_automatic, automatic_count if automatic_count is not None else lambda excluded: window_count(), lock=self._claim_lock)
+        self.job.automatic_admission = self.automatic_admission
         self._slots = BoundedSemaphore(max_workers)
         self._threads = set()
         self._single = {'recovery': False, 'check': False}
@@ -39,7 +89,7 @@ class PublicationLoop:
             count = self.window_count()
             if type(count) is not int or count < 0:
                 raise ValueError('retained window count is unavailable')
-            yield not self._stop.is_set() and count < self.max_workers
+            yield not self._stop.is_set() and count < self.max_workers and self.automatic_admission.available()
 
     def _spawn(self, kind, operation, token, *, reserved=False, key=None):
         window = kind != 'recovery'
@@ -69,6 +119,8 @@ class PublicationLoop:
                             self._single[kind] = False
                         if key is not None:
                             self._active_keys.discard(key)
+                    if key is not None:
+                        self.automatic_admission.finished(key)
                     if window:
                         self._slots.release()
             thread = self._thread_factory(target=execute, name=f'publication-{kind}-{self._serial}', daemon=True)
@@ -98,7 +150,10 @@ class PublicationLoop:
             current = lambda: (not self._stop.is_set() and token != self._refused_token
                                and self.agent_token.get() == token and routing_user_id(token) == user)
             # Recovery never waits for a human scene or consumes a browser slot.
-            self._spawn('recovery', lambda: self.job.recover(token, user), token)
+            def recover():
+                self.job.recover(token, user)
+                self.check_job.tick(token, user, current=lambda: False)
+            self._spawn('recovery', recover, token)
             seen = set()
             for _ in range(self.max_workers):
                 if not current() or not self._slots.acquire(blocking=False):
