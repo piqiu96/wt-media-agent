@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 class PublicationJob:
-    def __init__(self, preparation, bitbrowser, platform_factory, *, heartbeat_interval=DEFAULT_PUBLICATION_HEARTBEAT_SECONDS):
+    def __init__(self, preparation, bitbrowser, platform_factory, *, heartbeat_interval=DEFAULT_PUBLICATION_HEARTBEAT_SECONDS, cache_cleanup=None):
+        self.cache_cleanup = cache_cleanup
         self.preparation = preparation
         self.cloud = preparation.cloud
         self.journal = preparation.journal
@@ -281,7 +282,11 @@ class PublicationJob:
                     self.journal.settle_resolved(identity, scene_resolution)
                 elif acknowledgement is None:
                     continue
+                if self.cache_cleanup is not None:
+                    self.cache_cleanup.clean(token, identity)
                 confirmed += 1
             except Exception:
                 continue
+        if self.cache_cleanup is not None:
+            self.cache_cleanup.sweep(token, self.preparation.cloud_env, user_id)
         return confirmed

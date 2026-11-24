@@ -176,6 +176,29 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual(result[0]['status'],'failed')
         self.assertEqual((self.platform.fills,self.platform.clicks),(1,0))
 
+    def test_cache_cleanup_follows_ack_without_reposting_on_retry(self):
+        from wt_media_agent.runner.publication_cache import PublicationCacheCleanup
+        directory = self.prep.root / 'publications'
+        folder = directory / self.i.key
+        folder.mkdir(parents=True)
+        (folder / 'video.mp4').write_bytes(b'isolated publishing cache')
+        cleaner = PublicationCacheCleanup(self.j, self.cloud, directory, authorized=lambda token, user: True)
+        self.job.cache_cleanup = cleaner
+        self.cloud.lose_result = True
+        self.assertEqual(self.run_job()['status'], 'reviewing')
+        self.assertTrue(folder.exists())
+        self.assertNotIn('cache_cleanup', self.j.get(self.i))
+        self.cloud.lose_result = False
+        with patch.object(cleaner, '_remove', side_effect=PermissionError):
+            self.job.recover('memory-only-token', self.i.user_id)
+        self.assertEqual(self.j.get(self.i)['cache_cleanup']['status'], 'failed')
+        cleaner._last_sweep.clear()
+        self.job.recover('memory-only-token', self.i.user_id)
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.j.get(self.i)['cache_cleanup']['status'], 'complete')
+        self.assertEqual(self.platform.clicks, 1)
+        self.assertEqual(self.j.pending(self.i.cloud_env, self.i.user_id), [])
+
     def test_click_requires_both_durable_barriers_and_only_receipt_means_reviewing(self):
         result=self.run_job()
         self.assertEqual(result['status'],'reviewing');self.assertEqual(self.platform.clicks,1)
