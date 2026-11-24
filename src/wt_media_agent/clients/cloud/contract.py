@@ -8,9 +8,9 @@ from typing import Optional
 
 API_NAME = "cloud-agent"
 EXPECTED_MAJOR_VERSION = "v1"
-# Dual-cover execution requires this provider revision; older claims cannot
-# supply the separately frozen portrait file and must be refused.
-REQUIRED_CONTRACT_REVISION = "2026.11.22.2"
+# Fixed-group admission and durable Profile/check settlement require this revision.
+# Older providers cannot safely admit this concurrent publication consumer.
+REQUIRED_CONTRACT_REVISION = "2026.11.25.2"
 
 
 def is_cloud_agent_compatible(metadata: Mapping[str, object]) -> bool:

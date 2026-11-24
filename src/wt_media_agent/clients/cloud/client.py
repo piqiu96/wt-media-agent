@@ -76,9 +76,11 @@ class CloudAgentClient:
 
     # ---- 发布执行（独立于文件下载租约） ----
 
-    def claim_publication(self, token: str, request_key: str):
-        response = self._transport('POST', '/api/v1/cloud-agent/publication-task/claim',
-                                   {'request_key': request_key}, _bearer(token))
+    def claim_publication(self, token: str, request_key: str, *, capacity=None):
+        body = {'request_key': request_key}
+        if capacity is not None:
+            body['capacity'] = _publication_capacity(capacity)
+        response = self._transport('POST', '/api/v1/cloud-agent/publication-task/claim', body, _bearer(token))
         _raise_on_failure(response)
         if 'data' not in response:
             raise CloudUnavailableError('publication response missing data')
@@ -89,13 +91,39 @@ class CloudAgentClient:
             raise CloudUnavailableError('publication response malformed')
         return dict(data)
 
-    def claim_publication_check(self, token: str):
+    def claim_publication_check(self, token: str, request_key=None, *, capacity=None):
+        body = None
+        if request_key is not None:
+            body = {'request_key': request_key, 'capacity': _publication_capacity(capacity)}
         response = self._transport('POST', '/api/v1/cloud-agent/publication-task/check/claim',
-                                   None, _bearer(token))
+                                   body, _bearer(token))
         _raise_on_failure(response)
         if 'data' not in response or (response['data'] is not None and not isinstance(response['data'], Mapping)):
             raise CloudUnavailableError('publication check response missing data')
-        return dict(response['data']) if response['data'] is not None else None
+        data = response['data']
+        if data is None:
+            return None
+        if request_key is not None:
+            _check_claim_state(data, request_key)
+        return dict(data)
+
+    def settle_unreceived_publication_check(self, token: str, request_key: str):
+        """Close only an original durable key whose response never reached local storage."""
+        data = _expect_data(self._transport('POST', '/api/v1/cloud-agent/publication-task/check/claim',
+            {'request_key': request_key, 'settle_unreceived': True}, _bearer(token)))
+        if not isinstance(data, Mapping):
+            raise CloudUnavailableError('publication check settlement missing acknowledgement')
+        _check_claim_state(data, request_key, settlement=True)
+        return dict(data)
+
+    def release_publication_check(self, token: str, task_id: str, packet: dict):
+        if (packet.get('release_only') is not True or not all(_publication_identity(value) for value in
+                (task_id, packet.get('attempt_id'), packet.get('generation'), packet.get('reservation_id')))):
+            raise ValueError('only an identified original check settlement is allowed')
+        data = _expect_data(self._transport('POST', f'/api/v1/cloud-agent/publication-task/{task_id}/check',
+            packet, _bearer(token)))
+        _check_release_ack(data, task_id, packet['attempt_id'], packet['generation'], packet['reservation_id'])
+        return dict(data)
 
     def observe_publication(self, token: str, task_id: str, packet: dict):
         for value in (task_id, packet.get('generation'), packet.get('observation', {}).get('attempt_id'),
@@ -109,6 +137,9 @@ class CloudAgentClient:
         if (acknowledgement.get('publication_id'), acknowledgement.get('attempt_id'), acknowledgement.get('generation')) != (
                 task_id, packet['observation']['attempt_id'], packet['generation']):
             raise CloudUnavailableError('publication observation acknowledgement does not match')
+        if 'reservation_id' in packet:
+            _check_release_ack(acknowledgement, task_id, packet['observation']['attempt_id'],
+                packet['generation'], packet['reservation_id'])
         return acknowledgement
 
     def report_publication(self, token: str, task_id: str, operation: str, packet: dict):
@@ -126,13 +157,15 @@ class CloudAgentClient:
         return dict(_expect_data(self._transport('GET',
             f'/api/v1/cloud-agent/publication-task/{task_id}/attempt/{attempt_id}', None, _bearer(token))))
 
-    def publication_human(self,token,task_id,attempt_id,revision,*,resume):
+    def publication_human(self,token,task_id,attempt_id,revision,*,resume,capacity=None):
         for value in (task_id,attempt_id,revision):
             if not isinstance(value,str) or not value.isascii() or not value.isdecimal() or str(int(value)) != value or not 0 < int(value) <= 18446744073709551615:
                 raise ValueError('canonical publication identity required')
         path = f'/api/v1/cloud-agent/publication-task/{task_id}'
         if resume:
             method,path,body = 'POST',path+'/resume',{'attempt_id':attempt_id,'expected_revision':revision}
+            if capacity is not None:
+                body['capacity'] = _publication_capacity(capacity)
         else:
             method,path,body = 'GET',path+f'/attempt/{attempt_id}/scene?expected_revision={revision}',None
         return dict(_expect_data(self._transport(method,path,body,_bearer(token))))
@@ -338,3 +371,38 @@ def _raise_for_transfer_status(status: int, body: Mapping[str, object]) -> None:
             f"Cloud rejected the completed transfer (HTTP 422): {message}"
         )
     raise TransferUnavailableError(f"the transfer endpoint answered HTTP {status}") from failure
+
+
+def _publication_capacity(value):
+    if (not isinstance(value, Mapping) or set(value) != {'automatic_slots', 'window_slots'}
+            or any(type(item) is not int or not 1 <= item <= 65535 for item in value.values())):
+        raise ValueError('publication capacity requires two positive bounded integers')
+    return dict(value)
+
+
+def _check_release_ack(data, task_id, attempt_id, generation, reservation_id):
+    if (not isinstance(data, Mapping) or data.get('released') is not True
+            or (data.get('publication_id'), data.get('attempt_id'), data.get('generation'), data.get('reservation_id'))
+            != (task_id, attempt_id, generation, reservation_id)):
+        raise CloudUnavailableError('publication check settlement acknowledgement differs')
+
+
+def _check_claim_state(data, request_key, *, settlement=False):
+    state = data.get('reservation_state')
+    if state in {'released', 'cancelled'}:
+        if any(key in data for key in ('task', 'attempt', 'expected_revision')):
+            raise CloudUnavailableError('settled publication check cannot carry executable input')
+        if state == 'cancelled':
+            if data.get('request_key') != request_key:
+                raise CloudUnavailableError('cancelled publication check key differs')
+        elif (data.get('replayed') is not True or data.get('released') is not True
+                or not all(_publication_identity(data.get(key)) for key in
+                    ('publication_id', 'attempt_id', 'generation', 'reservation_id'))):
+            raise CloudUnavailableError('released publication check has no original acknowledgement')
+    elif state != 'active' or settlement:
+        raise CloudUnavailableError('publication check reservation state is invalid')
+
+
+def _publication_identity(value):
+    return (isinstance(value, str) and value.isascii() and value.isdecimal()
+            and 0 < len(value) <= 20 and str(int(value)) == value and 0 < int(value) < 2**64)
