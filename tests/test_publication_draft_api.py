@@ -29,10 +29,10 @@ class DraftAPITests(unittest.TestCase):
         self.db.close()
         self.temp.cleanup()
 
-    def request(self, method='GET', body=None, user='9', token='runtime-secret'):
+    def request(self, method='GET', body=None, user='9', token='runtime-secret', kind='task'):
         headers = {'Authorization': 'Bearer ' + token, 'X-Publication-User-ID': user, 'Content-Type': 'application/json'}
         connection = http.client.HTTPConnection(*self.http.server_address)
-        connection.request(method, '/api/v1/publication-draft/task', None if body is None else json.dumps(body), headers)
+        connection.request(method, '/api/v1/publication-draft/' + kind, None if body is None else json.dumps(body), headers)
         response = connection.getresponse()
         result = response.status, json.loads(response.read())
         connection.close()
@@ -46,6 +46,16 @@ class DraftAPITests(unittest.TestCase):
         self.assertEqual((status, body['error']['code']), (409, 'draft_revision_conflict'))
         self.assertEqual(self.request('DELETE', {'expected_revision': '1'})[1]['data']['revision'], '2')
         self.assertEqual(self.request('PUT', {'payload': {'description': '旧'}, 'expected_revision': '1'})[0], 409)
+
+    def test_batch_http_type_isolated_and_authenticated(self):
+        status, body = self.request('PUT', {'payload': {'request_key': 'batch-key'}, 'expected_revision': '0'}, kind='batch')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['data']['revision'], '1')
+        self.assertIsNone(self.request()[1]['data']['payload'])
+        self.assertEqual(self.request(kind='batch', token='wrong')[0], 401)
+        self.assertEqual(self.request(kind='plan')[0], 400)
+        self.assertEqual(self.request('DELETE', {'expected_revision': '1'}, kind='batch')[1]['data']['revision'], '2')
+        self.assertEqual(self.request('PUT', {'payload': {}, 'expected_revision': '1'}, kind='batch')[0], 409)
 
     def test_identity_and_runtime_auth_are_required(self):
         self.assertEqual(self.request(token='wrong')[0], 401)
