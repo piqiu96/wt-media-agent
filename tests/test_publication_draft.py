@@ -81,7 +81,7 @@ class PublicationDraftTests(unittest.TestCase):
 
     def test_payload_and_scope_validation(self):
         for user, kind, payload, revision in [
-            ('', 'task', {}, '0'), ('9', 'plan', {}, '0'), ('9', 'task', [], '0'),
+            ('', 'task', {}, '0'), ('9', 'unknown', {}, '0'), ('9', 'task', [], '0'),
             ('9', 'task', {'description': 'x' * (2 * 1024 * 1024)}, '0'),
             ('9', 'task', {}, 0), ('9', 'task', {}, '-1'),
             ('9', 'task', {'description': float('nan')}, '0'),
@@ -89,3 +89,22 @@ class PublicationDraftTests(unittest.TestCase):
             with self.subTest(user=user, kind=kind, revision=revision):
                 with self.assertRaises(ValueError):
                     self.store.put(user, kind, payload, revision)
+
+    def test_plan_input_restart_isolated_and_old_write_cannot_restore_cleared_creation(self):
+        payload = {'request_key': 'original-plan', 'name': '周期计划', 'goals': [{'platform': 'baidu', 'category_id': '1', 'target_count': 2}], 'batches': []}
+        saved = self.store.put('9', 'plan', payload, '0')
+        self.store.put('9', 'batch', {'request_key': 'separate-batch'}, '0')
+        self.db.close()
+        self.db = Database(self.path)
+        apply_migrations(self.db)
+        self.store = PublicationDraftStore(self.db, environment='dev')
+        self.assertEqual(self.store.get('9', 'plan'), saved)
+        self.assertIsNone(self.store.get('10', 'plan')['payload'])
+        self.assertIsNone(PublicationDraftStore(self.db, environment='prod').get('9', 'plan')['payload'])
+        self.assertIsNone(self.store.get('9', 'task')['payload'])
+        self.assertEqual(self.store.put('9', 'plan', payload, '0'), saved)
+        self.store.clear('9', 'plan', '1')
+        with self.assertRaises(DraftConflict):
+            self.store.put('9', 'plan', payload, '1')
+        self.assertIsNone(self.store.get('9', 'plan')['payload'])
+        self.assertEqual(self.store.get('9', 'batch')['payload']['request_key'], 'separate-batch')

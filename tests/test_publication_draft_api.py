@@ -53,7 +53,7 @@ class DraftAPITests(unittest.TestCase):
         self.assertEqual(body['data']['revision'], '1')
         self.assertIsNone(self.request()[1]['data']['payload'])
         self.assertEqual(self.request(kind='batch', token='wrong')[0], 401)
-        self.assertEqual(self.request(kind='plan')[0], 400)
+        self.assertEqual(self.request(kind='unknown')[0], 400)
         self.assertEqual(self.request('DELETE', {'expected_revision': '1'}, kind='batch')[1]['data']['revision'], '2')
         self.assertEqual(self.request('PUT', {'payload': {}, 'expected_revision': '1'}, kind='batch')[0], 409)
 
@@ -77,3 +77,16 @@ class DraftAPITests(unittest.TestCase):
         response.read()
         connection.close()
         self.assertIsNone(self.request()[1]['data']['payload'])
+
+    def test_plan_http_cas_and_identity_follow_original_draft_contract(self):
+        payload = {'request_key': 'plan-original', 'goals': [], 'batches': []}
+        status, body = self.request('PUT', {'payload': payload, 'expected_revision': '0'}, kind='plan')
+        self.assertEqual(status, 200)
+        self.assertEqual(body['data']['revision'], '1')
+        self.assertEqual(self.request(kind='plan')[1]['data']['payload'], payload)
+        self.assertIsNone(self.request(kind='plan', user='10')[1]['data']['payload'])
+        self.assertEqual(self.request(kind='plan', token='wrong')[0], 401)
+        self.assertEqual(self.request(kind='plan', user='')[0], 403)
+        self.assertEqual(self.request('DELETE', {'expected_revision': '1'}, kind='plan')[0], 200)
+        self.assertEqual(self.request('PUT', {'payload': payload, 'expected_revision': '1'}, kind='plan')[0], 409)
+        self.assertIsNone(self.request(kind='batch')[1]['data']['payload'])
