@@ -47,7 +47,9 @@ def validate_submit_body(body, content, *, cid, filename, statement_id, cover_ur
                 'tag': ','.join(options['tags']), 'human_type2': options['partition_id'],
                 'copyright': copyright, 'no_reprint': int(options.get('rights_reserved', False)),
                 'is_only_self': int(options['visibility'] == 'private')}
-    if any(type(body.get(k)) is not type(v) or body[k] != v for k, v in expected.items()):
+    mismatches = [k for k, v in expected.items() if type(body.get(k)) is not type(v) or body[k] != v]
+    if mismatches:
+        logger.warning('Bilibili actual submit mismatch: fields=%s', ','.join(mismatches))
         raise PlatformFormError('平台实际提交内容与已确认配置不一致，已阻止投稿，请重新核对')
     if (body.get('creation_statement') != {'id': statement_id}
             or body.get('source', '') != options.get('source', '')
@@ -55,14 +57,17 @@ def validate_submit_body(body, content, *, cid, filename, statement_id, cover_ur
             or body.get('aid') or body.get('mission_id') or body.get('topic_id')
             or body.get('porder') or body.get('adorder_id') or body.get('charging_pay')
             or body.get('staffs') or body.get('pay_season_id')):
+        logger.warning('Bilibili actual submit mismatch: fields=additional_settings')
         raise PlatformFormError('unexpected rights, scheduled, commercial or existing-publication settings')
     if (not isinstance(videos, list) or len(videos) != 1 or not isinstance(videos[0], dict)
             or type(videos[0].get('cid')) is not int or videos[0]['cid'] != cid
             or videos[0].get('filename') != filename):
+        logger.warning('Bilibili actual submit mismatch: fields=videos')
         raise PlatformFormError('平台上传的视频与本次任务不一致，已阻止投稿')
     for key in ('cover', 'cover43'):
         value = body.get(key)
         if (not is_cover_url(value) or not cover_urls or value != cover_urls.get(key)):
+            logger.warning('Bilibili actual submit mismatch: fields=%s', key)
             raise PlatformFormError('两张已确认封面尚未完成上传，已阻止投稿')
 
 
@@ -585,7 +590,7 @@ class BrowserPublisher:
               return [c.width,c.height,geometry,[...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('')];
             }""")
 
-    def _cover_canvases(self, dialog, *, allow_pending=False):
+    def _cover_canvases(self, dialog):
         result = []
         for selector in ('#editor_4_3', '#editor_16_9'):
             self._check()
@@ -593,8 +598,6 @@ class BrowserPublisher:
             root.click(timeout=5000)
             digest = self._cover_canvas(root)
             if not digest:
-                if allow_pending:
-                    return None
                 raise PlatformFormError('无法核实独立封面画面，已阻止投稿，请检查原窗口')
             result.append(digest)
         return result
@@ -660,13 +663,10 @@ class BrowserPublisher:
                             len(observed['tags']), len(expected['tags']),
                             [value.strip() for value in observed['tags']] == expected['tags'])
             raise PlatformFormError('提交前表单已变化，已阻止投稿，请重新核对内容')
-        page.locator('.cover-content .cover-module-main').click(timeout=5000)
-        dialog = page.locator('.cover-editor:visible')
-        dialog.wait_for(state='visible', timeout=10000)
-        self._wait(lambda: self._cover_canvases(dialog, allow_pending=True) == self._canvas_fingerprints,
-                   timeout=15)
-        dialog.get_by_text('取消', exact=True).click(timeout=5000)
-        self._wait(lambda: not dialog.is_visible(), timeout=10)
+        # The saved images are the two official export receipt URLs. Their
+        # exact values are checked again on the actual authorized final POST.
+        # Reopening a rendering canvas is not a check of those saved images:
+        # the platform may rebuild/rescale it without changing either export.
 
     def submit(self):
         if self._submitted:

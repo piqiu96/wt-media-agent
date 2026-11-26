@@ -182,11 +182,12 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
-    def test_reopened_cover_canvases_wait_for_the_editor_to_restore_images(self):
+    def test_saved_cover_check_does_not_reopen_rendering_canvases(self):
         html=FIXTURE+"""<script>
         const open=document.querySelector('.cover-module-main').onclick;
+        window.fixture.openCount=0;
         document.querySelector('.cover-module-main').onclick=()=>{
-          open();if(!window.fixture.cover43)return;
+          window.fixture.openCount++;open();if(!window.fixture.cover43)return;
           const canvases=[...document.querySelectorAll('canvas.lower-canvas')];
           const images=canvases.map(c=>c.getContext('2d').getImageData(0,0,c.width,c.height));
           canvases.forEach(c=>c.getContext('2d').clearRect(0,0,c.width,c.height));
@@ -199,6 +200,7 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.adapter.submit()
         self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
         self.assertEqual(self.sent, 1)
+        self.assertEqual(self.page.evaluate('window.fixture.openCount'), 1)
 
     def test_current_cover_slot_uses_css_background_and_waits_for_preview(self):
         html=FIXTURE.replace('<img id="preview">', '<div id="preview" class="cover-img" style="width:200px;height:150px"></div>')
@@ -392,11 +394,25 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.assertEqual(self.sent, 0)
         self.assertEqual(self.adapter._capture['forwarded'], 0)
 
-    def test_changed_independent_space_cover_blocks_submission(self):
+    def test_unapplied_hidden_canvas_does_not_replace_confirmed_cover_urls(self):
         self.fill()
+        confirmed=dict(self.adapter._cover_urls)
         self.page.evaluate("document.querySelector('#editor_16_9 canvas').getContext('2d').fillRect(0,0,30,30)")
-        with self.assertRaises(PlatformFormError): self.adapter.submit()
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        body=self.adapter._request.post_data_json
+        self.assertEqual({key:body[key] for key in ('cover','cover43')}, confirmed)
+        self.assertEqual(self.sent, 1)
+
+    def test_overwriting_main_canvas_during_space_upload_is_not_saved(self):
+        html=FIXTURE.replace("c.getContext('2d').drawImage(img,0,0,c.width,c.height);",
+            "c.getContext('2d').drawImage(img,0,0,c.width,c.height);if(slot==='#editor_16_9'){const main=$('#editor_4_3 canvas');main.getContext('2d').drawImage(img,0,0,main.width,main.height);}")
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route:route.fulfill(content_type='text/html',body=html))
+        with self.assertRaises(PlatformFormError):
+            self.adapter.fill_form(self.page,self.payload,stopped=lambda:False)
         self.assertEqual(self.sent, 0)
+        self.assertEqual(self.adapter._cover_urls, {})
 
     def test_swapped_final_cover_urls_are_blocked(self):
         self.fill()
