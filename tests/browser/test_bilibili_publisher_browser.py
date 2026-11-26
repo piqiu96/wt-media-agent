@@ -162,6 +162,18 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
+    def test_tag_input_is_scoped_to_current_editable_control(self):
+        html = FIXTURE.replace('<main hidden>', '<div id="other-tags" hidden><input placeholder="按回车键Enter创建标签"><div class="tag-pre-wrp"><span class="label-item-v2-content">其他表单</span></div></div><main hidden>')
+        html = html.replace('<div class="tag-input-wrp">', '<div class="tag-input-wrp" placeholder="按回车键Enter创建标签">', 1)
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+            lambda route: route.fulfill(content_type='text/html', body=html))
+        self.fill()
+        self.assertEqual(self.page.locator('#other-tags input').input_value(), '')
+        self.assertEqual(self.page.locator('#other-tags .label-item-v2-content').text_content(), '其他表单')
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
     def test_recovery_banner_does_not_block_fresh_authorized_upload(self):
         self.page.route('https://member.bilibili.com/platform/upload/video/frame',
             lambda route: route.fulfill(content_type='text/html', body=FIXTURE.replace(

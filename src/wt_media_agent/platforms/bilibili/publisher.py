@@ -388,13 +388,15 @@ class BrowserPublisher:
         page.locator('.desc-container .ql-editor').fill(payload.content.get('description', ''))
         page.locator('.video-human-type .select-controller').click(timeout=5000)
         page.locator('.human-type-list').get_by_text(options['partition_name'], exact=True).click(timeout=5000)
-        tags = page.locator('.tag-pre-wrp .label-item-v2-container .close')
+        tags = page.locator('#tag-container .tag-pre-wrp .label-item-v2-container .close')
         for _ in range(10):
             if not tags.count():
                 break
             self._check()
             tags.first.click(timeout=5000)
-        tag_input = page.get_by_placeholder('按回车键Enter创建标签', exact=True)
+        tag_input = page.locator('#tag-container .tag-input-wrp input:visible')
+        logger.info('Bilibili tag controls: placeholder_matches=%s editor_inputs=%s',
+                    page.get_by_placeholder('按回车键Enter创建标签', exact=True).count(), tag_input.count())
         for tag in options['tags']:
             self._check()
             tag_input.fill(tag)
@@ -550,7 +552,7 @@ class BrowserPublisher:
         if (page.get_by_placeholder('请输入稿件标题', exact=True).input_value() != content['title']
                 or self._description_text() != content.get('description', '')
                 or page.locator('.video-human-type .select-item-cont').inner_text().strip() != options['partition_name']
-                or page.locator('.tag-pre-wrp .label-item-v2-content').all_text_contents() != options['tags']
+                or page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() != options['tags']
                 or page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True).input_value() != options['statement']
                 or visible != ('公开可见' if options['visibility'] == 'public' else '仅自己可见')
                 or self._cover_state() != self._cover_fingerprint
