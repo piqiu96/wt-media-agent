@@ -189,10 +189,13 @@ class BrowserPublisher:
                 else:
                     self._types = data
             if url.path == '/preupload' and self._payload is not None:
-                query = parse_qs(url.query)
-                logger.info('Bilibili preupload observed: name_matches=%s size_matches=%s',
+                request_url = urlsplit(response.request.url)
+                query = parse_qs(request_url.query)
+                logger.info('Bilibili preupload observed: method=%s name_present=%s size_present=%s name_matches=%s size_matches=%s response_query_matches=%s',
+                            response.request.method, 'name' in query, 'size' in query,
                             query.get('name') == [self._payload.video.name],
-                            query.get('size') == [str(self._payload.video.stat().st_size)])
+                            query.get('size') == [str(self._payload.video.stat().st_size)],
+                            request_url.query == url.query)
                 if query.get('name') != [self._payload.video.name] or query.get('size') != [str(self._payload.video.stat().st_size)]:
                     return
                 body = response.json()

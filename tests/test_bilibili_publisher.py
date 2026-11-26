@@ -40,6 +40,27 @@ class BilibiliPublisherTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(PlatformFormError):
                 self.validate({**self.body, **change})
 
+    def test_upload_proof_uses_original_request_not_response_location(self):
+        from urllib.parse import urlencode
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / 'video.mp4'
+            video.write_bytes(b'fixed video')
+            adapter = BrowserPublisher()
+            adapter._payload = MagicMock(video=video)
+            response = MagicMock()
+            response.url = 'https://member.bilibili.com/preupload'
+            response.request.url = response.url + '?' + urlencode({'name': video.name, 'size': video.stat().st_size})
+            response.request.method = 'GET'
+            response.status = 200
+            response.json.return_value = {'biz_id': 777, 'upos_uri': 'upos://current-video.mp4'}
+            adapter._response(response)
+            self.assertEqual(adapter._cid, 777)
+            self.assertEqual(adapter._filename, 'current-video')
+            response.request.url = response.url + '?' + urlencode({'name': 'other.mp4', 'size': video.stat().st_size})
+            adapter._cid = None
+            adapter._response(response)
+            self.assertIsNone(adapter._cid)
+
     def test_closed_response_never_supplies_upload_or_submission_proof(self):
         from playwright.sync_api import Error as PlaywrightError
         adapter = BrowserPublisher()
