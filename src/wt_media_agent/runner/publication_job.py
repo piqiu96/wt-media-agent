@@ -274,7 +274,7 @@ class PublicationJob:
             evidence['not_submitted'] = True
             result = {'status': PublicationStatus.FAILED,
                       'error_code': stop_reason or PUBLICATION_NOT_SUBMITTED,
-                      'error_message': preparation_message or 'Execution stopped before submission; the browser scene was closed.',
+                      'error_message': preparation_message or '本次在投稿前停止，尚未向平台提交；浏览器现场已关闭，可核对后重试。',
                       'evidence': evidence}
         if receipt:
             evidence['receipt_id'] = receipt['platform_work_id']
