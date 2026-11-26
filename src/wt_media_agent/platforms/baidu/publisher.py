@@ -203,13 +203,18 @@ class BrowserPublisher:
         self._check()
         video_entry = page.get_by_text('发布视频', exact=True)
         publish_menu = page.locator('#home-publish-btn')
-        self._wait(lambda: video_entry.is_visible() or publish_menu.is_visible(), timeout=min(self.timeout, 15))
+        self._wait(lambda: publish_menu.is_visible() or (video_entry.count() == 1 and video_entry.is_visible()), timeout=min(self.timeout, 15))
         # Transparent collapsed menu items still satisfy is_visible(). Open
         # the observed publish menu whenever it is present before clicking.
         if publish_menu.is_visible():
             self._check()
             publish_menu.hover(timeout=5000)
-            self._wait(video_entry.is_visible, timeout=min(self.timeout, 15))
+            def current_entry():
+                popup = page.locator('.cheetah-popover-inner:visible').get_by_text('发布视频', exact=True)
+                if popup.count() == 1:
+                    return popup if popup.is_visible() else None
+                return video_entry if video_entry.count() == 1 and video_entry.is_visible() else None
+            video_entry = self._wait(current_entry, timeout=min(self.timeout, 15))
         self._check()
         # Wait for the portal's actual placement and hit target. Visibility
         # alone can precede placement; auto-scrolling then dismisses the menu.

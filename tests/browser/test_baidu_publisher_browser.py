@@ -427,6 +427,15 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def collapsed_home(self):
         self.home='''<meta charset="utf-8"><div id="home-publish-btn" onmouseenter="window.menuShown=true;document.querySelector('a').style.opacity=1;document.querySelector('a').style.pointerEvents='auto'">＋</div><a style="opacity:0;pointer-events:none" href="/builder/rc/edit">发布视频</a>'''
 
+    def test_duplicate_home_card_and_menu_labels_select_open_menu(self):
+        self.home='''<meta charset="utf-8"><div id="home-statistic-card"><span onclick="window.wrongEntry=true">发布视频</span></div>
+        <div id="home-publish-btn" onmouseenter="document.querySelector('.cheetah-popover-inner').hidden=false">＋</div>
+        <div class="cheetah-popover-inner" hidden><a href="/builder/rc/edit">发布视频</a></div>'''
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+        self.assertEqual(self.external,[])
+
     def test_collapsed_home_menu_is_opened_before_upload(self):
         self.collapsed_home()
         self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)

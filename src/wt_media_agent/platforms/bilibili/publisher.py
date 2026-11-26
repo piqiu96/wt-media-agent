@@ -196,6 +196,13 @@ class BrowserPublisher:
                             query.get('name') == [self._payload.video.name],
                             query.get('size') == [str(self._payload.video.stat().st_size)],
                             request_url.query == url.query)
+                names, sizes = query.get('name', []), query.get('size', [])
+                declared = int(sizes[0]) if len(sizes) == 1 and sizes[0].isascii() and sizes[0].isdigit() and len(sizes[0]) <= 18 else None
+                name_kind = ('file' if names == [self._payload.video.name] else
+                             'stem' if names == [self._payload.video.stem] else
+                             'metadata' if len(names) == 1 and names[0].endswith('_meta.txt') else 'other')
+                logger.info('Bilibili preupload shape: name_count=%s size_count=%s name_kind=%s declared_bytes=%s expected_bytes=%s',
+                            len(names), len(sizes), name_kind, declared, self._payload.video.stat().st_size)
                 if query.get('name') != [self._payload.video.name] or query.get('size') != [str(self._payload.video.stat().st_size)]:
                     return
                 body = response.json()
