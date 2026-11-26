@@ -177,7 +177,14 @@ class BrowserPublisher:
                 self._capture.update(status=response.status, json=response.json())
                 return
             url = urlsplit(response.url)
-            if url.netloc != 'member.bilibili.com' or response.status != 200:
+            if url.netloc != 'member.bilibili.com':
+                return
+            if url.path == '/preupload':
+                q = parse_qs(urlsplit(response.request.url).query)
+                current = (self._payload is not None and q.get('name') == [self._payload.video.name]
+                           and q.get('size') == [str(self._payload.video.stat().st_size)])
+                logger.info('Bilibili preupload response: http_status=%s current_video=%s', response.status, current)
+            if response.status != 200:
                 return
             if response.request in self._cover_requests:
                 data = response_data({'status': response.status, 'json': response.json()})
@@ -205,12 +212,18 @@ class BrowserPublisher:
                 declared = int(sizes[0]) if len(sizes) == 1 and sizes[0].isascii() and sizes[0].isdigit() and len(sizes[0]) <= 18 else None
                 name_kind = ('file' if names == [self._payload.video.name] else
                              'stem' if names == [self._payload.video.stem] else
-                             'metadata' if len(names) == 1 and names[0].endswith('_meta.txt') else 'other')
+                             'metadata' if len(names) == 1 and names[0].endswith('_meta.txt') else
+                             'frames' if len(names) == 1 and names[0].endswith('.zip') else 'other')
                 logger.info('Bilibili preupload shape: name_count=%s size_count=%s name_kind=%s declared_bytes=%s expected_bytes=%s',
                             len(names), len(sizes), name_kind, declared, self._payload.video.stat().st_size)
+                body = response.json()
+                code = body.get('code') if isinstance(body, dict) else None
+                logger.info('Bilibili preupload result: code=%s has_video_id=%s has_upload_uri=%s',
+                            code if type(code) is int else None,
+                            bool(body.get('biz_id')) if isinstance(body, dict) else False,
+                            bool(body.get('upos_uri')) if isinstance(body, dict) else False)
                 if query.get('name') != [self._payload.video.name] or query.get('size') != [str(self._payload.video.stat().st_size)]:
                     return
-                body = response.json()
                 cid = int(submission_id(body.get('biz_id')))
                 uri = body.get('upos_uri')
                 if not isinstance(uri, str) or not uri.startswith('upos://'):

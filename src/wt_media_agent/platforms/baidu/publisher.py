@@ -213,6 +213,10 @@ class BrowserPublisher:
                 popup = page.locator('.cheetah-popover-inner:visible').get_by_text('发布视频', exact=True)
                 if popup.count() == 1:
                     return popup if popup.is_visible() else None
+                # The home card appears before the asynchronous portal. Never
+                # retain a global locator that will start matching both later.
+                if page.locator('#home-statistic-card').count():
+                    return None
                 return video_entry if video_entry.count() == 1 and video_entry.is_visible() else None
             video_entry = self._wait(current_entry, timeout=min(self.timeout, 15))
         self._check()

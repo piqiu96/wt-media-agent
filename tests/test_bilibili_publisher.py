@@ -95,6 +95,24 @@ class BilibiliPublisherTest(unittest.TestCase):
             adapter._response(response)
             self.assertIsNone(adapter._cid)
 
+    def test_non_success_upload_is_diagnosed_without_accepting_or_logging_url(self):
+        from urllib.parse import urlencode
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / 'video.mp4'
+            video.write_bytes(b'fixed video')
+            adapter = BrowserPublisher()
+            adapter._payload = MagicMock(video=video)
+            response = MagicMock()
+            response.status = 412
+            response.url = 'https://member.bilibili.com/preupload'
+            response.request.url = response.url + '?' + urlencode({'name': video.name, 'size': video.stat().st_size, 'private': 'must-not-log'})
+            with self.assertLogs('wt_media_agent.platforms.bilibili.publisher', level='INFO') as logs:
+                adapter._response(response)
+            self.assertIsNone(adapter._cid)
+            response.json.assert_not_called()
+            self.assertIn('http_status=412 current_video=True', str(logs.output))
+            self.assertNotIn('must-not-log', str(logs.output))
+
     def test_closed_response_never_supplies_upload_or_submission_proof(self):
         from playwright.sync_api import Error as PlaywrightError
         adapter = BrowserPublisher()
