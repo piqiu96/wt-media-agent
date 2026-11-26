@@ -5,6 +5,7 @@ import zlib
 from pathlib import Path
 import tempfile
 import subprocess
+import shutil
 import unittest
 
 import test_baidu_publisher_browser as browser_harness
@@ -430,9 +431,9 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
 
     def public_proof(self, *, anonymous_public, media_matches=True, playback_cid=777, use_blob=False):
         video = Path(self.temp.name) / 'proof.mp4'
-        encoder = Path('/opt/homebrew/bin/ffmpeg')
-        if not encoder.is_file(): raise RuntimeError('FFmpeg is required for actual browser media proof tests')
-        subprocess.run([str(encoder), '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+        encoder = shutil.which('ffmpeg')
+        if encoder is None: raise RuntimeError('FFmpeg is required for actual browser media proof tests')
+        subprocess.run([encoder, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
             'color=c=blue:s=32x32:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', 'faststart', str(video)], check=True)
         metadata = {'aid': 123, 'bvid': 'BV135WM6uE4A', 'owner': {'mid': 456}, 'title': '游戏画中画演示',
                     'state': 0, 'cid': 777, 'pubdate': 1795169573, 'duration': 1}
