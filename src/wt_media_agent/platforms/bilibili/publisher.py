@@ -76,6 +76,7 @@ class BrowserPublisher:
         self._protected = None
         self._stopped = lambda: False
         self._human = None
+        self._human_seconds = 0.0
         self._submitted = False
         self._ready = False
         self._capture = {'count': 0, 'forwarded': 0}
@@ -102,16 +103,20 @@ class BrowserPublisher:
         if challenge.count():
             if self._human is None or self._submitted:
                 raise PlatformFormError('请在原账号窗口完成安全验证后继续原尝试')
-            self._human(self.page.bring_to_front)
+            before = time.monotonic()
+            try:
+                self._human(self.page.bring_to_front)
+            finally:
+                self._human_seconds += time.monotonic() - before
             if self._stopped() or self.page.is_closed() or challenge.count():
                 raise PlatformFormError('安全验证尚未完成，请在原窗口处理')
 
     def _wait(self, condition, *, timeout=None):
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         while True:
-            before = time.monotonic()
+            human_before = self._human_seconds
             self._check()
-            deadline += time.monotonic() - before
+            deadline += self._human_seconds - human_before
             value = condition()
             if value:
                 return value

@@ -40,6 +40,40 @@ class BilibiliPublisherTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(PlatformFormError):
                 self.validate({**self.body, **change})
 
+    def test_upload_timeout_counts_normal_browser_check_time(self):
+        from unittest.mock import patch
+        clock = [0.0]
+        adapter = BrowserPublisher(timeout=1)
+        adapter.page = MagicMock()
+        def check():
+            clock[0] += 2
+        def wait(_):
+            clock[0] += .1
+        adapter._check = MagicMock(side_effect=check)
+        adapter.page.wait_for_timeout.side_effect = wait
+        with patch('wt_media_agent.platforms.bilibili.publisher.time.monotonic', side_effect=lambda: clock[0]):
+            with self.assertRaises(PlatformFormError):
+                adapter._wait(lambda: False)
+        self.assertEqual(adapter._check.call_count, 1)
+
+    def test_upload_timeout_excludes_only_explicit_human_wait(self):
+        from unittest.mock import patch
+        clock = [0.0]
+        adapter = BrowserPublisher(timeout=1)
+        adapter.page = MagicMock()
+        adapter._human_seconds = 0.0
+        def check():
+            if clock[0] == 0:
+                clock[0] += 120
+                adapter._human_seconds += 120
+        def wait(_):
+            clock[0] += .1
+        adapter._check = check
+        adapter.page.wait_for_timeout.side_effect = wait
+        conditions = iter([False, False, True])
+        with patch('wt_media_agent.platforms.bilibili.publisher.time.monotonic', side_effect=lambda: clock[0]):
+            self.assertTrue(adapter._wait(lambda: next(conditions)))
+
     def test_upload_proof_uses_original_request_not_response_location(self):
         from urllib.parse import urlencode
         with tempfile.TemporaryDirectory() as folder:
