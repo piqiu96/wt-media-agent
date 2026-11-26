@@ -483,6 +483,17 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
         self.assertEqual(self.external,[])
 
+    def test_hidden_video_item_does_not_block_opening_visible_publish_menu(self):
+        self.publisher.timeout = 2
+        self.home='''<meta charset="utf-8"><div id="home-publish-btn"
+          onmouseenter="sessionStorage.setItem('fixtureMenuShown','1');document.querySelector('.cheetah-popover-inner').hidden=false">＋</div>
+          <div class="cheetah-popover-inner" hidden><a href="/builder/rc/edit">发布视频</a></div>'''
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.evaluate("sessionStorage.getItem('fixtureMenuShown')"), '1')
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'), self.video.stat().st_size)
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 0)
+        self.assertEqual(self.external, [])
+
     def test_portal_placement_is_ready_before_click_without_diagnostic_delay(self):
         self.home='''<meta charset="utf-8"><div id="home-publish-btn" style="width:40px;height:40px"
         onmouseleave="if(!window.placed){const a=document.querySelector('a');a.style.opacity=0;a.style.pointerEvents='none'}"

@@ -227,7 +227,7 @@ class BrowserPublisher:
         publish_menu = page.locator('#home-publish-btn')
         self._wait(lambda: (home_entry.count() == 1 and home_entry.is_visible())
                    or (video_entry.count() == 1 and video_entry.is_visible())
-                   or (video_entry.count() == 0 and publish_menu.is_visible()), timeout=min(self.timeout, 15))
+                   or publish_menu.is_visible(), timeout=min(self.timeout, 15))
         # Transparent collapsed menu items still satisfy is_visible(). Open
         # the observed publish menu whenever it is present before clicking.
         if home_entry.count() == 1 and home_entry.is_visible():
