@@ -29,7 +29,10 @@ class BrowserSession:
             self.page = browser.contexts[0].new_page()
             return self
         except BaseException:
-            self.close()
+            try:
+                self.close()
+            except Exception:
+                pass  # Cleanup must not hide the failed connection.
             raise
 
     def close(self):
@@ -37,8 +40,14 @@ class BrowserSession:
         if runtime is not None:
             runtime.stop()  # disconnect; retain editor for reconciliation
 
-    def __exit__(self, *_):
-        self.close()
+    def __exit__(self, exc_type, *_):
+        if exc_type is None:
+            self.close()
+        else:
+            try:
+                self.close()
+            except Exception:
+                pass  # Preserve the original platform failure for diagnosis.
 
 
 class ProfileReadSession:

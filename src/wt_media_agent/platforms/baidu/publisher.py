@@ -135,6 +135,15 @@ class BrowserPublisher:
         except Exception as error:
             logger.info('baidu_publication_diagnostic outcome=failed error_type=%s', type(error).__name__)
 
+    def _login_challenge_visible(self):
+        return self.page.locator('.passMod_dialog-wrapper:visible').evaluate_all("""es => es.some(e => {
+          for(let n=e;n;n=n.parentElement){
+            const s=getComputedStyle(n);
+            if(Number(s.opacity)===0 || n.getAttribute('aria-hidden')==='true')return false;
+          }
+          return Boolean(e.textContent.trim() || e.querySelector('input:not([type=hidden]),iframe,img,canvas,button,[role=button]'));
+        })""")
+
     def _check(self):
         if self._stopped():
             raise PlatformFormError('publication execution stopped')
@@ -143,7 +152,16 @@ class BrowserPublisher:
         url = urlsplit(self.page.url)
         if url.scheme != 'https' or url.netloc != 'baijiahao.baidu.com':
             raise PlatformFormError('editor origin changed')
-        while self.page.locator('.passMod_dialog-wrapper:visible').count():
+        while self._login_challenge_visible():
+            # Passport can briefly render its shell while an existing login
+            # settles. Only a persistent, effectively visible challenge parks.
+            settle = time.monotonic() + .75
+            while self._login_challenge_visible() and time.monotonic() < settle:
+                if self._stopped() or self.page.is_closed():
+                    raise PlatformFormError('original human scene stopped')
+                self.page.wait_for_timeout(100)
+            if not self._login_challenge_visible():
+                break
             if self._submitted or self._wait_for_human is None:
                 raise PlatformFormError('platform requires human security verification')
             start = time.monotonic()
@@ -154,6 +172,9 @@ class BrowserPublisher:
             url = urlsplit(self.page.url)
             if url.scheme != 'https' or url.netloc != 'baijiahao.baidu.com':
                 raise PlatformFormError('editor origin changed')
+        url = urlsplit(self.page.url)
+        if url.scheme != 'https' or url.netloc != 'baijiahao.baidu.com':
+            raise PlatformFormError('editor origin changed')
         return url.path
 
     def _wait(self, condition, *, timeout=None, stage=None, cover_index=None):
@@ -202,14 +223,28 @@ class BrowserPublisher:
         page.goto('https://baijiahao.baidu.com/builder/rc/home', wait_until='domcontentloaded')
         self._check()
         video_entry = page.get_by_text('发布视频', exact=True)
+        home_entry = page.locator('#home-statistic-card').get_by_text('发布视频', exact=True)
         publish_menu = page.locator('#home-publish-btn')
-        self._wait(lambda: video_entry.is_visible() or publish_menu.is_visible(), timeout=min(self.timeout, 15))
+        self._wait(lambda: (home_entry.count() == 1 and home_entry.is_visible())
+                   or (video_entry.count() == 1 and video_entry.is_visible())
+                   or publish_menu.is_visible(), timeout=min(self.timeout, 15))
         # Transparent collapsed menu items still satisfy is_visible(). Open
         # the observed publish menu whenever it is present before clicking.
-        if publish_menu.is_visible():
+        if home_entry.count() == 1 and home_entry.is_visible():
+            video_entry = home_entry
+        elif publish_menu.is_visible():
             self._check()
             publish_menu.hover(timeout=5000)
-            self._wait(video_entry.is_visible, timeout=min(self.timeout, 15))
+            def current_entry():
+                popup = page.locator('.cheetah-popover-inner:visible').get_by_text('发布视频', exact=True)
+                if popup.count() == 1:
+                    return popup if popup.is_visible() else None
+                # The home card appears before the asynchronous portal. Never
+                # retain a global locator that will start matching both later.
+                if page.locator('#home-statistic-card').count():
+                    return None
+                return video_entry if video_entry.count() == 1 and video_entry.is_visible() else None
+            video_entry = self._wait(current_entry, timeout=min(self.timeout, 15))
         self._check()
         # Wait for the portal's actual placement and hit target. Visibility
         # alone can precede placement; auto-scrolling then dismisses the menu.
@@ -219,7 +254,6 @@ class BrowserPublisher:
             const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
             return hit===e || e.contains(hit);
         }"""),timeout=min(self.timeout,15),stage='video_entry_ready')
-        self._record_failure(filename='publish-menu.png')
         video_entry.click(timeout=15000)
         self._wait(lambda: self._check() == '/builder/rc/edit'
                    and page.locator('input[type=file][accept*=".mp4"]').count())

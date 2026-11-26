@@ -400,6 +400,35 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
         self.assertEqual(self.external,[])
 
+    def test_invisible_or_empty_passport_widget_does_not_request_human(self):
+        self.publisher.page = self.page
+        self.publisher._wait_for_human = lambda show: self.fail('invisible widget must not park execution')
+        for markup in ('<div class="passMod_dialog-wrapper" style="width:100px;height:100px;opacity:0">security verification</div>',
+                       '<div class="passMod_dialog-wrapper" style="width:100px;height:100px"></div>'):
+            self.page.evaluate('(html)=>document.body.insertAdjacentHTML("beforeend",html)', markup)
+            self.assertEqual(self.publisher._check(), '/builder/rc/edit')
+            self.page.locator('.passMod_dialog-wrapper').evaluate('(e)=>e.remove()')
+
+    def test_transient_passport_widget_settles_without_requesting_human(self):
+        self.publisher.page = self.page
+        self.publisher._wait_for_human = lambda show: self.fail('transient widget must not park execution')
+        self.page.evaluate("""() => {
+          const e=document.createElement('div');e.className='passMod_dialog-wrapper';
+          e.textContent='security verification';document.body.append(e);
+          setTimeout(()=>e.remove(),150);
+        }""")
+        self.assertEqual(self.publisher._check(), '/builder/rc/edit')
+
+    def test_visible_home_card_is_used_without_hovering_transient_menu(self):
+        self.publisher.timeout = 2
+        self.home='''<meta charset="utf-8"><div id="home-statistic-card"><a href="/builder/rc/edit">发布视频</a></div>
+        <div id="home-publish-btn" onmouseenter="window.menuShown=true;document.querySelector('.cheetah-popover-inner').hidden=false">＋</div>
+        <div class="cheetah-popover-inner" hidden><a href="/builder/rc/edit">发布视频</a></div>'''
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertFalse(self.page.evaluate('Boolean(window.menuShown)'))
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'), self.video.stat().st_size)
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 0)
+
     def test_human_pause_keeps_same_editor_and_blocks_manual_publish(self):
         self.home+='<div class="passMod_dialog-wrapper">security verification</div>'
         waits=[]
@@ -427,6 +456,25 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
     def collapsed_home(self):
         self.home='''<meta charset="utf-8"><div id="home-publish-btn" onmouseenter="window.menuShown=true;document.querySelector('a').style.opacity=1;document.querySelector('a').style.pointerEvents='auto'">＋</div><a style="opacity:0;pointer-events:none" href="/builder/rc/edit">发布视频</a>'''
 
+    def test_delayed_publish_menu_does_not_capture_home_card_locator(self):
+        self.publisher.timeout = 2
+        self.home='''<meta charset="utf-8"><div id="home-statistic-card"></div>
+        <div id="home-publish-btn" onmouseenter="setTimeout(()=>document.body.insertAdjacentHTML('beforeend', '<div class=&quot;cheetah-popover-inner&quot;><a href=&quot;/builder/rc/edit&quot;>发布视频</a></div>'),200)">＋</div>'''
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(), '确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 0)
+        self.assertEqual(self.external, [])
+
+    def test_duplicate_home_card_and_menu_labels_select_open_menu(self):
+        self.publisher.timeout = 2
+        self.home='''<meta charset="utf-8"><div id="home-statistic-card"><a href="/builder/rc/edit">发布视频</a></div>
+        <div id="home-publish-btn" onmouseenter="document.querySelector('.cheetah-popover-inner').hidden=false">＋</div>
+        <div class="cheetah-popover-inner" hidden><a href="/builder/rc/edit">发布视频</a></div>'''
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
+        self.assertEqual(self.page.evaluate('window.finalClicks'),0)
+        self.assertEqual(self.external,[])
+
     def test_collapsed_home_menu_is_opened_before_upload(self):
         self.collapsed_home()
         self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
@@ -434,6 +482,17 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.locator('[contenteditable]').inner_text(),'确认描述 #测试话题')
         self.assertEqual(self.page.evaluate('window.finalClicks'),0)
         self.assertEqual(self.external,[])
+
+    def test_hidden_video_item_does_not_block_opening_visible_publish_menu(self):
+        self.publisher.timeout = 2
+        self.home='''<meta charset="utf-8"><div id="home-publish-btn"
+          onmouseenter="sessionStorage.setItem('fixtureMenuShown','1');document.querySelector('.cheetah-popover-inner').hidden=false">＋</div>
+          <div class="cheetah-popover-inner" hidden><a href="/builder/rc/edit">发布视频</a></div>'''
+        self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertEqual(self.page.evaluate("sessionStorage.getItem('fixtureMenuShown')"), '1')
+        self.assertEqual(self.page.evaluate('window.selectedVideoSize'), self.video.stat().st_size)
+        self.assertEqual(self.page.evaluate('window.finalClicks'), 0)
+        self.assertEqual(self.external, [])
 
     def test_portal_placement_is_ready_before_click_without_diagnostic_delay(self):
         self.home='''<meta charset="utf-8"><div id="home-publish-btn" style="width:40px;height:40px"

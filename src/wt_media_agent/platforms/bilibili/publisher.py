@@ -1,0 +1,823 @@
+"""One owned Bilibili editor, frozen fields, one authorized final POST."""
+import hashlib
+import json
+import logging
+import re
+import shutil
+import time
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+from wt_media_agent.clients.bilibili.cover import cover_upload_kind, cover_upload_url, is_cover_url
+
+from wt_media_agent.clients.bilibili.publication import (
+    ADD_PATH, CREATOR_ORIGIN, PRE_PATH, TYPE_PATH, BilibiliPublicationError,
+    accepted_receipt, matching_partition, response_data, submission_id,
+)
+from wt_media_agent.platforms.bilibili.identity import read_bilibili_identity
+from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublicationInputError, PublicationTagRejected
+from wt_media_agent.runtime.constants import PublishMethod
+from wt_media_agent.services.browser.session import BrowserSession
+
+
+logger = logging.getLogger(__name__)
+
+
+class PlatformFormError(PublicationInputError):
+    pass
+
+
+def image_upload_file(source):
+    with source.open('rb') as stream:
+        magic = stream.read(16)
+    suffix = '.png' if magic.startswith(b'\x89PNG\r\n\x1a\n') else '.jpg' if magic.startswith(b'\xff\xd8\xff') else None
+    if suffix is None:
+        raise PlatformFormError('B站封面仅支持PNG或JPEG，请重新选择图片')
+    target = source.with_name(source.name + '-upload' + suffix)
+    shutil.copyfile(source, target)
+    target.chmod(0o600)
+    return target
+
+
+def validate_submit_body(body, content, *, cid, filename, statement_id, cover_urls=None):
+    """Compare the actual one-video POST, never patch the platform's request."""
+    options = content['bilibili']
+    videos = body.get('videos')
+    copyright = 2 if options['statement'] == '内容为转载' else 1 if options.get('rights_reserved') else 3
+    expected = {'title': content['title'], 'desc': content.get('description', ''),
+                'tag': ','.join(options['tags']), 'human_type2': options['partition_id'],
+                'copyright': copyright, 'no_reprint': int(options.get('rights_reserved', False)),
+                'is_only_self': int(options['visibility'] == 'private')}
+    mismatches = [k for k, v in expected.items() if type(body.get(k)) is not type(v) or body[k] != v]
+    if mismatches:
+        logger.warning('Bilibili actual submit mismatch: fields=%s', ','.join(mismatches))
+        raise PlatformFormError('平台实际提交内容与已确认配置不一致，已阻止投稿，请重新核对')
+    if (body.get('creation_statement') != {'id': statement_id}
+            or body.get('source', '') != options.get('source', '')
+            or body.get('recreate') not in (-1, 0) or body.get('dtime', 0) != 0
+            or body.get('aid') or body.get('mission_id') or body.get('topic_id')
+            or body.get('porder') or body.get('adorder_id') or body.get('charging_pay')
+            or body.get('staffs') or body.get('pay_season_id')):
+        logger.warning('Bilibili actual submit mismatch: fields=additional_settings')
+        raise PlatformFormError('unexpected rights, scheduled, commercial or existing-publication settings')
+    if (not isinstance(videos, list) or len(videos) != 1 or not isinstance(videos[0], dict)
+            or type(videos[0].get('cid')) is not int or videos[0]['cid'] != cid
+            or videos[0].get('filename') != filename):
+        logger.warning('Bilibili actual submit mismatch: fields=videos')
+        raise PlatformFormError('平台上传的视频与本次任务不一致，已阻止投稿')
+    for key in ('cover', 'cover43'):
+        value = body.get(key)
+        if (not is_cover_url(value) or not cover_urls or value != cover_urls.get(key)):
+            logger.warning('Bilibili actual submit mismatch: fields=%s', key)
+            raise PlatformFormError('两张已确认封面尚未完成上传，已阻止投稿')
+
+
+class BrowserPublisher:
+    def __init__(self, *, timeout=900):
+        self.timeout = timeout
+        self.page = None
+        self._protected = None
+        self._stopped = lambda: False
+        self._human = None
+        self._human_seconds = 0.0
+        self._submitted = False
+        self._ready = False
+        self._capture = {'count': 0, 'forwarded': 0}
+        self._request = None
+        self._payload = None
+        self._cid = None
+        self._upload_progress_at = None
+        self._selected_upload = None
+        self._editor_identity_verified = False
+        self._upload_inspection = {}
+        self._seen_upload_responses = set()
+        self._filename = None
+        self._statement_id = None
+        self._pre = None
+        self._types = None
+        self._cover_fingerprint = None
+        self._canvas_fingerprints = None
+        self._cover_export_open = False
+        self._cover_requests = {}
+        self._cover_urls = {}
+        self._pending_tag = ''
+        self._accepted_tags = []
+        self._rejected_tags = set()
+
+    def _check(self):
+        if self._stopped() or self.page is None or self.page.is_closed():
+            raise PlatformFormError('原发布现场已停止或关闭，请回到任务核实状态')
+        location = urlsplit(self.page.url)
+        if location.scheme != 'https' or location.netloc != 'member.bilibili.com':
+            raise PlatformFormError('发布页面地址已变化，请核对原账号现场')
+        challenge = self.page.locator('.geetest_panel:visible, .bili-captcha:visible, .bili-mini-login:visible')
+        if challenge.count():
+            if self._human is None or self._submitted:
+                raise PlatformFormError('请在原账号窗口完成安全验证后继续原尝试')
+            before = time.monotonic()
+            try:
+                self._human(self.page.bring_to_front)
+            finally:
+                self._human_seconds += time.monotonic() - before
+            if self._stopped() or self.page.is_closed() or challenge.count():
+                raise PlatformFormError('安全验证尚未完成，请在原窗口处理')
+
+    def _wait(self, condition, *, timeout=None):
+        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+        while True:
+            human_before = self._human_seconds
+            self._check()
+            deadline += self._human_seconds - human_before
+            value = condition()
+            if value:
+                return value
+            if time.monotonic() >= deadline:
+                logger.warning('Bilibili preparation timeout: upload_receipt=%s pre=%s partition_catalog=%s',
+                               self._cid is not None, self._pre is not None, self._types is not None)
+                raise PlatformFormError('平台上传或表单准备超时，请核对原窗口，勿手动投稿')
+            self.page.wait_for_timeout(100)
+
+    def protect_scene(self, page):
+        if self._protected is page:
+            return
+        if self._protected is not None:
+            raise PlatformFormError('original editor cannot be replaced')
+        self._protected = page
+        def guard(route):
+            request = route.request
+            url = urlsplit(request.url)
+            if request.method != 'POST' or url.netloc != 'member.bilibili.com':
+                return route.fallback()
+            if url.path == '/x/vu/web/cover/up':
+                try:
+                    if not self._cover_export_open:
+                        raise ValueError('cover export outside confirmed editor save')
+                    kind = cover_upload_kind(request.header_value('content-type'), request.post_data_buffer)
+                    if kind in self._cover_requests.values():
+                        raise ValueError('duplicate cover export')
+                    self._cover_requests[request] = kind
+                    logger.info('Bilibili cover export: accepted=True ratio=%s', kind)
+                except (ValueError, TypeError, UnicodeError):
+                    logger.info('Bilibili cover export: accepted=False pending_exports=%s', len(self._cover_requests))
+                    route.abort()
+                    return
+                return route.fallback()
+            if url.path == ADD_PATH:
+                self._capture['count'] += 1
+                try:
+                    if not self._submitted or self._capture['count'] != 1 or self._capture['forwarded']:
+                        raise PlatformFormError('submission not authorized or already attempted')
+                    body = json.loads(request.post_data or '')
+                    validate_submit_body(body, self._payload.content, cid=self._cid,
+                                         filename=self._filename, statement_id=self._statement_id,
+                                         cover_urls=self._cover_urls)
+                except (ValueError, KeyError, TypeError, AttributeError, PlatformFormError):
+                    route.abort()
+                    return
+                self._capture['forwarded'] += 1
+                self._request = request
+                return route.fallback()
+            if (url.path.startswith('/x/vu/web/edit') or url.path.startswith('/x/vupre/web/draft/')
+                    and url.path.rsplit('/', 1)[-1] in {'add', 'update', 'del'}):
+                return route.abort()
+            return route.fallback()
+        page.route('**/*', guard)
+        page.on('response', self._response)
+        page.on('request', self._upload_request)
+        page.on('requestfailed', self._upload_failed)
+        # Service Worker requests have no Page owner. Observe and protect the
+        # same platform worker at context level, without disabling the worker
+        # or accepting receipts for a different frozen input.
+        page.context.route('**/*', lambda route: guard(route) if self._owned_worker(route.request) else route.fallback())
+        page.context.on('response', self._context_upload_response)
+        page.context.on('request', lambda request: self._upload_request(request) if self._owned_worker(request) else None)
+        page.context.on('requestfailed', lambda request: self._upload_failed(request) if self._owned_worker(request) else None)
+
+    @staticmethod
+    def _owned_worker(request):
+        worker = getattr(request, 'service_worker', None)
+        address = getattr(worker, 'url', '')
+        if not isinstance(address, str):
+            return False
+        url = urlsplit(address)
+        return url.scheme == 'https' and url.netloc == 'member.bilibili.com'
+
+    def _context_upload_response(self, response):
+        if response.request is self._request or response.request in self._cover_requests:
+            self._response(response)
+            return
+        url = urlsplit(response.url)
+        if url.netloc != 'member.bilibili.com' or url.path != '/preupload':
+            return
+        worker = getattr(response.request, 'service_worker', None)
+        if worker is not None and not self._owned_worker(response.request):
+            return
+        # SDK background requests need not have a Page owner. The exact frozen
+        # file still gates receipt capture; the owned editor's final CID and
+        # filename must independently match that same receipt before forwarding.
+        self._response(response)
+
+    def _upload_request(self, request):
+        url = urlsplit(request.url)
+        if url.netloc != 'member.bilibili.com' or url.path != '/preupload':
+            return
+        query = parse_qs(url.query)
+        current = (self._payload is not None and query.get('name') == [self._payload.video.name]
+                   and query.get('size') == [str(self._payload.video.stat().st_size)])
+        logger.info('Bilibili preupload request: method=%s current_video=%s name_present=%s size_present=%s',
+                    request.method, current, 'name' in query, 'size' in query)
+
+    def _upload_failed(self, request):
+        url = urlsplit(request.url)
+        if url.netloc != 'member.bilibili.com' or url.path != '/preupload':
+            return
+        match = re.search(r'net::ERR_[A-Z0-9_]+', request.failure or '')
+        logger.warning('Bilibili preupload transport failed: network_error=%s', match.group(0) if match else 'unknown')
+
+    def _current_upload_identity(self):
+        if self._selected_upload is None or self._payload is None:
+            return None
+        value = self._selected_upload.evaluate("""(state, expected) => {
+          const roots=[...document.querySelectorAll('.file-list')].filter(e=>e.getClientRects().length);
+          const result={roots:roots.length,vue:false,rows:0,same_input:false,complete:false};
+          if(roots.length!==1)return result;
+          const vm=roots[0].__vue__;result.vue=Boolean(vm);
+          const rows=vm?.videoTasks||vm?.$props?.videoTasks;
+          if(!Array.isArray(rows))return result;
+          result.rows=rows.length;if(rows.length!==1)return result;
+          const row=rows[0],file=state.file;
+          result.same_input=Boolean(file instanceof File && row.file===file
+            && file.name===expected.name && file.size===expected.size);
+          result.complete=row.status===3;
+          if(result.same_input&&result.complete){
+            result.cid=String(row.cid??'');
+            result.filename=typeof row.filename==='string'?row.filename:'';
+          }
+          return result;
+        }""", {'name':self._payload.video.name,'size':self._payload.video.stat().st_size})
+        self._upload_inspection = {key:value.get(key) for key in ('roots','vue','rows','same_input','complete')}
+        if not value.get('same_input') or not value.get('complete'):
+            return None
+        try:
+            cid = int(submission_id(value.get('cid')))
+        except (ValueError, TypeError):
+            return None
+        filename = value.get('filename')
+        return (cid, filename) if isinstance(filename, str) and filename else None
+
+    def _upload_ready(self):
+        identity = self._current_upload_identity()
+        if identity is not None:
+            if self._cid is not None and identity != (self._cid, self._filename):
+                raise PlatformFormError('上传记录与当前视频不一致，请核对原任务')
+            self._cid, self._filename = identity
+            if not self._editor_identity_verified:
+                logger.info('Bilibili current selected file bound to completed editor video')
+            self._editor_identity_verified = True
+        now = time.monotonic()
+        if self._upload_progress_at is None or now - self._upload_progress_at >= 10:
+            root = self.page.locator('.file-item-content')
+            logger.info('Bilibili upload UI: pending=%s uploading=%s complete=%s failed=%s',
+                        root.get_by_text('等待上传', exact=False).count(),
+                        root.get_by_text('上传中', exact=False).count(),
+                        root.get_by_text('上传完成', exact=False).count(),
+                        root.get_by_text('上传失败', exact=False).count())
+            logger.info('Bilibili current upload identity: %s', self._upload_inspection)
+            self._upload_progress_at = now
+        return identity is not None and self.page.get_by_text('上传完成', exact=True).count() >= 1
+
+    def _response(self, response):
+        from playwright.sync_api import Error as PlaywrightError
+        try:
+            if response.request is self._request:
+                self._capture.update(status=response.status, json=response.json())
+                return
+            url = urlsplit(response.url)
+            if url.netloc in {'member.bilibili.com', 'api.bilibili.com'} and url.path.startswith('/x/') and '/tag' in url.path:
+                query = parse_qs(urlsplit(response.request.url).query)
+                values = [value for items in query.values() for value in items]
+                raw = response.request.post_data
+                if isinstance(raw, str):
+                    try:
+                        posted = json.loads(raw)
+                    except ValueError:
+                        values.extend(value for items in parse_qs(raw).values() for value in items)
+                    else:
+                        if isinstance(posted, dict):
+                            values.extend(value for value in posted.values() if isinstance(value, str))
+                body = response.json()
+                code = body.get('code') if isinstance(body, dict) else None
+                data = body.get('data') if isinstance(body, dict) else None
+                names = [data.get(key) for key in ('name', 'tag_name')] if isinstance(data, dict) else []
+                fields = sorted(key for key in data if isinstance(key, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,31}', key))[:16] if isinstance(data, dict) else []
+                flags = {key:data[key] for key in ('code','is_error','isError','error_code','errorCode','state','type','tag_type')
+                         if isinstance(data, dict) and type(data.get(key)) in (int,bool)}
+                text = ' '.join(value for row in (body,data) if isinstance(row, dict)
+                                for key in ('message','msg','err_msg','error')
+                                if isinstance(value:=row.get(key), str)).lower()
+                categories = [label for label, words in (
+                    ('duplicate', ('重复','已存在','duplicate','already exist')),
+                    ('length', ('长度','字数','length')),
+                    ('invalid', ('无效','不可用','禁止','invalid','forbidden')),
+                    ('activity', ('活动','activity')),
+                ) if any(word in text for word in words)]
+                logger.info('Bilibili tag response: request_matches=%s http_status=%s code=%s data_kind=%s canonical_matches_input=%s canonical_matches_existing=%s',
+                            bool(self._pending_tag and self._pending_tag in values), response.status,
+                            code if type(code) is int else 'unavailable', type(data).__name__,
+                            bool(self._pending_tag and self._pending_tag in names),
+                            any(name in self._accepted_tags for name in names if isinstance(name, str)))
+                logger.info('Bilibili tag business result: fields=%s flags=%s categories=%s', fields, flags, categories)
+                if (self._pending_tag and self._pending_tag in values and isinstance(data, dict)
+                        and type(data.get('code')) is int and data['code'] != 0 and 'content' in data):
+                    self._rejected_tags.add(self._pending_tag)
+                return
+            if url.netloc != 'member.bilibili.com':
+                return
+            if url.path == '/preupload':
+                if response.request in self._seen_upload_responses:
+                    return
+                self._seen_upload_responses.add(response.request)
+                q = parse_qs(urlsplit(response.request.url).query)
+                current = (self._payload is not None and q.get('name') == [self._payload.video.name]
+                           and q.get('size') == [str(self._payload.video.stat().st_size)])
+                logger.info('Bilibili preupload response: http_status=%s current_video=%s', response.status, current)
+            if response.request in self._cover_requests:
+                logger.info('Bilibili cover response: http_status=%s ratio=%s', response.status, self._cover_requests[response.request])
+            if response.status != 200:
+                return
+            if response.request in self._cover_requests:
+                body = response.json()
+                code = body.get('code') if isinstance(body, dict) else None
+                data = body.get('data') if isinstance(body, dict) else None
+                value = data.get('url') if isinstance(data, dict) else None
+                parsed = urlsplit(value) if isinstance(value, str) else None
+                logger.info('Bilibili cover receipt shape: code_kind=%s data_object=%s url_form=%s legacy_cdn=%s',
+                            type(code).__name__, isinstance(data, dict),
+                            'absolute' if parsed and parsed.scheme else 'network_path' if parsed and parsed.netloc else 'other',
+                            bool(parsed and (parsed.hostname or '').endswith('.hdslb.com')))
+                self._cover_urls[self._cover_requests[response.request]] = cover_upload_url({'status':response.status,'json':body})
+                return
+            if url.path in {PRE_PATH, TYPE_PATH}:
+                data = response_data({'status': response.status, 'json': response.json()})
+                if url.path == PRE_PATH:
+                    self._pre = data
+                else:
+                    self._types = data
+            if url.path == '/preupload' and self._payload is not None:
+                request_url = urlsplit(response.request.url)
+                query = parse_qs(request_url.query)
+                logger.info('Bilibili preupload observed: method=%s name_present=%s size_present=%s name_matches=%s size_matches=%s response_query_matches=%s',
+                            response.request.method, 'name' in query, 'size' in query,
+                            query.get('name') == [self._payload.video.name],
+                            query.get('size') == [str(self._payload.video.stat().st_size)],
+                            request_url.query == url.query)
+                names, sizes = query.get('name', []), query.get('size', [])
+                declared = int(sizes[0]) if len(sizes) == 1 and sizes[0].isascii() and sizes[0].isdigit() and len(sizes[0]) <= 18 else None
+                name_kind = ('file' if names == [self._payload.video.name] else
+                             'stem' if names == [self._payload.video.stem] else
+                             'metadata' if len(names) == 1 and names[0].endswith('_meta.txt') else
+                             'frames' if len(names) == 1 and names[0].endswith('.zip') else 'other')
+                logger.info('Bilibili preupload shape: name_count=%s size_count=%s name_kind=%s declared_bytes=%s expected_bytes=%s',
+                            len(names), len(sizes), name_kind, declared, self._payload.video.stat().st_size)
+                body = response.json()
+                code = body.get('code') if isinstance(body, dict) else None
+                logger.info('Bilibili preupload result: code=%s has_video_id=%s has_upload_uri=%s',
+                            code if type(code) is int else None,
+                            bool(body.get('biz_id')) if isinstance(body, dict) else False,
+                            bool(body.get('upos_uri')) if isinstance(body, dict) else False)
+                if query.get('name') != [self._payload.video.name] or query.get('size') != [str(self._payload.video.stat().st_size)]:
+                    return
+                cid = int(submission_id(body.get('biz_id')))
+                uri = body.get('upos_uri')
+                if not isinstance(uri, str) or not uri.startswith('upos://'):
+                    return
+                self._cid, self._filename = cid, Path(uri).stem
+                logger.info('Bilibili matching upload receipt captured')
+        except (ValueError, TypeError, KeyError, AttributeError, PlaywrightError) as error:
+            logger.warning('Bilibili response proof rejected: kind=%s error_type=%s',
+                           'preupload' if urlsplit(response.url).path == '/preupload' else 'editor',
+                           type(error).__name__)
+            # Missing proof is a hard stop, never permission to guess.
+
+    @staticmethod
+    def _tag_loading(tag_input):
+        return tag_input.evaluate("""input => {
+          const seen=new Set();
+          for(let node=input;node;node=node.parentElement){
+            let vm=node.__vue__;
+            for(let depth=0;vm && depth<12 && !seen.has(vm);depth++,vm=vm.$parent){
+              seen.add(vm);
+              if(typeof vm.checkCustomTagLoading==='boolean')return vm.checkCustomTagLoading;
+            }
+          }
+          return null;
+        }""")
+
+    def _tag_accepted(self, tag_input, expected_tags):
+        if expected_tags[-1] in self._rejected_tags:
+            raise PublicationTagRejected(len(expected_tags))
+        return (self.page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() == expected_tags
+                and tag_input.input_value() == '' and self._tag_loading(tag_input) is not True)
+
+    def fill_form(self, page, payload, *, stopped, replace_matching_draft=False, wait_for_human=None):
+        if self.page is not None or payload.space_cover is None:
+            raise PlatformFormError('one editor and both confirmed covers are required')
+        self.page, self._payload, self._stopped, self._human = page, payload, stopped, wait_for_human
+        self.protect_scene(page)
+        page.goto(CREATOR_ORIGIN + '/platform/upload/video/frame', wait_until='commit', timeout=60000)
+        # This is an asynchronously mounted micro-app. Its usable upload
+        # control is the readiness signal, not unrelated document resources.
+        self._wait(lambda: page.get_by_text('上传视频', exact=True).is_visible(), timeout=120)
+        # The landing-page 'continue editing' banner is optional recovery,
+        # not an active editor. Leave both recovery/discard actions untouched.
+        # Reject an actually restored video, while allowing the fresh upload
+        # entrance; the captured receipt and one-video POST guard bind this input.
+        if page.get_by_text('上传完成', exact=True).filter(visible=True).count():
+            raise ExistingPublicationDraft('restored unsent video is not owned by this attempt')
+        self._check()
+        # The visible upload text has pointer-events:none on the live page.
+        # Fill the actual upload component, never an image/cover file input.
+        file_input = page.locator('.upload-wrp .upload input[type=file]')
+        self._wait(lambda: file_input.count() == 1 and file_input.is_enabled(), timeout=60)
+        self._selected_upload = page.evaluate_handle('() => ({file:null})')
+        file_input.evaluate("""(input, state) => {
+          input.addEventListener('change', () => {
+            state.file=input.files.length===1?input.files[0]:null;
+          }, {capture:true,once:true});
+        }""", self._selected_upload)
+        file_input.set_input_files(str(payload.video.resolve()))
+        self._wait(self._upload_ready)
+        self._wait(lambda: self._pre is not None and self._types is not None)
+        options = payload.content['bilibili']
+        matching_partition(self._types, options['partition_id'], options['partition_name'])
+        statements = (self._pre.get('neutral_mark') or {}).get('mark_list') or []
+        if options['statement'] == '内容无需标注':
+            self._statement_id = -1
+        elif options['statement'] == '内容为转载':
+            self._statement_id = -2
+        else:
+            matches = [r for r in statements if r.get('content') == options['statement'] and type(r.get('id')) is int]
+            if len(matches) != 1:
+                raise PlatformFormError('当前账号已无法选择原创作声明，请重新配置后核对')
+            self._statement_id = matches[0]['id']
+        page.get_by_placeholder('请输入稿件标题', exact=True).fill(payload.content['title'])
+        page.locator('.desc-container .ql-editor').fill(payload.content.get('description', ''))
+        page.locator('.video-human-type .select-controller').click(timeout=5000)
+        page.locator('.human-type-list').get_by_text(options['partition_name'], exact=True).click(timeout=5000)
+        tags = page.locator('#tag-container .tag-pre-wrp .label-item-v2-container .close')
+        for _ in range(10):
+            if not tags.count():
+                break
+            self._check()
+            previous_count = tags.count()
+            tags.first.click(timeout=5000)
+            self._wait(lambda: tags.count() < previous_count, timeout=5)
+        tag_input = page.locator('#tag-container .tag-input-wrp input:visible')
+        logger.info('Bilibili tag controls: placeholder_matches=%s editor_inputs=%s',
+                    page.get_by_placeholder('按回车键Enter创建标签', exact=True).count(), tag_input.count())
+        for index, tag in enumerate(options['tags']):
+            self._check()
+            self._wait(lambda: self._tag_loading(tag_input) is not True, timeout=20)
+            self._pending_tag = tag
+            self._accepted_tags = options['tags'][:index]
+            tag_input.fill(tag)
+            tag_input.press('Enter')
+            # The platform validates each custom tag asynchronously and ignores
+            # Enter while checkCustomTagLoading is true. Wait for the accepted
+            # prefix and cleared input before sending the next confirmed tag.
+            expected_tags = options['tags'][:index + 1]
+            try:
+                self._wait(lambda: self._tag_accepted(tag_input, expected_tags), timeout=20)
+            except PlatformFormError:
+                observed_tags = page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents()
+                logger.warning('Bilibili tag acceptance timeout: index=%s observed_count=%s expected_count=%s input_empty=%s trim_matches=%s casefold_matches=%s validation_busy=%s expected_label_visible=%s',
+                               index, len(observed_tags), len(expected_tags), tag_input.input_value() == '',
+                               [value.strip() for value in observed_tags] == expected_tags,
+                               [value.strip().casefold() for value in observed_tags] == [value.casefold() for value in expected_tags],
+                               self._tag_loading(tag_input),
+                               tag in page.locator('#tag-container .tag-pre-wrp').inner_text())
+                raise
+        statement = page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True)
+        statement.click(timeout=5000)
+        page.get_by_text(options['statement'], exact=True).filter(visible=True).click(timeout=5000)
+        # Reopen to explicitly set the independent content-rights checkbox.
+        statement.click(timeout=5000)
+        rights = page.get_by_text('内容为自制：未经作者允许，禁止转载', exact=True)
+        if rights.is_visible():
+            checked = 'option-text-selected' in (rights.get_attribute('class') or '').split()
+            if checked != options.get('rights_reserved', False):
+                page.locator('.auth-content').click(timeout=5000)
+            if ('option-text-selected' in (rights.get_attribute('class') or '').split()) != options.get('rights_reserved', False):
+                raise PlatformFormError('自制权利勾选未保持，已阻止投稿，请重新核对')
+        elif options.get('rights_reserved'):
+            raise PlatformFormError('当前页面没有对应的自制权利选项，已阻止投稿')
+        page.get_by_placeholder('请输入稿件标题', exact=True).click(timeout=5000)
+        if options['statement'] == '内容为转载':
+            page.get_by_placeholder('转载视频请注明来源、时间、地点', exact=False).fill(options['source'])
+        more = page.get_by_text('更多设置', exact=False).filter(visible=True)
+        visibility = page.locator('.vu-only-self')
+        if not visibility.is_visible():
+            more.click(timeout=5000)
+        visibility.get_by_text('公开可见' if options['visibility'] == 'public' else '仅自己可见', exact=True).click(timeout=5000)
+        # Do not grant the separate video recreation agreement by default.
+        recreate = page.get_by_text('允许二创', exact=True)
+        if recreate.is_visible():
+            if self._recreate_enabled():
+                page.locator('.video-recreate .bcc-checkbox').filter(has_text='允许二创').click(timeout=5000)
+            if self._recreate_enabled():
+                raise PlatformFormError('无法关闭二创授权，已阻止投稿，请核对原窗口')
+        self._fill_covers(payload)
+        self._ready = True
+        self._assert_form()
+
+    def _recreate_enabled(self):
+        root = self.page.locator('.video-recreate:visible')
+        if root.count() != 1:
+            raise PlatformFormError('无法核实二创授权状态，请核对原窗口')
+        # The official VideoRecreate component binds _recreate to bcc-checkbox.
+        # Its internal inputs are an implementation detail and may be duplicated.
+        state = root.evaluate("""element => {
+          const vm=element.__vue__;
+          if(vm && '_recreate' in vm &&
+             (typeof vm._recreate==='boolean' || vm._recreate===null))
+            return {known:true, enabled:vm._recreate===true};
+          return {known:false};
+        }""")
+        if state['known']:
+            return state['enabled']
+        box = root.locator('input[type=checkbox]')
+        if box.count() != 1:
+            raise PlatformFormError('无法核实二创授权状态，请核对原窗口')
+        return box.is_checked()
+
+    @staticmethod
+    def _cover_sync_enabled(dialog):
+        # Current CoverEditor has two ratio controls bound to one component
+        # state, and bcc-checkbox does not promise a native input element.
+        state = dialog.evaluate("""element => {
+          let vm=element.__vue__;
+          for(let depth=0;vm && depth<4;depth++,vm=vm.$parent){
+            if(typeof vm.isSyncEnabled==='boolean')
+              return {known:true, enabled:vm.isSyncEnabled};
+          }
+          return {known:false};
+        }""")
+        if state['known']:
+            return state['enabled']
+        sync = dialog.locator('.sync-checkbox input[type=checkbox]')
+        if sync.count() != 1:
+            raise PlatformFormError('无法核实双封面同步设置，请核对原窗口')
+        return sync.is_checked()
+
+    def _fill_covers(self, payload):
+        self.page.locator('.cover-content .cover-module-main').click(timeout=5000)
+        dialog = self.page.locator('.cover-editor:visible')
+        dialog.wait_for(state='visible', timeout=10000)
+        if self._cover_sync_enabled(dialog):
+            dialog.locator('#editor_4_3').click(timeout=5000)
+            control = dialog.locator('.ratio_4_3 .sync-checkbox:visible')
+            if not control.count():
+                control = dialog.locator('.sync-checkbox:visible')
+            if control.count() != 1:
+                raise PlatformFormError('无法核实双封面同步设置，请核对原窗口')
+            control.click(timeout=5000)
+            self._wait(lambda: not self._cover_sync_enabled(dialog), timeout=5)
+        confirmed_main = None
+        for selector, source in (('#editor_4_3', payload.cover), ('#editor_16_9', payload.space_cover)):
+            self._check()
+            dialog.locator(selector).click(timeout=5000)
+            root = dialog.locator(selector)
+            previous = self._cover_canvas(root)
+            file_input = dialog.locator('.cover-upload input[type=file]')
+            upload = image_upload_file(source)
+            try:
+                file_input.set_input_files(str(upload.resolve()))
+                expected_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+                selected = file_input.evaluate("""async e => {
+                  if(e.files.length!==1)return '';const b=await e.files[0].arrayBuffer();
+                  return [...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('');
+                }""")
+                if selected != expected_hash:
+                    raise PlatformFormError('所选封面与任务冻结文件不一致，已阻止投稿')
+                def decoded():
+                    value = self._cover_canvas(root)
+                    return value if value and value != previous else None
+                current = self._wait(decoded, timeout=30)
+            finally:
+                upload.unlink(missing_ok=True)
+            if selector == '#editor_4_3':
+                confirmed_main = current
+        self._canvas_fingerprints = self._cover_canvases(dialog)
+        if self._canvas_fingerprints[0] != confirmed_main:
+            raise PlatformFormError('空间封面覆盖了推荐封面，请关闭双比例同步并重新核对')
+        self._cover_export_open = True
+        try:
+            dialog.get_by_text('完成', exact=True).click(timeout=10000)
+            self._wait(lambda: not dialog.is_visible() and len(self._cover_urls) == 2, timeout=30)
+        except PlatformFormError:
+            logger.warning('Bilibili cover save incomplete: dialog_visible=%s exports=%s receipts=%s',
+                           dialog.is_visible(), len(self._cover_requests), len(self._cover_urls))
+            raise
+        finally:
+            self._cover_export_open = False
+        if self._cover_urls['cover'] == self._cover_urls['cover43']:
+            raise PlatformFormError('两张封面上传结果相同，已阻止投稿，请重新核对')
+        self._cover_fingerprint = self._wait(self._cover_state, timeout=15)
+
+    def _cover_state(self):
+        # Data/blob sources are local to the owned editor, never logged/reported.
+        return self.page.locator('.cover-content .cover-module-main').evaluate("""async root => {
+          const slots=[...root.querySelectorAll('.cover-img')];
+          if(slots.length){
+            if(slots.length!==1)return null;
+            const css=getComputedStyle(slots[0]).backgroundImage;
+            if(!css.startsWith('url(')||!css.endsWith(')'))return null;
+            let source=css.slice(4,-1).trim();
+            if((source.startsWith('"')&&source.endsWith('"')) ||
+               (source.startsWith("'")&&source.endsWith("'")))source=source.slice(1,-1);
+            if(!source)return null;
+            const image=new Image();image.src=source;
+            let timer;
+            const decoded=await Promise.race([
+              image.decode().then(()=>image.naturalWidth>0&&image.naturalHeight>0).catch(()=>false),
+              new Promise(resolve=>{timer=setTimeout(()=>resolve(false),2000);})
+            ]);
+            clearTimeout(timer);
+            return decoded ? [source] : null;
+          }
+          const images=[...root.querySelectorAll('img')].filter(e=>
+            !e.closest('.cover-empty,.cover-delete-btn') && e.complete &&
+            e.naturalWidth>0 && e.naturalHeight>0);
+          return images.length===1 ? images.map(e=>e.src) : null;
+        }""")
+
+    @staticmethod
+    def _cover_canvas(root):
+        return root.evaluate("""async root => {
+              const nodes=[...root.querySelectorAll('canvas.lower-canvas')].filter(e=>e.width>100&&e.height>100);
+              if(nodes.length!==1)return null;
+              const e=nodes[0],c=document.createElement('canvas');
+              c.width=e.width||e.naturalWidth;c.height=e.height||e.naturalHeight;
+              const x=c.getContext('2d');x.drawImage(e,0,0,c.width,c.height);
+              const b=x.getImageData(0,0,c.width,c.height).data;
+              const crop=root.querySelector('.crop-box-fixed');
+              const geometry=crop ? [crop.style.left,crop.style.top,crop.style.width,crop.style.height] : [];
+              return [c.width,c.height,geometry,[...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('')];
+            }""")
+
+    def _cover_canvases(self, dialog):
+        result = []
+        for selector in ('#editor_4_3', '#editor_16_9'):
+            self._check()
+            root = dialog.locator(selector)
+            root.click(timeout=5000)
+            digest = self._cover_canvas(root)
+            if not digest:
+                raise PlatformFormError('无法核实独立封面画面，已阻止投稿，请检查原窗口')
+            result.append(digest)
+        return result
+
+    def _description_text(self):
+        # Quill paragraphs and Chromium's contenteditable DIVs represent lines;
+        # innerText can double blank lines. Keep entered trailing lines, while
+        # treating an empty block's BR as its placeholder, not a second line.
+        return self.page.locator('.desc-container .ql-editor').evaluate("""root => {
+          function text(n) {
+            if(n.nodeType===Node.TEXT_NODE)return n.nodeValue;
+            if(n.nodeName==='BR')return '\\n';
+            let out='';
+            [...n.childNodes].forEach((c,i)=>{
+              const block=['P','DIV','LI'].includes(c.nodeName);
+              if(block&&i>0)out+='\\n';
+              const value=text(c);
+              out+=block&&c.childNodes.length===1&&c.firstChild.nodeName==='BR'?'':value;
+            });
+            return out;
+          }
+          return text(root);
+        }""")
+
+    def _assert_form(self):
+        self._check()
+        if not self._ready or self._capture['count']:
+            raise PlatformFormError('form incomplete or already submitted')
+        if not self._editor_identity_verified or self._current_upload_identity() != (self._cid, self._filename):
+            raise PlatformFormError('当前视频已变化，请回到原任务核对后再提交')
+        page, content = self.page, self._payload.content
+        options = content['bilibili']
+        visible = page.locator('.vu-only-self .check-radio-v2-container').filter(
+            has=page.locator('.check-radio-v2-box-checked')).inner_text().strip()
+        observed = {
+            'title': page.get_by_placeholder('请输入稿件标题', exact=True).input_value(),
+            'description': self._description_text(),
+            'partition_name': page.locator('.video-human-type .select-item-cont').inner_text().strip(),
+            'tags': page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents(),
+            'statement': page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True).input_value(),
+            'visibility': visible,
+            'cover_preview': self._cover_state(),
+            'cover_editor_open': page.locator('.cover-editor:visible').count(),
+        }
+        expected = {
+            'title': content['title'], 'description': content.get('description', ''),
+            'partition_name': options['partition_name'], 'tags': options['tags'],
+            'statement': options['statement'],
+            'visibility': '公开可见' if options['visibility'] == 'public' else '仅自己可见',
+            'cover_preview': self._cover_fingerprint, 'cover_editor_open': 0,
+        }
+        mismatches = [key for key in expected if observed[key] != expected[key]]
+        if mismatches:
+            # Fixed field names only; never emit titles, descriptions or URLs.
+            logger.warning('Bilibili confirmed form mismatch: fields=%s', ','.join(mismatches))
+            if 'description' in mismatches:
+                logger.info('Bilibili description shape: observed_chars=%s expected_chars=%s observed_breaks=%s expected_breaks=%s trailing_breaks_only=%s',
+                            len(observed['description']), len(expected['description']),
+                            observed['description'].count('\n'), expected['description'].count('\n'),
+                            observed['description'].rstrip('\n') == expected['description'].rstrip('\n'))
+            if 'tags' in mismatches:
+                logger.info('Bilibili tag shape: observed_count=%s expected_count=%s trimmed_match=%s',
+                            len(observed['tags']), len(expected['tags']),
+                            [value.strip() for value in observed['tags']] == expected['tags'])
+            raise PlatformFormError('提交前表单已变化，已阻止投稿，请重新核对内容')
+        # The saved images are the two official export receipt URLs. Their
+        # exact values are checked again on the actual authorized final POST.
+        # Reopening a rendering canvas is not a check of those saved images:
+        # the platform may rebuild/rescale it without changing either export.
+
+    def submit(self):
+        if self._submitted:
+            raise PlatformFormError('本次投稿已尝试提交，不能重复点击，请核验原稿件')
+        self._assert_form()
+        self._submitted = True
+        self.page.get_by_text('立即投稿', exact=True).click(timeout=10000)
+
+    def read_receipt(self):
+        if not self._submitted:
+            raise PlatformFormError('no submission by this publisher')
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline and not self.page.is_closed():
+            if 'json' in self._capture:
+                try:
+                    return accepted_receipt(self._capture)
+                except BilibiliPublicationError:
+                    raise PlatformFormError('未取得可信投稿回执，请在原任务核验，勿再次投稿') from None
+            self.page.wait_for_timeout(100)
+        raise PlatformFormError('投稿结果待核实，请在原任务核验，勿再次投稿')
+
+
+class BilibiliPublisher:
+    def __init__(self, endpoint, *, browser_session_factory=BrowserSession,
+                 identity_reader=None, browser_factory=BrowserPublisher):
+        self.endpoint = endpoint
+        self.browser_session_factory = browser_session_factory
+        self.identity_reader = identity_reader
+        self.browser_factory = browser_factory
+        self._started = False
+
+    def _identity(self, page=None):
+        if self.identity_reader:
+            return self.identity_reader(self.endpoint)
+        return read_bilibili_identity(self.endpoint, browser_context=page.context if page else None)
+
+    def _verify(self, expected, page=None):
+        observed = self._identity(page)
+        if observed.get('login_status') != 'normal' or observed.get('platform_account_id') != expected:
+            raise PublicationInputError('B站当前登录身份与原任务不一致或登录已失效，请核对原账号')
+
+    def publish(self, payload, control, *, method=PublishMethod.BROWSER):
+        if method != PublishMethod.BROWSER or self._started:
+            raise PublicationInputError('publication method unavailable or instance already used')
+        self._started = True
+        control.check_stopped()
+        observed = self._identity()
+        ready = observed.get('login_status') == 'normal'
+        if ready:
+            self._verify(payload.platform_uid)
+            control.on_prepared()
+            control.check_stopped()
+        elif control.wait_for_human is None:
+            raise PublicationInputError('B站登录需要人工处理，请在原账号窗口完成验证')
+        implementation = self.browser_factory()
+        with self.browser_session_factory(self.endpoint) as session:
+            def human(show):
+                if control.wait_for_human is None:
+                    raise PublicationInputError('请在原账号窗口完成登录或安全验证，再继续原尝试')
+                control.wait_for_human(show)
+                control.check_stopped()
+                self._verify(payload.platform_uid, session.page)
+            implementation.protect_scene(session.page)
+            while not ready:
+                control.check_stopped()
+                session.page.goto(CREATOR_ORIGIN + '/platform/upload/video/frame', wait_until='commit', timeout=60000)
+                control.wait_for_human(session.page.bring_to_front)
+                control.check_stopped()
+                self._verify(payload.platform_uid, session.page)
+                ready = True
+                control.on_prepared()
+                control.check_stopped()
+            implementation.fill_form(session.page, payload, stopped=control.stopped,
+                replace_matching_draft=control.replace_matching_draft, wait_for_human=human)
+            control.check_stopped()
+            self._verify(payload.platform_uid, session.page)
+            control.before_submit()
+            control.check_stopped()
+            implementation.submit()
+            return implementation.read_receipt()

@@ -32,6 +32,14 @@ class BaiduPublicationCheckerTests(unittest.TestCase):
         self.client.find_submission.assert_not_called()
         self.browser.assert_not_called()
 
+    def test_identity_fallback_diagnostic_does_not_log_account_details(self):
+        checker = self.checker(fallback=False)
+        self.client.read_identity.return_value = {'login_status':'expired', 'platform_account_id':'private-secret'}
+        with self.assertLogs(baidu.logger, level='INFO') as logs:
+            checker.check(self.reference, self.control)
+        self.assertIn('api_fallback_reason=identity', ' '.join(logs.output))
+        self.assertNotIn('private-secret', ' '.join(logs.output))
+
     def test_exhausted_fallback_does_not_open_browser(self):
         checker = self.checker(fallback=False)
         self.client.read_identity.return_value['login_status'] = 'expired'

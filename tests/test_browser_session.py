@@ -43,3 +43,12 @@ class BrowserSessionTests(unittest.TestCase):
             with Session('127.0.0.1:39871', playwright_factory=lambda: runtime):
                 self.fail('attached')
         runtime.start.return_value.stop.assert_called_once()
+
+    def test_failed_disconnect_preserves_the_platform_failure(self):
+        Session = self.session_class()
+        runtime = MagicMock()
+        runtime.start.return_value.chromium.connect_over_cdp.return_value.contexts = [MagicMock()]
+        runtime.start.return_value.stop.side_effect = RuntimeError('cleanup failed')
+        with self.assertRaisesRegex(ValueError, 'original platform failure'):
+            with Session('127.0.0.1:39871', playwright_factory=lambda: runtime):
+                raise ValueError('original platform failure')

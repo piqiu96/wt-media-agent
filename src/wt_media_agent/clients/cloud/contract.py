@@ -10,7 +10,7 @@ API_NAME = "cloud-agent"
 EXPECTED_MAJOR_VERSION = "v1"
 # Fixed-group admission and durable Profile/check settlement require this revision.
 # Older providers cannot safely admit this concurrent publication consumer.
-REQUIRED_CONTRACT_REVISION = "2026.11.25.2"
+REQUIRED_CONTRACT_REVISION = "2026.11.26.2"
 
 
 def is_cloud_agent_compatible(metadata: Mapping[str, object]) -> bool:

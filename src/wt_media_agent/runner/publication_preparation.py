@@ -17,7 +17,7 @@ from wt_media_agent.runtime.constants import (
     PublicationStage,
     PublicationStatus,
 )
-from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict, _environment
+from wt_media_agent.storage.publication import ExecutionIdentity, JournalConflict, _environment, publication_content, publication_file_evidence
 from wt_media_agent.platforms.publish import PublicationInputError
 from wt_media_agent.services.files.verified_download import download_verified
 
@@ -34,13 +34,14 @@ class PreparedPublication:
     video: Path
     cover: Path
     endpoint: str
-    portrait_cover: Path
+    portrait_cover: Path | None = None
+    space_cover: Path | None = None
 
 
 
 
 class PublicationPreparation:
-    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str, capacity=None, preparation_timeout=900.0):
+    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str, capacity=None, preparation_timeout=3600.0):
         self.cloud_env=_environment(cloud_env)
         self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self._report_locks={};self._locks_guard=RLock()
         if type(preparation_timeout) not in (int, float) or not math.isfinite(preparation_timeout) or preparation_timeout <= 0:
@@ -68,8 +69,14 @@ class PublicationPreparation:
             if task['operator_id']!=user_id or attempt['executor_user_id']!=user_id or attempt['publication_id']!=task['id'] or task['current_attempt_id']!=attempt['id'] or type(value['replayed']) is not bool:
                 raise ValueError('owner/attempt differs')
             identity=ExecutionIdentity(self.cloud_env,user_id,task['id'],attempt['id'],source['bit_profile_id'])
-            snapshot={k:source[k] for k in ('platform_uid','video_sha256','video_size','cover_sha256','cover_size','portrait_cover_sha256','portrait_cover_size')}
-            snapshot['platform']=task['platform'];snapshot['content']={k:source['content'][k] for k in ('description','topics','declaration')}
+            platform = task['platform']
+            if platform not in ('baidu', 'bilibili') or source.get('platform', 'baidu') != platform:
+                raise ValueError('frozen platform differs')
+            secondary = 'space_cover' if platform == 'bilibili' else 'portrait_cover'
+            if platform == 'bilibili' and (source.get('portrait_cover_sha256', '') != '' or source.get('portrait_cover_size', 0) != 0):
+                raise ValueError('foreign secondary cover in Bilibili input')
+            snapshot={k:source[k] for k in ('platform_uid','video_sha256','video_size','cover_sha256','cover_size',secondary+'_sha256',secondary+'_size')}
+            snapshot['platform']=platform;snapshot['content']=publication_content(platform,source['content'])
             fresh=self.journal.register(identity,snapshot)
         except (KeyError,TypeError,ValueError):
             raise PublicationInputError('invalid owner-bound claim input') from None
@@ -96,14 +103,18 @@ class PublicationPreparation:
         if profile is None or profile.main_user_id!=i['bit_main_user_id']:
             raise PublicationInputError('BitBrowser owner or Profile differs')
         grants=claim.get('files',{})
-        for name in ('video','cover','portrait_cover'):
+        secondary = 'space_cover' if task['platform'] == 'bilibili' else 'portrait_cover'
+        for name in ('video','cover',secondary):
             g=grants.get(name,{})
             if g.get('sha256')!=i[name+'_sha256'] or g.get('size')!=i[name+'_size']:
                 raise PublicationInputError('download grant differs from frozen input')
         folder=self.directory/identity.key.replace(':','-')
         video=folder/'video.mp4';cover=folder/'cover'
-        portrait_cover=folder/'portrait-cover'
-        for name, target in (('video',video),('cover',cover),('portrait_cover',portrait_cover)):
+        secondary_cover=folder/secondary.replace('_','-')
+        # All grants are minted together. Open small resources first so a slow
+        # video cannot consume their validity before their requests even start.
+        resources=(('video',video),('cover',cover),(secondary,secondary_cover))
+        for name, target in sorted(resources,key=lambda item:grants[item[0]]['size']):
             check_current()
             download_verified(grants[name],target,current=current,deadline=deadline)
         check_current()
@@ -113,7 +124,9 @@ class PublicationPreparation:
             check_current()
             endpoint=self.bitbrowser.open_profile_with_devtools(identity.bit_profile_id)
         self._prepared.add(identity.key)
-        return PreparedPublication(identity,video,cover,endpoint,portrait_cover)
+        return PreparedPublication(identity,video,cover,endpoint,
+            portrait_cover=secondary_cover if secondary=='portrait_cover' else None,
+            space_cover=secondary_cover if secondary=='space_cover' else None)
 
     def mark_ready(self, token: str, identity: ExecutionIdentity):
         """The platform calls back only after initial live identity verification."""
@@ -124,8 +137,7 @@ class PublicationPreparation:
             seq=self.journal.advance(identity,PublicationPhase.PREPARED)
             feedback=self.cloud.report_publication(token,identity.task_id,PublicationReport.REPORT,{
                 'attempt_id':identity.attempt_id,'report_seq':seq,'stage':PublicationStage.READY,
-                'platform_uid':source['platform_uid'],'bit_profile_id':identity.bit_profile_id,
-                'video_sha256':source['video_sha256'],'cover_sha256':source['cover_sha256'],'portrait_cover_sha256':source['portrait_cover_sha256']})
+                'bit_profile_id':identity.bit_profile_id, **publication_file_evidence(source)})
         if feedback.get('stop_requested') is not False:
             raise CloudExecutionStopped(feedback.get('stop_reason'))
         return feedback

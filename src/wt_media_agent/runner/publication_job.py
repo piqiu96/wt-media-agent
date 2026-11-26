@@ -21,10 +21,32 @@ from wt_media_agent.runtime.constants import (
     PublishMethod,
 )
 from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
-from wt_media_agent.storage.publication import JournalConflict
-from wt_media_agent.platforms.publish import PublishControl, PublishPayload
+from wt_media_agent.services.files.verified_download import ResourceVerificationError
+from wt_media_agent.storage.publication import JournalConflict, publication_file_evidence
+from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublicationTagRejected, PublishControl, PublishPayload
 
 logger = logging.getLogger(__name__)
+
+
+def _browser_error_kind(error):
+    message = str(error)
+    network = re.search(r"net::ERR_[A-Z_]+\b", message)
+    if network:
+        return network.group(0)
+    # Fixed categories only: Playwright call logs can contain user content,
+    # private browser endpoints and credentials.
+    for marker, kind in (
+        ('strict mode violation', 'multiple_controls'),
+        ('intercepts pointer events', 'pointer_intercepted'),
+        ('not a checkbox or radio button', 'not_checkbox'),
+        ('not visible', 'not_visible'),
+        ('not enabled', 'not_enabled'),
+        ('not stable', 'not_stable'),
+        ('has been closed', 'closed'),
+    ):
+        if marker in message:
+            return kind
+    return 'timeout' if type(error).__name__ == 'TimeoutError' else 'unknown'
 
 
 class PublicationJob:
@@ -88,10 +110,11 @@ class PublicationJob:
         done, stopped = Event(), Event()
         prepared = None
         stop_reason = ""
+        preparation_message = ""
         receipt = {}
         submission_denied = False
         source = claim['attempt']['input_snapshot']
-        evidence = {key: source[key] for key in ('platform_uid', 'video_sha256', 'cover_sha256', 'portrait_cover_sha256')}
+        evidence = publication_file_evidence(source)
         evidence['bit_profile_id'] = identity.bit_profile_id
 
         def progress(stage, seq, **extra):
@@ -205,7 +228,7 @@ class PublicationJob:
                     except Exception:
                         pass  # Missing verification never grants draft replacement.
             receipt = publisher.publish(
-                PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid'], portrait_cover=prepared.portrait_cover),
+                PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid'], portrait_cover=prepared.portrait_cover, space_cover=getattr(prepared, 'space_cover', None)),
                 PublishControl(stopped=should_stop, on_prepared=on_prepared, before_submit=before_submit,
                     replace_matching_draft=replace_draft, wait_for_human=wait_for_human),
                 method=PublishMethod.BROWSER)
@@ -225,11 +248,16 @@ class PublicationJob:
                     break
                 location=location.tb_next
             code = location.tb_frame.f_code
-            network_error = re.search(r"net::ERR_[A-Z_]+\b", str(error))
             logger.warning("publication stopped before a credible result: phase=%s error_type=%s failure_site=%s:%s:%s browser_error=%s failure_path=%s",
                 self.journal.get(identity)['phase'], type(error).__name__,
                 Path(code.co_filename).name, code.co_name, location.tb_lineno,
-                network_error.group(0) if network_error else "unknown", ">".join(failure_path))
+                _browser_error_kind(error), ">".join(failure_path))
+            if isinstance(error, ExistingPublicationDraft):
+                preparation_message = '平台恢复了未提交的视频，本次任务未投稿。请核对原账号窗口中的未提交视频后再重试；系统不会自动覆盖或丢弃。'
+            elif isinstance(error, PublicationTagRejected):
+                preparation_message = f'平台未接受第{error.position}个标签，本次尚未投稿。请核对标签配置后重新安排发布。'
+            elif isinstance(error, ResourceVerificationError):
+                preparation_message = '成片或封面未完成下载或校验，本次尚未投稿。请检查网络与文件后重试。'
             # Do not persist exception text: platform errors may contain private
             # addresses or credentials. Keep the exact local phase and evidence.
             receipt = {}
@@ -244,6 +272,14 @@ class PublicationJob:
                 closed = self.bitbrowser.close_profile_verified(identity.bit_profile_id, prepared.endpoint)
             except Exception:
                 pass
+        else:
+            # Preparation may fail before an editor exists. A read-only check
+            # can prove the reserved Profile is closed without opening or
+            # closing an unrelated browser scene.
+            try:
+                closed = self.bitbrowser.is_profile_closed(identity.bit_profile_id) is True
+            except Exception:
+                pass
         evidence['scene_closed'] = closed is True
         result = {'status': PublicationStatus.UNCERTAIN, 'error_code': PUBLICATION_RESULT_UNCERTAIN,
                   'error_message': PUBLICATION_RESULT_UNCERTAIN_MESSAGE, 'evidence': evidence}
@@ -251,7 +287,7 @@ class PublicationJob:
             evidence['not_submitted'] = True
             result = {'status': PublicationStatus.FAILED,
                       'error_code': stop_reason or PUBLICATION_NOT_SUBMITTED,
-                      'error_message': 'Execution stopped before submission; the browser scene was closed.',
+                      'error_message': preparation_message or '本次在投稿前停止，尚未向平台提交；浏览器现场已关闭，可核对后重试。',
                       'evidence': evidence}
         if receipt:
             evidence['receipt_id'] = receipt['platform_work_id']

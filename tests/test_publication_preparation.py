@@ -146,3 +146,29 @@ class PublicationPreparationTests(unittest.TestCase):
    self.p.prepare('memory-token',value,i)
   self.assertEqual(download.call_count,3)
   self.assertEqual(len({call.kwargs['deadline'] for call in download.call_args_list}),1)
+ def test_healthy_twenty_minute_resource_preparation_can_finish_before_browser_open(self):
+  from wt_media_agent.services.files.verified_download import ResourceVerificationError
+  value,i=self.p.claim('memory-token','3');clock=[0.0]
+  def downloading(grant,target,*,current,deadline):
+   clock[0]+=1200 if target.name=='video.mp4' else 1
+   if not current() or clock[0]>=deadline:raise ResourceVerificationError('deadline reached')
+  with patch('wt_media_agent.runner.publication_preparation.time.monotonic',side_effect=lambda:clock[0]), patch('wt_media_agent.runner.publication_preparation.download_verified',side_effect=downloading), patch.object(self.bit,'open_profile_with_devtools',return_value='127.0.0.1:9999') as browser:
+   prepared=self.p.prepare('memory-token',value,i)
+   self.assertEqual(prepared.endpoint,'127.0.0.1:9999')
+   browser.assert_called_once()
+
+ def test_slow_video_does_not_leave_small_cover_grants_to_expire(self):
+  from wt_media_agent.services.files.verified_download import ResourceVerificationError
+  value,i=self.p.claim('memory-token','3');clock=[0.0];opened=[]
+  value['files']['video']['size']=value['attempt']['input_snapshot']['video_size']=10000
+  value['files']['cover']['size']=value['attempt']['input_snapshot']['cover_size']=100
+  value['files']['portrait_cover']['size']=value['attempt']['input_snapshot']['portrait_cover_size']=200
+  def downloading(grant,target,*,current,deadline):
+   if clock[0]>=900:raise ResourceVerificationError('source grant expired before opening')
+   opened.append(target.name)
+   clock[0]+=1200 if target.name=='video.mp4' else 1
+   if not current() or clock[0]>=deadline:raise ResourceVerificationError('deadline reached')
+  with patch('wt_media_agent.runner.publication_preparation.time.monotonic',side_effect=lambda:clock[0]), patch('wt_media_agent.runner.publication_preparation.download_verified',side_effect=downloading), patch.object(self.bit,'open_profile_with_devtools',return_value='127.0.0.1:9999') as browser:
+   self.p.prepare('memory-token',value,i)
+   browser.assert_called_once()
+  self.assertEqual(opened,['cover','portrait-cover','video.mp4'])

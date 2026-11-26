@@ -16,11 +16,11 @@ class PublicationAdmissionClientTests(unittest.TestCase):
         self.client = CloudAgentClient('https://cloud.example', transport=transport)
         self.capacity = {'automatic_slots': 5, 'window_slots': 10}
 
-    def test_new_admission_advertises_both_configured_bounds(self):
+    def test_new_admission_advertises_bounds_and_supported_platforms(self):
         self.assertIsNone(self.client.claim_publication('token', 'original', capacity=self.capacity))
-        self.assertEqual(self.calls[-1][2], {'request_key': 'original', 'capacity': self.capacity})
+        self.assertEqual(self.calls[-1][2], {'request_key': 'original', 'capacity': self.capacity, 'supported_platforms': ['baidu', 'bilibili']})
         self.assertIsNone(self.client.claim_publication_check('token', 'check-original', capacity=self.capacity))
-        self.assertEqual(self.calls[-1][2], {'request_key': 'check-original', 'capacity': self.capacity})
+        self.assertEqual(self.calls[-1][2], {'request_key': 'check-original', 'capacity': self.capacity, 'supported_platforms': ['baidu', 'bilibili']})
         self.response = {'attempt_id': '2', 'task_status': 'running', 'stage': 'preparing', 'stop_requested': False, 'allow_submit': False, 'scene_parked': False}
         self.client.publication_human('token', '1', '2', '3', resume=True, capacity=self.capacity)
         self.assertEqual(self.calls[-1][2], {'attempt_id': '2', 'expected_revision': '3', 'capacity': self.capacity})
@@ -79,7 +79,7 @@ class PublicationAdmissionClientTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_parallel_agent_refuses_legacy_publication_provider(self):
-        self.assertEqual(REQUIRED_CONTRACT_REVISION, '2026.11.25.2')
+        self.assertEqual(REQUIRED_CONTRACT_REVISION, '2026.11.26.2')
         metadata = {'api': 'cloud-agent', 'major_version': 'v1', 'contract_revision': '2026.11.22.2',
             'minimum_agent_contract_revision': '2026.11.22.2', 'compatible_agent_major_versions': ['v1'], 'status': 'compatible'}
         self.assertFalse(is_cloud_agent_compatible(metadata))

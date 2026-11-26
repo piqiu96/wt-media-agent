@@ -59,21 +59,68 @@ class ExecutionIdentity:
 
 
 
+def publication_content(platform, content):
+    """Keep only immutable public form input, never file grants or credentials.
+
+    This validates the local envelope, not Cloud's platform business rules.
+    Legacy Baidu text serialization must stay byte-for-byte compatible.
+    """
+    if not isinstance(content, dict):
+        raise ValueError('confirmed content is required')
+    if platform == 'baidu':
+        keys = ('description', 'topics', 'declaration')
+        if any(not isinstance(content.get(key), str) for key in keys):
+            raise ValueError('confirmed text is required')
+        return {key: content[key] for key in keys}
+    if platform != 'bilibili':
+        raise ValueError('unsupported publication platform')
+    if (not isinstance(content.get('title'), str) or not content['title'].strip()
+            or not isinstance(content.get('description'), str)
+            or content.get('topics', '') != '' or content.get('declaration', '') != ''):
+        raise ValueError('Bilibili title and introduction must be independent')
+    options = content.get('bilibili')
+    required = {'partition_id', 'partition_name', 'tags', 'statement', 'visibility'}
+    allowed = required | {'source', 'rights_reserved'}
+    if (not isinstance(options, dict) or not required.issubset(options) or not set(options).issubset(allowed)
+            or type(options['partition_id']) is not int or options['partition_id'] <= 0
+            or not isinstance(options['partition_name'], str) or not options['partition_name']
+            or not isinstance(options['tags'], list) or not options['tags']
+            or any(not isinstance(tag, str) or not tag for tag in options['tags'])
+            or not isinstance(options['statement'], str) or not options['statement']
+            or options['visibility'] not in ('public', 'private')
+            or 'source' in options and not isinstance(options['source'], str)
+            or 'rights_reserved' in options and type(options['rights_reserved']) is not bool):
+        raise ValueError('invalid frozen Bilibili form input')
+    return json.loads(_json(dict(title=content['title'], description=content['description'], bilibili=options)))
+
+
+def publication_file_evidence(source):
+    platform = source.get('platform', 'baidu')
+    if platform not in ('baidu', 'bilibili'):
+        raise ValueError('unsupported publication platform')
+    secondary = 'space_cover_sha256' if platform == 'bilibili' else 'portrait_cover_sha256'
+    return {key: source[key] for key in ('platform_uid', 'video_sha256', 'cover_sha256', secondary)}
+
+
 def _validated_snapshot(value: dict) -> str:
-    required = {'platform', 'platform_uid', 'video_sha256', 'video_size', 'cover_sha256', 'cover_size', 'portrait_cover_sha256', 'portrait_cover_size', 'content'}
+    if not isinstance(value, dict):
+        raise ValueError('immutable execution input is required')
+    platform = value.get('platform')
+    secondary = 'space_cover' if platform == 'bilibili' else 'portrait_cover'
+    required = {'platform', 'platform_uid', 'video_sha256', 'video_size', 'cover_sha256', 'cover_size', secondary+'_sha256', secondary+'_size', 'content'}
     if not isinstance(value, dict) or set(value) != required:
         raise ValueError('only immutable public execution inputs may be saved')
-    if value['platform'] not in ('baidu', 'bilibili', 'xiaohongshu') or not isinstance(value['platform_uid'], str) or not value['platform_uid']:
+    if platform not in ('baidu', 'bilibili') or not isinstance(value['platform_uid'], str) or not value['platform_uid']:
         raise ValueError('platform identity is required')
-    for name in ('video_sha256', 'cover_sha256', 'portrait_cover_sha256'):
+    for name in ('video_sha256', 'cover_sha256', secondary+'_sha256'):
         digest = value[name]
         if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
             raise ValueError('file digest is required')
-    for name in ('video_size', 'cover_size', 'portrait_cover_size'):
+    for name in ('video_size', 'cover_size', secondary+'_size'):
         if type(value[name]) is not int or value[name] <= 0:
             raise ValueError('positive file size is required')
     content = value['content']
-    if not isinstance(content, dict) or set(content) != {'description', 'topics', 'declaration'} or any(not isinstance(v, str) for v in content.values()):
+    if publication_content(platform, content) != content:
         raise ValueError('only confirmed text fields may be saved')
     return _json(value)
 
@@ -369,7 +416,7 @@ class PublicationJournal:
         source = state.get('input', {})
         if source:
             state['file_digests'] = {key: source[key] for key in
-                ('video_sha256', 'cover_sha256', 'portrait_cover_sha256') if key in source}
+                ('video_sha256', 'cover_sha256', 'portrait_cover_sha256', 'space_cover_sha256') if key in source}
 
     @staticmethod
     def _cache_cleanup_state(row, state, result):

@@ -100,6 +100,7 @@ class CloudAgentClient:
         body = {'request_key': request_key}
         if capacity is not None:
             body['capacity'] = _publication_capacity(capacity)
+            body['supported_platforms'] = ['baidu', 'bilibili']
         response = self._transport('POST', '/api/v1/cloud-agent/publication-task/claim', body, _bearer(token))
         _raise_on_failure(response)
         if 'data' not in response:
@@ -114,7 +115,7 @@ class CloudAgentClient:
     def claim_publication_check(self, token: str, request_key=None, *, capacity=None):
         body = None
         if request_key is not None:
-            body = {'request_key': request_key, 'capacity': _publication_capacity(capacity)}
+            body = {'request_key': request_key, 'capacity': _publication_capacity(capacity), 'supported_platforms': ['baidu', 'bilibili']}
         response = self._transport('POST', '/api/v1/cloud-agent/publication-task/check/claim',
                                    body, _bearer(token))
         _raise_on_failure(response)
