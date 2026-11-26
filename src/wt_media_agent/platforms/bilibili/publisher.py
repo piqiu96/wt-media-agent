@@ -454,17 +454,38 @@ class BrowserPublisher:
             raise PlatformFormError('无法核实二创授权状态，请核对原窗口')
         return box.is_checked()
 
+    @staticmethod
+    def _cover_sync_enabled(dialog):
+        # Current CoverEditor has two ratio controls bound to one component
+        # state, and bcc-checkbox does not promise a native input element.
+        state = dialog.evaluate("""element => {
+          let vm=element.__vue__;
+          for(let depth=0;vm && depth<4;depth++,vm=vm.$parent){
+            if(typeof vm.isSyncEnabled==='boolean')
+              return {known:true, enabled:vm.isSyncEnabled};
+          }
+          return {known:false};
+        }""")
+        if state['known']:
+            return state['enabled']
+        sync = dialog.locator('.sync-checkbox input[type=checkbox]')
+        if sync.count() != 1:
+            raise PlatformFormError('无法核实双封面同步设置，请核对原窗口')
+        return sync.is_checked()
+
     def _fill_covers(self, payload):
         self.page.locator('.cover-content .cover-module-main').click(timeout=5000)
         dialog = self.page.locator('.cover-editor:visible')
         dialog.wait_for(state='visible', timeout=10000)
-        sync = dialog.locator('.sync-checkbox input[type=checkbox]')
-        if sync.count() != 1:
-            raise PlatformFormError('无法核实双封面同步设置，已阻止投稿')
-        if sync.is_checked():
-            dialog.locator('.sync-checkbox').click(timeout=5000)
-        if sync.is_checked():
-            raise PlatformFormError('双封面仍处于同步状态，请在原窗口核对')
+        if self._cover_sync_enabled(dialog):
+            dialog.locator('#editor_4_3').click(timeout=5000)
+            control = dialog.locator('.ratio_4_3 .sync-checkbox:visible')
+            if not control.count():
+                control = dialog.locator('.sync-checkbox:visible')
+            if control.count() != 1:
+                raise PlatformFormError('无法核实双封面同步设置，请核对原窗口')
+            control.click(timeout=5000)
+            self._wait(lambda: not self._cover_sync_enabled(dialog), timeout=5)
         confirmed_main = None
         for selector, source in (('#editor_4_3', payload.cover), ('#editor_16_9', payload.space_cover)):
             self._check()

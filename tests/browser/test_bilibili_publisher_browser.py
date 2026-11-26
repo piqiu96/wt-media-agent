@@ -177,6 +177,22 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
+    def test_dual_cover_sync_uses_component_state_with_two_ratio_controls(self):
+        html = FIXTURE.replace('<label class="sync-checkbox"><input type="checkbox" checked>双比例同步改动</label>',
+            '<div class="ratio_4_3"><button class="sync-checkbox">双比例同步改动</button></div><div class="ratio_16_9"><button class="sync-checkbox">双比例同步改动</button></div>')
+        html += """<script>
+          const editor=document.querySelector('.cover-editor');
+          editor.__vue__={isSyncEnabled:true};
+          editor.querySelectorAll('.sync-checkbox').forEach(e=>e.onclick=()=>editor.__vue__.isSyncEnabled=!editor.__vue__.isSyncEnabled);
+        </script>"""
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route: route.fulfill(content_type='text/html', body=html))
+        self.fill()
+        self.assertFalse(self.page.locator('.cover-editor').evaluate('(e)=>e.__vue__.isSyncEnabled'))
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
     def test_recreate_component_with_multiple_internal_inputs(self):
         html = FIXTURE.replace('<div class="video-recreate"><label', '<div class="video-recreate"><input type="checkbox" hidden><label')
         html += """<script>

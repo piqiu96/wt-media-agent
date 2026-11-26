@@ -276,6 +276,7 @@ import wt_media_agent.bootstrap.app
             adapter = BrowserPublisher()
             adapter.page = MagicMock()
             dialog = adapter.page.locator.return_value
+            dialog.evaluate.return_value = {'known': False}
             dialog.locator.return_value.count.return_value = 1
             dialog.locator.return_value.is_checked.return_value = False
             dialog.locator.return_value.set_input_files.side_effect = OSError('upload failed')
