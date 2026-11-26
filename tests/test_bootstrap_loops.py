@@ -56,8 +56,8 @@ if __name__ == "__main__":
 class StartPublicationLoopTests(LoggingStateTestCase):
     def test_publication_polling_gets_a_separate_daemon_thread(self):
         from wt_media_agent.bootstrap.app import start_publication_loop
-        publications=StubLoop();components=SimpleNamespace(threads=[], publications=publications)
+        publications=StubLoop();components=SimpleNamespace(threads=[], publications=publications, work_metrics=StubLoop())
         threads=start_publication_loop(components)
         for thread in threads:thread.join(timeout=5)
-        self.assertEqual([thread.name for thread in threads],['agent-publications'])
+        self.assertEqual([thread.name for thread in threads],['agent-publications', 'agent-work-metrics'])
         self.assertTrue(all(thread.daemon for thread in threads));self.assertEqual(publications.on_threads,['agent-publications'])
