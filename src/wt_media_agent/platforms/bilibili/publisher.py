@@ -84,6 +84,9 @@ class BrowserPublisher:
         self._payload = None
         self._cid = None
         self._upload_progress_at = None
+        self._selected_upload = None
+        self._editor_identity_verified = False
+        self._upload_inspection = {}
         self._seen_upload_responses = set()
         self._filename = None
         self._statement_id = None
@@ -220,7 +223,46 @@ class BrowserPublisher:
         match = re.search(r'net::ERR_[A-Z0-9_]+', request.failure or '')
         logger.warning('Bilibili preupload transport failed: network_error=%s', match.group(0) if match else 'unknown')
 
+    def _current_upload_identity(self):
+        if self._selected_upload is None or self._payload is None:
+            return None
+        value = self._selected_upload.evaluate("""(state, expected) => {
+          const roots=[...document.querySelectorAll('.file-list')].filter(e=>e.getClientRects().length);
+          const result={roots:roots.length,vue:false,rows:0,same_input:false,complete:false};
+          if(roots.length!==1)return result;
+          const vm=roots[0].__vue__;result.vue=Boolean(vm);
+          const rows=vm?.videoTasks||vm?.$props?.videoTasks;
+          if(!Array.isArray(rows))return result;
+          result.rows=rows.length;if(rows.length!==1)return result;
+          const row=rows[0],file=state.file;
+          result.same_input=Boolean(file instanceof File && row.file===file
+            && file.name===expected.name && file.size===expected.size);
+          result.complete=row.status===3;
+          if(result.same_input&&result.complete){
+            result.cid=String(row.cid??'');
+            result.filename=typeof row.filename==='string'?row.filename:'';
+          }
+          return result;
+        }""", {'name':self._payload.video.name,'size':self._payload.video.stat().st_size})
+        self._upload_inspection = {key:value.get(key) for key in ('roots','vue','rows','same_input','complete')}
+        if not value.get('same_input') or not value.get('complete'):
+            return None
+        try:
+            cid = int(submission_id(value.get('cid')))
+        except (ValueError, TypeError):
+            return None
+        filename = value.get('filename')
+        return (cid, filename) if isinstance(filename, str) and filename else None
+
     def _upload_ready(self):
+        identity = self._current_upload_identity()
+        if identity is not None:
+            if self._cid is not None and identity != (self._cid, self._filename):
+                raise PlatformFormError('上传记录与当前视频不一致，请核对原任务')
+            self._cid, self._filename = identity
+            if not self._editor_identity_verified:
+                logger.info('Bilibili current selected file bound to completed editor video')
+            self._editor_identity_verified = True
         now = time.monotonic()
         if self._upload_progress_at is None or now - self._upload_progress_at >= 10:
             root = self.page.locator('.file-item-content')
@@ -229,6 +271,7 @@ class BrowserPublisher:
                         root.get_by_text('上传中', exact=False).count(),
                         root.get_by_text('上传完成', exact=False).count(),
                         root.get_by_text('上传失败', exact=False).count())
+            logger.info('Bilibili current upload identity: %s', self._upload_inspection)
             self._upload_progress_at = now
         return self._cid is not None and self.page.get_by_text('上传完成', exact=True).count() >= 1
 
@@ -319,7 +362,14 @@ class BrowserPublisher:
         self._check()
         # The visible upload text has pointer-events:none on the live page.
         # Fill the actual upload component, never an image/cover file input.
-        page.locator('.upload-wrp .upload input[type=file]').set_input_files(str(payload.video.resolve()))
+        file_input = page.locator('.upload-wrp .upload input[type=file]')
+        self._selected_upload = page.evaluate_handle('() => ({file:null})')
+        file_input.evaluate("""(input, state) => {
+          input.addEventListener('change', () => {
+            state.file=input.files.length===1?input.files[0]:null;
+          }, {capture:true,once:true});
+        }""", self._selected_upload)
+        file_input.set_input_files(str(payload.video.resolve()))
         self._wait(self._upload_ready)
         self._wait(lambda: self._pre is not None and self._types is not None)
         options = payload.content['bilibili']
@@ -491,6 +541,8 @@ class BrowserPublisher:
         self._check()
         if not self._ready or self._capture['count']:
             raise PlatformFormError('form incomplete or already submitted')
+        if self._editor_identity_verified and self._current_upload_identity() != (self._cid, self._filename):
+            raise PlatformFormError('当前视频已变化，请回到原任务核对后再提交')
         page, content = self.page, self._payload.content
         options = content['bilibili']
         visible = page.locator('.vu-only-self .check-radio-v2-container').filter(

@@ -128,6 +128,40 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             server.server_close()
             thread.join(timeout=2)
 
+    def test_current_selected_file_binds_completed_video_without_network_receipt(self):
+        self.page.add_init_script('window.fixtureNoUploadReceipt=true')
+        self.fill()
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id': '123'})
+        self.assertEqual(self.sent, 1)
+
+    def test_other_file_object_with_same_bytes_does_not_replace_owned_input(self):
+        self.page.add_init_script('window.fixtureNoUploadReceipt=true;window.fixtureDifferentFile=true')
+        with self.assertRaises(PlatformFormError):
+            self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
+        self.assertEqual(self.sent, 0)
+
+    def test_completed_editor_and_network_upload_ids_must_agree(self):
+        self.page.add_init_script('window.fixtureDifferentCid=true')
+        with self.assertRaises(PlatformFormError):
+            self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
+        self.assertEqual(self.sent, 0)
+
+    def test_current_file_binding_is_rechecked_before_final_submit(self):
+        self.page.add_init_script('window.fixtureNoUploadReceipt=true')
+        self.fill()
+        self.page.locator('.file-list').evaluate("""root=>{
+          const row=root.__vue__.videoTasks[0];row.file=new File([row.file],row.file.name);
+        }""")
+        with self.assertRaises(PlatformFormError): self.adapter.submit()
+        self.assertEqual(self.sent, 0)
+
+    def test_multiple_completed_videos_cannot_supply_one_input_proof(self):
+        self.page.add_init_script('window.fixtureNoUploadReceipt=true;window.fixtureMultipleVideos=true')
+        with self.assertRaises(PlatformFormError):
+            self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
+        self.assertEqual(self.sent, 0)
+
     def test_recovery_banner_does_not_block_fresh_authorized_upload(self):
         self.page.route('https://member.bilibili.com/platform/upload/video/frame',
             lambda route: route.fulfill(content_type='text/html', body=FIXTURE.replace(
