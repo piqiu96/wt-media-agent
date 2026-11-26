@@ -272,6 +272,21 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
+    def test_initializing_upload_input_does_not_lose_video_selection(self):
+        html=FIXTURE+"""<script>
+        const input=document.querySelector('#video-file');
+        const choose=input.onchange;input.disabled=true;
+        input.onchange=e=>{if(input.disabled)return;window.fixture.videoSelections=(window.fixture.videoSelections||0)+1;return choose(e);};
+        setTimeout(()=>input.disabled=false,750);
+        </script>"""
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route:route.fulfill(content_type='text/html',body=html))
+        self.fill()
+        self.assertEqual(self.page.evaluate('window.fixture.videoSelections'), 1)
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
     def test_async_tag_validation_preserves_every_confirmed_tag(self):
         html=FIXTURE+"""<script>
         const input=document.querySelector('#tag-container input');

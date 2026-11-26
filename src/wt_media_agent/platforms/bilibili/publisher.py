@@ -427,6 +427,7 @@ class BrowserPublisher:
         # The visible upload text has pointer-events:none on the live page.
         # Fill the actual upload component, never an image/cover file input.
         file_input = page.locator('.upload-wrp .upload input[type=file]')
+        self._wait(lambda: file_input.count() == 1 and file_input.is_enabled(), timeout=60)
         self._selected_upload = page.evaluate_handle('() => ({file:null})')
         file_input.evaluate("""(input, state) => {
           input.addEventListener('change', () => {
