@@ -111,7 +111,10 @@ class PublicationPreparation:
         folder=self.directory/identity.key.replace(':','-')
         video=folder/'video.mp4';cover=folder/'cover'
         secondary_cover=folder/secondary.replace('_','-')
-        for name, target in (('video',video),('cover',cover),(secondary,secondary_cover)):
+        # All grants are minted together. Open small resources first so a slow
+        # video cannot consume their validity before their requests even start.
+        resources=(('video',video),('cover',cover),(secondary,secondary_cover))
+        for name, target in sorted(resources,key=lambda item:grants[item[0]]['size']):
             check_current()
             download_verified(grants[name],target,current=current,deadline=deadline)
         check_current()

@@ -63,7 +63,7 @@ class BilibiliPreparationTests(unittest.TestCase):
             target.write_bytes(b'controlled-fixture')
         with patch('wt_media_agent.runner.publication_preparation.download_verified', download):
             prepared = self.prep.prepare('in-memory-token', claim, identity)
-        self.assertEqual(downloads, ['video.mp4', 'cover', 'space-cover'])
+        self.assertEqual(downloads, ['cover', 'space-cover', 'video.mp4'])
         self.assertIsNone(prepared.portrait_cover)
         self.assertEqual(prepared.space_cover.name, 'space-cover')
         self.prep.mark_ready('in-memory-token', identity)
