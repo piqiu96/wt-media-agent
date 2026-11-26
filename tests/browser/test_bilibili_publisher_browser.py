@@ -4,12 +4,15 @@ import struct
 import zlib
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 
 import test_baidu_publisher_browser as browser_harness
 from wt_media_agent.platforms.bilibili.publisher import BrowserPublisher, PlatformFormError
 from wt_media_agent.platforms.publish import PublishPayload
 from wt_media_agent.services.browser.session import BrowserSession
+from wt_media_agent.platforms.bilibili.publication_check import BilibiliPublicationChecker
+from wt_media_agent.platforms.publication_check import PublicationReference
 
 FIXTURE = Path(__file__).with_name('bilibili-editor.html').read_text()
 
@@ -104,6 +107,55 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
         self.page.evaluate("document.querySelector('#editor_16_9 canvas').getContext('2d').fillRect(0,0,30,30)")
         with self.assertRaises(PlatformFormError): self.adapter.submit()
         self.assertEqual(self.sent, 0)
+
+    def public_proof(self, *, anonymous_public):
+        video = Path(self.temp.name) / 'proof.mp4'
+        encoder = Path('/opt/homebrew/bin/ffmpeg')
+        if not encoder.is_file(): raise RuntimeError('FFmpeg is required for actual browser media proof tests')
+        subprocess.run([str(encoder), '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+            'color=c=blue:s=32x32:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', 'faststart', str(video)], check=True)
+        metadata = {'aid': 123, 'bvid': 'BV135WM6uE4A', 'owner': {'mid': 456}, 'title': '游戏画中画演示',
+                    'state': 0, 'cid': 777, 'pubdate': 1795169573, 'duration': 1}
+        observed = []
+        media_url = 'https://www.bilibili.com/fixture/proof.mp4'
+        def isolated(route):
+            request = route.request
+            authenticated = 'fixture_session=private' in request.all_headers().get('cookie', '')
+            observed.append(authenticated)
+            if not anonymous_public and not authenticated:
+                route.fulfill(status=403, body='Login required')
+            elif request.url == 'https://api.bilibili.com/x/web-interface/view?aid=123':
+                route.fulfill(json={'code': 0, 'data': metadata})
+            elif request.url == 'https://www.bilibili.com/video/av123':
+                route.fulfill(content_type='text/html', body='<meta charset="utf-8"><script>window.__INITIAL_STATE__={videoData:'
+                    + json.dumps(metadata, ensure_ascii=False) + '}</script><video autoplay muted preload="auto" src="' + media_url + '"></video>')
+            elif request.url == media_url:
+                route.fulfill(content_type='video/mp4', body=video.read_bytes())
+            else:
+                route.abort()
+        browser = self.page.context.browser
+        self.page.context.add_cookies([{'name': 'fixture_session', 'value': 'private', 'domain': '.bilibili.com', 'path': '/', 'secure': True}])
+        original = browser.new_context
+        def context(**kwargs):
+            self.assertEqual(kwargs['storage_state'], {'cookies': [], 'origins': []})
+            created = original(**kwargs)
+            created.route('**/*', isolated)
+            return created
+        browser.new_context = context
+        try:
+            result = BilibiliPublicationChecker()._anonymous_proof(browser,
+                PublicationReference('456', '123', self.payload.content))
+        finally:
+            browser.new_context = original
+        self.assertTrue(observed)
+        self.assertFalse(any(observed))
+        return result
+
+    def test_anonymous_loaded_original_media_establishes_public_proof(self):
+        self.assertIsNotNone(self.public_proof(anonymous_public=True))
+
+    def test_logged_in_only_media_is_not_public_proof(self):
+        self.assertIsNone(self.public_proof(anonymous_public=False))
 
 
 if __name__ == '__main__': unittest.main()

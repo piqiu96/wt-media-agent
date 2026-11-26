@@ -1,6 +1,7 @@
 """Exact original aid + owner readback, followed by anonymous playable proof."""
 from datetime import datetime, timezone
 from math import isfinite
+import re
 from urllib.parse import urlsplit
 
 from wt_media_agent.clients.bilibili.publication import (
@@ -33,7 +34,7 @@ def verify_metadata(reference, data, *, now):
                 or type(data.get('duration')) not in (int, float)
                 or not isfinite(data['duration']) or data['duration'] <= 0
                 or type(data.get('cid')) is not int or data['cid'] <= 0
-                or not isinstance(data.get('bvid'), str) or not data['bvid'].startswith('BV')):
+                or not isinstance(data.get('bvid'), str) or not re.fullmatch(r'BV[0-9A-Za-z]{10}', data['bvid'])):
             return None
         return datetime.fromtimestamp(data['pubdate'], tz=timezone.utc)
     except (BilibiliPublicationError, AttributeError, TypeError, ValueError, OverflowError, OSError):
@@ -79,14 +80,16 @@ class BilibiliPublicationChecker:
         if type(row.get('state')) is not int:
             raise BilibiliPublicationError('original archive state unavailable')
         attrs = row.get('attrs')
-        if not isinstance(attrs, dict) or attrs.get('is_owner') != 1:
+        if not isinstance(attrs, dict) or type(attrs.get('is_owner')) is not int or attrs['is_owner'] != 1:
             raise BilibiliPublicationError('original archive ownership unavailable')
-        if attrs.get('no_public') != 0 or reference.content.get('bilibili', {}).get('visibility') != 'public':
+        if type(attrs.get('no_public')) is not int or attrs['no_public'] != 0 or reference.content.get('bilibili', {}).get('visibility') != 'public':
             return PublicWorkObservation('uncertain', '稿件非公开可见，不能计为公开成功',
                 '原账号和原稿件已匹配，可见范围不满足公开结果要求', lookup_result='blocked')
         if row['state'] == 0 and row.get('state_desc') == '开放浏览':
             return None  # Requires an independent anonymous media proof.
         state = row.get('state_desc', '')
+        if not isinstance(state, str):
+            raise BilibiliPublicationError('original archive description unavailable')
         rejected = row.get('reject_reason')
         if rejected or any(word in state for word in ('退回', '未通过', '锁定', '删除', '不适宜')):
             reason = str(rejected or state).replace('\r', ' ').replace('\n', ' ')[:200]

@@ -25,7 +25,7 @@ def image_upload_file(source):
         magic = stream.read(16)
     suffix = '.png' if magic.startswith(b'\x89PNG\r\n\x1a\n') else '.jpg' if magic.startswith(b'\xff\xd8\xff') else None
     if suffix is None:
-        raise PlatformFormError('Bilibili cover must be PNG or JPEG')
+        raise PlatformFormError('B站封面仅支持PNG或JPEG，请重新选择图片')
     target = source.with_name(source.name + '-upload' + suffix)
     shutil.copyfile(source, target)
     target.chmod(0o600)
@@ -42,7 +42,7 @@ def validate_submit_body(body, content, *, cid, filename, statement_id):
                 'copyright': copyright, 'no_reprint': int(options.get('rights_reserved', False)),
                 'is_only_self': int(options['visibility'] == 'private')}
     if any(type(body.get(k)) is not type(v) or body[k] != v for k, v in expected.items()):
-        raise PlatformFormError('actual submission differs from confirmed content')
+        raise PlatformFormError('平台实际提交内容与已确认配置不一致，已阻止投稿，请重新核对')
     if (body.get('creation_statement') != {'id': statement_id}
             or body.get('source', '') != options.get('source', '')
             or body.get('recreate') not in (-1, 0) or body.get('dtime', 0) != 0
@@ -53,13 +53,13 @@ def validate_submit_body(body, content, *, cid, filename, statement_id):
     if (not isinstance(videos, list) or len(videos) != 1 or not isinstance(videos[0], dict)
             or type(videos[0].get('cid')) is not int or videos[0]['cid'] != cid
             or videos[0].get('filename') != filename):
-        raise PlatformFormError('actual upload identity differs')
+        raise PlatformFormError('平台上传的视频与本次任务不一致，已阻止投稿')
     for key in ('cover', 'cover43'):
         value = body.get(key)
         parsed = urlsplit(value) if isinstance(value, str) else None
         if (parsed is None or parsed.scheme not in {'http', 'https'}
                 or not (parsed.hostname or '').endswith('.hdslb.com') or parsed.username):
-            raise PlatformFormError('confirmed cover was not uploaded')
+            raise PlatformFormError('两张已确认封面尚未完成上传，已阻止投稿')
 
 
 class BrowserPublisher:
@@ -84,17 +84,17 @@ class BrowserPublisher:
 
     def _check(self):
         if self._stopped() or self.page is None or self.page.is_closed():
-            raise PlatformFormError('original publication scene stopped')
+            raise PlatformFormError('原发布现场已停止或关闭，请回到任务核实状态')
         location = urlsplit(self.page.url)
         if location.scheme != 'https' or location.netloc != 'member.bilibili.com':
-            raise PlatformFormError('publication editor origin changed')
+            raise PlatformFormError('发布页面地址已变化，请核对原账号现场')
         challenge = self.page.locator('.geetest_panel:visible, .bili-captcha:visible, .bili-mini-login:visible')
         if challenge.count():
             if self._human is None or self._submitted:
-                raise PlatformFormError('platform security verification requires original scene')
+                raise PlatformFormError('请在原账号窗口完成安全验证后继续原尝试')
             self._human(self.page.bring_to_front)
             if self._stopped() or self.page.is_closed() or challenge.count():
-                raise PlatformFormError('platform security verification unfinished')
+                raise PlatformFormError('安全验证尚未完成，请在原窗口处理')
 
     def _wait(self, condition, *, timeout=None):
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
@@ -106,7 +106,7 @@ class BrowserPublisher:
             if value:
                 return value
             if time.monotonic() >= deadline:
-                raise PlatformFormError('platform editor did not become ready')
+                raise PlatformFormError('平台上传或表单准备超时，请核对原窗口，勿手动投稿')
             self.page.wait_for_timeout(100)
 
     def protect_scene(self, page):
@@ -178,7 +178,7 @@ class BrowserPublisher:
         # A local saved upload is separate from this new authorized upload.
         # Do not restore, discard, edit or submit it on behalf of this task.
         if page.get_by_text('继续编辑', exact=True).is_visible():
-            raise PlatformFormError('an existing unsubmitted upload needs separate handling')
+            raise PlatformFormError('浏览器中有未提交的视频，请先核对原稿件，勿重复上传或投稿')
         self._check()
         with page.expect_file_chooser() as chooser:
             page.get_by_text('上传视频', exact=True).click(timeout=5000)
@@ -195,7 +195,7 @@ class BrowserPublisher:
         else:
             matches = [r for r in statements if r.get('content') == options['statement'] and type(r.get('id')) is int]
             if len(matches) != 1:
-                raise PlatformFormError('confirmed creative statement no longer available')
+                raise PlatformFormError('当前账号已无法选择原创作声明，请重新配置后核对')
             self._statement_id = matches[0]['id']
         page.get_by_placeholder('请输入稿件标题', exact=True).fill(payload.content['title'])
         page.locator('.desc-container .ql-editor').fill(payload.content.get('description', ''))
@@ -223,9 +223,9 @@ class BrowserPublisher:
             if checked != options.get('rights_reserved', False):
                 page.locator('.auth-content').click(timeout=5000)
             if ('option-text-selected' in (rights.get_attribute('class') or '').split()) != options.get('rights_reserved', False):
-                raise PlatformFormError('confirmed rights setting was not retained')
+                raise PlatformFormError('自制权利勾选未保持，已阻止投稿，请重新核对')
         elif options.get('rights_reserved'):
-            raise PlatformFormError('confirmed rights control unavailable')
+            raise PlatformFormError('当前页面没有对应的自制权利选项，已阻止投稿')
         page.get_by_placeholder('请输入稿件标题', exact=True).click(timeout=5000)
         if options['statement'] == '内容为转载':
             page.get_by_placeholder('转载视频请注明来源、时间、地点', exact=False).fill(options['source'])
@@ -241,7 +241,7 @@ class BrowserPublisher:
             if box.is_checked():
                 page.locator('.video-recreate .bcc-checkbox').click(timeout=5000)
             if box.is_checked():
-                raise PlatformFormError('video recreation authorization was not disabled')
+                raise PlatformFormError('无法关闭二创授权，已阻止投稿，请核对原窗口')
         self._fill_covers(payload)
         self._ready = True
         self._assert_form()
@@ -265,7 +265,7 @@ class BrowserPublisher:
               return [...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('');
             }""")
             if selected != expected_hash:
-                raise PlatformFormError('selected cover differs from frozen bytes')
+                raise PlatformFormError('所选封面与任务冻结文件不一致，已阻止投稿')
             def decoded():
                 value = self._cover_canvas(root)
                 return value if value and value != previous else None
@@ -274,12 +274,12 @@ class BrowserPublisher:
                 confirmed_main = current
         self._canvas_fingerprints = self._cover_canvases(dialog)
         if self._canvas_fingerprints[0] != confirmed_main:
-            raise PlatformFormError('space cover changed the independently confirmed main cover')
+            raise PlatformFormError('空间封面覆盖了推荐封面，请关闭双比例同步并重新核对')
         dialog.get_by_text('完成', exact=True).click(timeout=10000)
         self._wait(lambda: not dialog.is_visible(), timeout=30)
         self._cover_fingerprint = self._cover_state()
         if not self._cover_fingerprint:
-            raise PlatformFormError('both cover previews are missing')
+            raise PlatformFormError('两张封面预览未能完整读取，请重新核对')
 
     def _cover_state(self):
         # Data/blob sources are local to the owned editor, never logged/reported.
@@ -310,7 +310,7 @@ class BrowserPublisher:
             root.click(timeout=5000)
             digest = self._cover_canvas(root)
             if not digest:
-                raise PlatformFormError('independent cover crop could not be verified')
+                raise PlatformFormError('无法核实独立封面画面，已阻止投稿，请检查原窗口')
             result.append(digest)
         return result
 
@@ -330,18 +330,18 @@ class BrowserPublisher:
                 or visible != ('公开可见' if options['visibility'] == 'public' else '仅自己可见')
                 or self._cover_state() != self._cover_fingerprint
                 or page.locator('.cover-editor:visible').count()):
-            raise PlatformFormError('confirmed editor changed before submission')
+            raise PlatformFormError('提交前表单已变化，已阻止投稿，请重新核对内容')
         page.locator('.cover-content .cover-module-main').click(timeout=5000)
         dialog = page.locator('.cover-editor:visible')
         dialog.wait_for(state='visible', timeout=10000)
         if self._cover_canvases(dialog) != self._canvas_fingerprints:
-            raise PlatformFormError('confirmed cover crops changed before submission')
+            raise PlatformFormError('提交前封面画面已变化，已阻止投稿，请重新核对')
         dialog.get_by_text('取消', exact=True).click(timeout=5000)
         self._wait(lambda: not dialog.is_visible(), timeout=10)
 
     def submit(self):
         if self._submitted:
-            raise PlatformFormError('final submission cannot be repeated')
+            raise PlatformFormError('本次投稿已尝试提交，不能重复点击，请核验原稿件')
         self._assert_form()
         self._submitted = True
         self.page.get_by_text('立即投稿', exact=True).click(timeout=10000)
@@ -355,9 +355,9 @@ class BrowserPublisher:
                 try:
                     return accepted_receipt(self._capture)
                 except BilibiliPublicationError:
-                    raise PlatformFormError('no credible accepted receipt; do not resubmit') from None
+                    raise PlatformFormError('未取得可信投稿回执，请在原任务核验，勿再次投稿') from None
             self.page.wait_for_timeout(100)
-        raise PlatformFormError('submission result unknown; do not resubmit')
+        raise PlatformFormError('投稿结果待核实，请在原任务核验，勿再次投稿')
 
 
 class BilibiliPublisher:
@@ -377,7 +377,7 @@ class BilibiliPublisher:
     def _verify(self, expected, page=None):
         observed = self._identity(page)
         if observed.get('login_status') != 'normal' or observed.get('platform_account_id') != expected:
-            raise PublicationInputError('live Bilibili account differs or login unavailable')
+            raise PublicationInputError('B站当前登录身份与原任务不一致或登录已失效，请核对原账号')
 
     def publish(self, payload, control, *, method=PublishMethod.BROWSER):
         if method != PublishMethod.BROWSER or self._started:
@@ -391,12 +391,12 @@ class BilibiliPublisher:
             control.on_prepared()
             control.check_stopped()
         elif control.wait_for_human is None:
-            raise PublicationInputError('platform login requires human verification')
+            raise PublicationInputError('B站登录需要人工处理，请在原账号窗口完成验证')
         implementation = self.browser_factory()
         with self.browser_session_factory(self.endpoint) as session:
             def human(show):
                 if control.wait_for_human is None:
-                    raise PublicationInputError('original scene requires human verification')
+                    raise PublicationInputError('请在原账号窗口完成登录或安全验证，再继续原尝试')
                 control.wait_for_human(show)
                 control.check_stopped()
                 self._verify(payload.platform_uid, session.page)

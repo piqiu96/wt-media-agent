@@ -64,7 +64,7 @@ class BilibiliCheckTest(unittest.TestCase):
     def test_anonymous_metadata_requires_exact_identity_and_actual_public_time(self):
         now = datetime(2026, 11, 26, tzinfo=timezone.utc)
         data = {'aid': 123, 'owner': {'mid': 456}, 'title': '画中画演示', 'state': 0,
-                'pubdate': int(now.timestamp()) - 60, 'duration': 41.4, 'cid': 777, 'bvid': 'BVexample'}
+                'pubdate': int(now.timestamp()) - 60, 'duration': 41.4, 'cid': 777, 'bvid': 'BV135WM6uE4A'}
         self.assertIsNotNone(verify_metadata(self.reference, data, now=now))
         for change in ({'aid': 124}, {'owner': {'mid': 999}}, {'title': '替代作品'},
                        {'state': -30}, {'state': False}, {'cid': 0}, {'duration': float('nan')},
