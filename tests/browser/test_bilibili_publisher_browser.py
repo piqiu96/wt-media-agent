@@ -357,8 +357,11 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
 
     def test_changed_form_after_permission_never_sends(self):
         self.fill()
-        self.page.get_by_placeholder('请输入稿件标题', exact=True).fill('changed')
-        with self.assertRaises(PlatformFormError): self.adapter.submit()
+        self.page.get_by_placeholder('请输入稿件标题', exact=True).fill('private-changed-title')
+        with self.assertLogs('wt_media_agent.platforms.bilibili.publisher', level='WARNING') as logs:
+            with self.assertRaises(PlatformFormError): self.adapter.submit()
+        self.assertIn('fields=title', ' '.join(logs.output))
+        self.assertNotIn('private-changed-title', ' '.join(logs.output))
         self.assertEqual(self.sent, 0)
 
     def test_changed_final_post_is_blocked_even_if_dom_was_verified(self):

@@ -287,6 +287,19 @@ import wt_media_agent.bootstrap.app
                     validate_submit_body(body,self.content,cid=777,filename='uploaded-video',statement_id=7,
                                          cover_urls={'cover':body['cover'],'cover43':value})
 
+    def test_context_submission_response_belongs_only_to_authorized_request(self):
+        adapter=BrowserPublisher();response=MagicMock()
+        response.url='https://member.bilibili.com/x/vu/web/add/v3'
+        response.status=200;response.json.return_value={'code':0,'data':{'aid':123}}
+        adapter._request=response.request
+        adapter._capture.update(count=1,forwarded=1)
+        adapter._context_upload_response(response)
+        self.assertEqual(adapter._capture.get('json'), {'code':0,'data':{'aid':123}})
+        other=MagicMock();other.url=response.url
+        other.status=200;other.json.return_value={'code':0,'data':{'aid':999}}
+        adapter._context_upload_response(other)
+        self.assertEqual(adapter._capture['json']['data']['aid'], 123)
+
     def test_context_cover_response_is_bound_to_its_confirmed_export(self):
         adapter = BrowserPublisher()
         response = MagicMock()

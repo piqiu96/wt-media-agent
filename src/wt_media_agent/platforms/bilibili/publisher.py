@@ -194,7 +194,7 @@ class BrowserPublisher:
         return url.scheme == 'https' and url.netloc == 'member.bilibili.com'
 
     def _context_upload_response(self, response):
-        if response.request in self._cover_requests:
+        if response.request is self._request or response.request in self._cover_requests:
             self._response(response)
             return
         url = urlsplit(response.url)
@@ -621,14 +621,36 @@ class BrowserPublisher:
         options = content['bilibili']
         visible = page.locator('.vu-only-self .check-radio-v2-container').filter(
             has=page.locator('.check-radio-v2-box-checked')).inner_text().strip()
-        if (page.get_by_placeholder('请输入稿件标题', exact=True).input_value() != content['title']
-                or self._description_text() != content.get('description', '')
-                or page.locator('.video-human-type .select-item-cont').inner_text().strip() != options['partition_name']
-                or page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() != options['tags']
-                or page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True).input_value() != options['statement']
-                or visible != ('公开可见' if options['visibility'] == 'public' else '仅自己可见')
-                or self._cover_state() != self._cover_fingerprint
-                or page.locator('.cover-editor:visible').count()):
+        observed = {
+            'title': page.get_by_placeholder('请输入稿件标题', exact=True).input_value(),
+            'description': self._description_text(),
+            'partition_name': page.locator('.video-human-type .select-item-cont').inner_text().strip(),
+            'tags': page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents(),
+            'statement': page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True).input_value(),
+            'visibility': visible,
+            'cover_preview': self._cover_state(),
+            'cover_editor_open': page.locator('.cover-editor:visible').count(),
+        }
+        expected = {
+            'title': content['title'], 'description': content.get('description', ''),
+            'partition_name': options['partition_name'], 'tags': options['tags'],
+            'statement': options['statement'],
+            'visibility': '公开可见' if options['visibility'] == 'public' else '仅自己可见',
+            'cover_preview': self._cover_fingerprint, 'cover_editor_open': 0,
+        }
+        mismatches = [key for key in expected if observed[key] != expected[key]]
+        if mismatches:
+            # Fixed field names only; never emit titles, descriptions or URLs.
+            logger.warning('Bilibili confirmed form mismatch: fields=%s', ','.join(mismatches))
+            if 'description' in mismatches:
+                logger.info('Bilibili description shape: observed_chars=%s expected_chars=%s observed_breaks=%s expected_breaks=%s trailing_breaks_only=%s',
+                            len(observed['description']), len(expected['description']),
+                            observed['description'].count('\n'), expected['description'].count('\n'),
+                            observed['description'].rstrip('\n') == expected['description'].rstrip('\n'))
+            if 'tags' in mismatches:
+                logger.info('Bilibili tag shape: observed_count=%s expected_count=%s trimmed_match=%s',
+                            len(observed['tags']), len(expected['tags']),
+                            [value.strip() for value in observed['tags']] == expected['tags'])
             raise PlatformFormError('提交前表单已变化，已阻止投稿，请重新核对内容')
         page.locator('.cover-content .cover-module-main').click(timeout=5000)
         dialog = page.locator('.cover-editor:visible')
