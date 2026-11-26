@@ -1,5 +1,6 @@
 """Identify the two observed cover exports without retaining CSRF or images."""
 import base64
+from urllib.parse import urlsplit
 from email import policy
 from email.parser import BytesParser
 
@@ -46,3 +47,34 @@ def cover_upload_kind(content_type, body):
     if abs(width * 9 - height * 16) <= 16:
         return 'cover'
     raise ValueError('unexpected cover export ratio')
+
+
+def is_cover_url(value):
+    """A URL is trusted only after binding to this export's official receipt."""
+    if (not isinstance(value, str) or not value or len(value) > 2048
+            or any(ord(c) <= 32 for c in value)):
+        return False
+    try:
+        parsed = urlsplit(value)
+        return bool(parsed.hostname and parsed.username is None and parsed.password is None
+                    and not parsed.fragment
+                    and (parsed.scheme in {'http', 'https'}
+                         or not parsed.scheme and value.startswith('//')))
+    except ValueError:
+        return False
+
+
+def cover_upload_url(response):
+    body = response.get('json') if isinstance(response, dict) else None
+    if not isinstance(body, dict) or response.get('status') != 200:
+        raise ValueError('cover response unavailable')
+    # The official uploadImage client accepts numeric and string zero codes.
+    code = body.get('code')
+    data = body.get('data')
+    if (not (type(code) is int and code == 0 or type(code) is str and code == '0')
+            or not isinstance(data, dict)):
+        raise ValueError('cover upload did not succeed')
+    value = data.get('url')
+    if not is_cover_url(value):
+        raise ValueError('cover response URL is invalid')
+    return value

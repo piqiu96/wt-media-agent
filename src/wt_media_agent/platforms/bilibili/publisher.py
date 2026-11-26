@@ -7,7 +7,7 @@ import shutil
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from wt_media_agent.clients.bilibili.cover import cover_upload_kind
+from wt_media_agent.clients.bilibili.cover import cover_upload_kind, cover_upload_url, is_cover_url
 
 from wt_media_agent.clients.bilibili.publication import (
     ADD_PATH, CREATOR_ORIGIN, PRE_PATH, TYPE_PATH, BilibiliPublicationError,
@@ -62,10 +62,7 @@ def validate_submit_body(body, content, *, cid, filename, statement_id, cover_ur
         raise PlatformFormError('平台上传的视频与本次任务不一致，已阻止投稿')
     for key in ('cover', 'cover43'):
         value = body.get(key)
-        parsed = urlsplit(value) if isinstance(value, str) else None
-        if (parsed is None or parsed.scheme not in {'http', 'https'}
-                or not (parsed.hostname or '').endswith('.hdslb.com') or parsed.username
-                or not cover_urls or value != cover_urls.get(key)):
+        if (not is_cover_url(value) or not cover_urls or value != cover_urls.get(key)):
             raise PlatformFormError('两张已确认封面尚未完成上传，已阻止投稿')
 
 
@@ -302,12 +299,16 @@ class BrowserPublisher:
             if response.status != 200:
                 return
             if response.request in self._cover_requests:
-                data = response_data({'status': response.status, 'json': response.json()})
-                value = data.get('url')
+                body = response.json()
+                code = body.get('code') if isinstance(body, dict) else None
+                data = body.get('data') if isinstance(body, dict) else None
+                value = data.get('url') if isinstance(data, dict) else None
                 parsed = urlsplit(value) if isinstance(value, str) else None
-                if (parsed and parsed.scheme in {'http', 'https'}
-                        and (parsed.hostname or '').endswith('.hdslb.com') and not parsed.username):
-                    self._cover_urls[self._cover_requests[response.request]] = value
+                logger.info('Bilibili cover receipt shape: code_kind=%s data_object=%s url_form=%s legacy_cdn=%s',
+                            type(code).__name__, isinstance(data, dict),
+                            'absolute' if parsed and parsed.scheme else 'network_path' if parsed and parsed.netloc else 'other',
+                            bool(parsed and (parsed.hostname or '').endswith('.hdslb.com')))
+                self._cover_urls[self._cover_requests[response.request]] = cover_upload_url({'status':response.status,'json':body})
                 return
             if url.path in {PRE_PATH, TYPE_PATH}:
                 data = response_data({'status': response.status, 'json': response.json()})

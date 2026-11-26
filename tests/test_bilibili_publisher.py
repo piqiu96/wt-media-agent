@@ -269,6 +269,24 @@ import wt_media_agent.bootstrap.app
             source.write_bytes(b'RIFF0000WEBPimage')
             with self.assertRaises(PlatformFormError): image_upload_file(source)
 
+    def test_official_cover_receipt_does_not_require_one_legacy_cdn(self):
+        for value, code in [('https://archive.biliimg.com/bfs/archive/main.jpg', 0),
+                            ('//archive.biliimg.com/bfs/archive/main.jpg', '0')]:
+            with self.subTest(value=value):
+                adapter=BrowserPublisher();response=MagicMock()
+                response.url='https://member.bilibili.com/x/vu/web/cover/up'
+                response.status=200;response.json.return_value={'code':code,'data':{'url':value}}
+                adapter._cover_requests[response.request]='cover43'
+                adapter._response(response)
+                self.assertEqual(adapter._cover_urls, {'cover43':value})
+                body=copy.deepcopy(self.body);body['cover43']=value
+                validate_submit_body(body,self.content,cid=777,filename='uploaded-video',statement_id=7,
+                                     cover_urls={'cover':body['cover'],'cover43':value})
+                body['cover43']=value+'other'
+                with self.assertRaises(PlatformFormError):
+                    validate_submit_body(body,self.content,cid=777,filename='uploaded-video',statement_id=7,
+                                         cover_urls={'cover':body['cover'],'cover43':value})
+
     def test_context_cover_response_is_bound_to_its_confirmed_export(self):
         adapter = BrowserPublisher()
         response = MagicMock()

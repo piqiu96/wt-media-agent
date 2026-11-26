@@ -177,6 +177,16 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
+    def test_official_export_receipt_urls_survive_the_final_post(self):
+        def cover_response(route):
+            kind=cover_upload_kind(route.request.header_value('content-type'), route.request.post_data_buffer)
+            route.fulfill(json={'code':'0','data':{'url':'//archive.biliimg.com/bfs/archive/'+kind+'.jpg'}})
+        self.page.route('https://member.bilibili.com/x/vu/web/cover/up', cover_response)
+        self.fill()
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
     def test_dual_cover_sync_uses_component_state_with_two_ratio_controls(self):
         html = FIXTURE.replace('<label class="sync-checkbox"><input type="checkbox" checked>双比例同步改动</label>',
             '<div class="ratio_4_3"><button class="sync-checkbox">双比例同步改动</button></div><div class="ratio_16_9"><button class="sync-checkbox">双比例同步改动</button></div>')
