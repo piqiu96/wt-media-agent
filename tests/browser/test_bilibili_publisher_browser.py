@@ -292,6 +292,26 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
         self.assertEqual(self.sent, 1)
 
+    def test_tag_validation_busy_after_visible_acceptance_is_respected(self):
+        html=FIXTURE+"""<script>
+        const input=document.querySelector('#tag-container input');
+        const add=input.onkeydown;
+        const vm={checkCustomTagLoading:false};
+        document.querySelector('#tag-container').__vue__=vm;
+        input.onkeydown=e=>{
+          if(e.key!=='Enter'||vm.checkCustomTagLoading)return;
+          const value=input.value;vm.checkCustomTagLoading=true;
+          setTimeout(()=>{input.value=value;add(e);
+            setTimeout(()=>vm.checkCustomTagLoading=false,250);},100);
+        };
+        </script>"""
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route:route.fulfill(content_type='text/html',body=html))
+        self.fill()
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
     def test_tag_input_is_scoped_to_current_editable_control(self):
         html = FIXTURE.replace('<main hidden>', '<div id="other-tags" hidden><input placeholder="按回车键Enter创建标签"><div class="tag-pre-wrp"><span class="label-item-v2-content">其他表单</span></div></div><main hidden>')
         html = html.replace('<div class="tag-input-wrp">', '<div class="tag-input-wrp" placeholder="按回车键Enter创建标签">', 1)

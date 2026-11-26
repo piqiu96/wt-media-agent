@@ -357,6 +357,20 @@ class BrowserPublisher:
                            type(error).__name__)
             # Missing proof is a hard stop, never permission to guess.
 
+    @staticmethod
+    def _tag_loading(tag_input):
+        return tag_input.evaluate("""input => {
+          const seen=new Set();
+          for(let node=input;node;node=node.parentElement){
+            let vm=node.__vue__;
+            for(let depth=0;vm && depth<12 && !seen.has(vm);depth++,vm=vm.$parent){
+              seen.add(vm);
+              if(typeof vm.checkCustomTagLoading==='boolean')return vm.checkCustomTagLoading;
+            }
+          }
+          return null;
+        }""")
+
     def fill_form(self, page, payload, *, stopped, replace_matching_draft=False, wait_for_human=None):
         if self.page is not None or payload.space_cover is None:
             raise PlatformFormError('one editor and both confirmed covers are required')
@@ -414,6 +428,7 @@ class BrowserPublisher:
                     page.get_by_placeholder('按回车键Enter创建标签', exact=True).count(), tag_input.count())
         for index, tag in enumerate(options['tags']):
             self._check()
+            self._wait(lambda: self._tag_loading(tag_input) is not True, timeout=20)
             tag_input.fill(tag)
             tag_input.press('Enter')
             # The platform validates each custom tag asynchronously and ignores
@@ -422,13 +437,15 @@ class BrowserPublisher:
             expected_tags = options['tags'][:index + 1]
             try:
                 self._wait(lambda: page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() == expected_tags
-                           and tag_input.input_value() == '', timeout=20)
+                           and tag_input.input_value() == ''
+                           and self._tag_loading(tag_input) is not True, timeout=20)
             except PlatformFormError:
                 observed_tags = page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents()
-                logger.warning('Bilibili tag acceptance timeout: index=%s observed_count=%s expected_count=%s input_empty=%s trim_matches=%s casefold_matches=%s',
+                logger.warning('Bilibili tag acceptance timeout: index=%s observed_count=%s expected_count=%s input_empty=%s trim_matches=%s casefold_matches=%s validation_busy=%s',
                                index, len(observed_tags), len(expected_tags), tag_input.input_value() == '',
                                [value.strip() for value in observed_tags] == expected_tags,
-                               [value.strip().casefold() for value in observed_tags] == [value.casefold() for value in expected_tags])
+                               [value.strip().casefold() for value in observed_tags] == [value.casefold() for value in expected_tags],
+                               self._tag_loading(tag_input))
                 raise
         statement = page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True)
         statement.click(timeout=5000)
