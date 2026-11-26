@@ -40,6 +40,20 @@ class BilibiliPublisherTest(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(PlatformFormError):
                 self.validate({**self.body, **change})
 
+    def test_closed_response_never_supplies_upload_or_submission_proof(self):
+        from playwright.sync_api import Error as PlaywrightError
+        adapter = BrowserPublisher()
+        response = MagicMock()
+        response.url = 'https://member.bilibili.com/x/vupre/web/archive/pre'
+        response.status = 200
+        response.json.side_effect = PlaywrightError('private transport detail')
+        with self.assertLogs('wt_media_agent.platforms.bilibili.publisher', level='WARNING') as logs:
+            adapter._response(response)
+        self.assertIsNone(adapter._pre)
+        self.assertIsNone(adapter._cid)
+        self.assertEqual(adapter._capture['forwarded'], 0)
+        self.assertNotIn('private transport detail', str(logs.output))
+
     def test_guard_blocks_early_duplicate_and_changed_post(self):
         adapter = BrowserPublisher()
         page = MagicMock()

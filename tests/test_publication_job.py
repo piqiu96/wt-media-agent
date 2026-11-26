@@ -550,6 +550,19 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual([packet['stage'] for packet in packets if 'stage' in packet],
                          ['preparing', 'ready', 'submitting'])
 
+    def test_restored_draft_has_actionable_safe_failure_without_submitting(self):
+        from wt_media_agent.platforms.publish import ExistingPublicationDraft
+        def reject(*args, **kwargs):
+            raise ExistingPublicationDraft('private browser URL and credentials must not leave the Agent')
+        self.platform.fill_form = reject
+        result = self.run_job()
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['error_code'], 'PUBLICATION_NOT_SUBMITTED')
+        self.assertIn('平台恢复了未提交的视频', result['error_message'])
+        self.assertNotIn('private browser', str(result))
+        self.assertTrue(result['evidence']['not_submitted'])
+        self.assertEqual(self.platform.clicks, 0)
+
     def test_failure_log_identifies_code_site_without_private_exception_text(self):
         def private_failure(*args, **kwargs):
             raise ValueError('Page.goto: net::ERR_ABORTED at https://private.example/?token=secret private publication text')

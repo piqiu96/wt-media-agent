@@ -22,7 +22,7 @@ from wt_media_agent.runtime.constants import (
 )
 from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
 from wt_media_agent.storage.publication import JournalConflict, publication_file_evidence
-from wt_media_agent.platforms.publish import PublishControl, PublishPayload
+from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublishControl, PublishPayload
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,7 @@ class PublicationJob:
         done, stopped = Event(), Event()
         prepared = None
         stop_reason = ""
+        preparation_message = ""
         receipt = {}
         submission_denied = False
         source = claim['attempt']['input_snapshot']
@@ -230,6 +231,8 @@ class PublicationJob:
                 self.journal.get(identity)['phase'], type(error).__name__,
                 Path(code.co_filename).name, code.co_name, location.tb_lineno,
                 network_error.group(0) if network_error else "unknown", ">".join(failure_path))
+            if isinstance(error, ExistingPublicationDraft):
+                preparation_message = '平台恢复了未提交的视频，本次任务未投稿。请核对原账号窗口中的未提交视频后再重试；系统不会自动覆盖或丢弃。'
             # Do not persist exception text: platform errors may contain private
             # addresses or credentials. Keep the exact local phase and evidence.
             receipt = {}
@@ -251,7 +254,7 @@ class PublicationJob:
             evidence['not_submitted'] = True
             result = {'status': PublicationStatus.FAILED,
                       'error_code': stop_reason or PUBLICATION_NOT_SUBMITTED,
-                      'error_message': 'Execution stopped before submission; the browser scene was closed.',
+                      'error_message': preparation_message or 'Execution stopped before submission; the browser scene was closed.',
                       'evidence': evidence}
         if receipt:
             evidence['receipt_id'] = receipt['platform_work_id']

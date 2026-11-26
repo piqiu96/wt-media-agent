@@ -10,6 +10,10 @@ class PublicationInputError(RuntimeError):
     """Publication input or execution control does not permit the next action."""
 
 
+class ExistingPublicationDraft(PublicationInputError):
+    """A platform restored an unsent video that this attempt cannot own."""
+
+
 @dataclass(frozen=True)
 class PublishPayload:
     video: Path

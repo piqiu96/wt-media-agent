@@ -6,6 +6,7 @@ import shutil
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from playwright.sync_api import Error as PlaywrightError
 from wt_media_agent.clients.bilibili.cover import cover_upload_kind
 
 from wt_media_agent.clients.bilibili.publication import (
@@ -13,7 +14,7 @@ from wt_media_agent.clients.bilibili.publication import (
     accepted_receipt, matching_partition, response_data, submission_id,
 )
 from wt_media_agent.platforms.bilibili.identity import read_bilibili_identity
-from wt_media_agent.platforms.publish import PublicationInputError
+from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublicationInputError
 from wt_media_agent.runtime.constants import PublishMethod
 from wt_media_agent.services.browser.session import BrowserSession
 
@@ -201,7 +202,7 @@ class BrowserPublisher:
                     return
                 self._cid, self._filename = cid, Path(uri).stem
                 logger.info('Bilibili matching upload receipt captured')
-        except (ValueError, TypeError, KeyError, AttributeError) as error:
+        except (ValueError, TypeError, KeyError, AttributeError, PlaywrightError) as error:
             logger.warning('Bilibili response proof rejected: kind=%s error_type=%s',
                            'preupload' if urlsplit(response.url).path == '/preupload' else 'editor',
                            type(error).__name__)
@@ -219,7 +220,7 @@ class BrowserPublisher:
         # A local saved upload is separate from this new authorized upload.
         # Do not restore, discard, edit or submit it on behalf of this task.
         if page.get_by_text('继续编辑', exact=True).is_visible():
-            raise PlatformFormError('浏览器中有未提交的视频，请先核对原稿件，勿重复上传或投稿')
+            raise ExistingPublicationDraft('restored unsent video is not owned by this attempt')
         self._check()
         # The visible upload text has pointer-events:none on the live page.
         # Fill the actual upload component, never an image/cover file input.

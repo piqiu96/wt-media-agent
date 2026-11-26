@@ -9,7 +9,7 @@ import unittest
 
 import test_baidu_publisher_browser as browser_harness
 from wt_media_agent.platforms.bilibili.publisher import BrowserPublisher, PlatformFormError
-from wt_media_agent.platforms.publish import PublishPayload
+from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublishPayload
 from wt_media_agent.services.browser.session import BrowserSession
 from wt_media_agent.platforms.bilibili.publication_check import BilibiliPublicationChecker
 from wt_media_agent.clients.bilibili.cover import cover_upload_kind
@@ -84,6 +84,19 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
                 raise AssertionError('isolated editor errors: ' + repr(self.page_errors)) from None
             state = self.page.evaluate("({slot, pixels:[...document.querySelectorAll('canvas.lower-canvas')].map(c=>[...c.getContext('2d').getImageData(0,0,1,1).data])})")
             raise AssertionError('isolated cover state: ' + repr(state))
+
+    def test_restored_unowned_video_is_preserved_without_upload_or_submission(self):
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+            lambda route: route.fulfill(content_type='text/html',
+                body=FIXTURE.replace('<meta charset="utf-8">',
+                    '<meta charset="utf-8"><button>继续编辑</button>')))
+        with self.assertRaises(ExistingPublicationDraft):
+            self.adapter.fill_form(self.page, self.payload, stopped=lambda: False,
+                                   replace_matching_draft=True)
+        self.assertEqual(self.page.locator('#video-file').evaluate('(e)=>e.files.length'), 0)
+        self.assertTrue(self.page.get_by_text('继续编辑', exact=True).is_visible())
+        self.assertEqual(self.sent, 0)
+        self.assertEqual(self.adapter._capture['forwarded'], 0)
 
     def test_full_form_covers_tags_and_one_accepted_receipt(self):
         self.fill()
