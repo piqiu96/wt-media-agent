@@ -21,7 +21,7 @@ from wt_media_agent.runtime.constants import (
     PublishMethod,
 )
 from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
-from wt_media_agent.storage.publication import JournalConflict
+from wt_media_agent.storage.publication import JournalConflict, publication_file_evidence
 from wt_media_agent.platforms.publish import PublishControl, PublishPayload
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ class PublicationJob:
         receipt = {}
         submission_denied = False
         source = claim['attempt']['input_snapshot']
-        evidence = {key: source[key] for key in ('platform_uid', 'video_sha256', 'cover_sha256', 'portrait_cover_sha256')}
+        evidence = publication_file_evidence(source)
         evidence['bit_profile_id'] = identity.bit_profile_id
 
         def progress(stage, seq, **extra):
@@ -205,7 +205,7 @@ class PublicationJob:
                     except Exception:
                         pass  # Missing verification never grants draft replacement.
             receipt = publisher.publish(
-                PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid'], portrait_cover=prepared.portrait_cover),
+                PublishPayload(prepared.video, prepared.cover, source['content'], source['platform_uid'], portrait_cover=prepared.portrait_cover, space_cover=getattr(prepared, 'space_cover', None)),
                 PublishControl(stopped=should_stop, on_prepared=on_prepared, before_submit=before_submit,
                     replace_matching_draft=replace_draft, wait_for_human=wait_for_human),
                 method=PublishMethod.BROWSER)

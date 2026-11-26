@@ -1,0 +1,70 @@
+<!doctype html><meta charset="utf-8">
+<button id="upload">上传视频</button><input id="video-file" type="file" hidden>
+<main hidden>
+ <span id="upload-status"></span>
+ <div class="cover-content"><div class="cover-module-main"><img id="preview"></div></div>
+ <input placeholder="请输入稿件标题" maxlength="80">
+ <div class="desc-container"><div class="ql-editor" contenteditable="true"></div></div>
+ <div class="video-human-type"><div class="select-controller"><span class="select-item-cont">请选择分区</span></div></div>
+ <div class="human-type-list" hidden><span>游戏</span></div>
+ <div class="tag-pre-wrp"></div><input placeholder="按回车键Enter创建标签">
+ <input placeholder="请选择符合您视频内容的创作声明" readonly>
+ <div id="statements" hidden><span>内容含营销信息</span><span>内容无需标注</span>
+  <div class="auth-content"><span class="option-text">内容为自制：未经作者允许，禁止转载</span></div></div>
+ <span>更多设置</span><article class="vu-only-self">
+  <div class="check-radio-v2-container"><span class="check-radio-v2-box-checked"></span><span>公开可见</span></div>
+  <div class="check-radio-v2-container"><span></span><span>仅自己可见</span></div>
+ </article>
+ <div class="video-recreate"><label class="bcc-checkbox"><input type="checkbox" checked>允许二创</label></div>
+ <button id="submit">立即投稿</button>
+</main>
+<div class="cover-editor" hidden>
+ <div id="editor_4_3"><canvas class="lower-canvas" width="400" height="300"></canvas><canvas class="upper-canvas" hidden></canvas></div>
+ <div id="editor_16_9"><canvas class="lower-canvas" width="400" height="225"></canvas><canvas class="upper-canvas" hidden></canvas></div>
+ <div class="cover-upload"><input type="file" accept="image/png,image/jpeg"></div>
+ <button id="complete">完成</button><button id="cancel">取消</button>
+</div>
+<script>
+const $=s=>document.querySelector(s);let slot='#editor_4_3';
+window.fixture={submitted:0};
+fetch('/x/vupre/web/archive/pre');fetch('/x/vupre/web/archive/human/type2/list');
+$('#upload').onclick=()=>$('#video-file').click();
+$('#video-file').onchange=async e=>{
+ const f=e.target.files[0];await fetch('/preupload?name='+encodeURIComponent(f.name)+'&size='+f.size);
+ $('main').hidden=false;$('#upload').hidden=true;$('#upload-status').textContent='上传完成';
+};
+$('.select-controller').onclick=()=>$('.human-type-list').hidden=false;
+$('.human-type-list span').onclick=()=>{$('.select-item-cont').textContent='游戏';$('.human-type-list').hidden=true;};
+const tagInput=$('input[placeholder="按回车键Enter创建标签"]');
+tagInput.onkeydown=e=>{if(e.key!=='Enter')return;const row=document.createElement('div');row.className='label-item-v2-container';
+ const name=document.createElement('p');name.className='label-item-v2-content';name.textContent=tagInput.value;
+ const close=document.createElement('button');close.className='close';close.textContent='×';close.onclick=()=>row.remove();
+ row.append(name,close);$('.tag-pre-wrp').append(row);tagInput.value='';};
+const statement=$('input[placeholder="请选择符合您视频内容的创作声明"]');
+statement.onclick=()=>$('#statements').hidden=!$('#statements').hidden;
+$('#statements').querySelectorAll(':scope>span').forEach(e=>e.onclick=()=>{statement.value=e.textContent;$('#statements').hidden=true;});
+$('.auth-content').onclick=()=>$('.option-text').classList.toggle('option-text-selected');
+$('input[placeholder="请输入稿件标题"]').onclick=()=>$('#statements').hidden=true;
+$('.vu-only-self').querySelectorAll('.check-radio-v2-container').forEach(row=>row.onclick=()=>{
+ $('.check-radio-v2-box-checked').className='';row.firstElementChild.className='check-radio-v2-box-checked';});
+$('.cover-module-main').onclick=()=>$('.cover-editor').hidden=false;
+for(const id of ['#editor_4_3','#editor_16_9'])$(id).onclick=()=>slot=id;
+$('.cover-upload input').onchange=async e=>{
+ const img=await createImageBitmap(e.target.files[0]);const c=$(slot+' canvas');
+ c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+};
+$('#complete').onclick=()=>{$('#preview').src=$('#editor_4_3 canvas').toDataURL();$('.cover-editor').hidden=true;};
+$('#cancel').onclick=()=>$('.cover-editor').hidden=true;
+$('#submit').onclick=async()=>{
+ const value=s=>$('input[placeholder="'+s+'"]').value;
+ const body={title:value('请输入稿件标题'),desc:$('.ql-editor').innerText,
+ tag:[...document.querySelectorAll('.label-item-v2-content')].map(e=>e.textContent).join(','),human_type2:1008,
+ copyright:$('.option-text-selected')?1:3,no_reprint:Number(!!$('.option-text-selected')),is_only_self:0,
+ creation_statement:{id:statement.value==='内容含营销信息'?7:-1},recreate:$('.video-recreate input').checked?1:-1,
+ videos:[{cid:777,filename:'fixture-upload'}],cover:'https://i0.hdslb.com/bfs/archive/space.jpg',
+ cover43:'https://i0.hdslb.com/bfs/archive/main.jpg'};
+ if(window.fixture.mutatePost)body.title='changed after permission';
+ window.fixture.submitted++;
+ await fetch('/x/vu/web/add/v3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});
+};
+</script>

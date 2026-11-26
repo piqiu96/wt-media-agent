@@ -9,6 +9,7 @@ from typing import Mapping
 from wt_media_agent.platforms.publication_check import PublicationCheckError, PublicationReference, PublicWorkObservation, PublicationCheckControl
 from wt_media_agent.services.browser.session import BrowserSession, ProfileReadSession
 from wt_media_agent.storage.publication_check import PublicationCheckStore
+from wt_media_agent.storage.publication import publication_content
 from wt_media_agent.clients.cloud.errors import CloudError, StaleAttemptError
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class PublicationCheckJob:
         if (not all(_identity(value) for value in identities)
                 or task.get('operator_id') != user or attempt.get('executor_user_id') != user
                 or attempt.get('publication_id') != task['id'] or task.get('current_attempt_id') != attempt['id']
-                or task.get('status') != 'reviewing' or task.get('platform') != 'baidu'
+                or task.get('status') != 'reviewing' or task.get('platform') not in ('baidu', 'bilibili') or source.get('platform', 'baidu') != task.get('platform')
                 or task.get('revision') != claim['expected_revision']
                 or attempt['profile_id'] != source['profile_id']
                 or not isinstance(source.get('platform_uid'), str) or not source['platform_uid']
@@ -66,7 +67,8 @@ class PublicationCheckJob:
         if not _identity(claim.get('reservation_id')) or claim.get('reservation_state') != 'active':
             raise ValueError('original check reservation required')
         safe_source = {key: source[key] for key in ('profile_id', 'bit_profile_id', 'bit_main_user_id', 'platform_uid')}
-        safe_source['content'] = {key: source['content'].get(key, '') for key in ('description', 'topics', 'declaration')}
+        safe_source['content'] = publication_content(task['platform'], dict(source['content']))
+        if task['platform']=='bilibili': safe_source['platform']='bilibili'
         return dict(reservation_id=claim['reservation_id'], reservation_state='active', generation=claim['generation'],
             expected_revision=claim['expected_revision'], browser_fallback_allowed=claim.get('browser_fallback_allowed', False),
             task={key: task.get(key) for key in ('id', 'operator_id', 'status', 'platform', 'revision', 'current_attempt_id',

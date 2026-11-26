@@ -8,7 +8,7 @@ from pathlib import Path
 from time import monotonic
 
 logger = logging.getLogger(__name__)
-_FILES = frozenset({'video.mp4', 'cover', 'portrait-cover'})
+_FILES = frozenset({'video.mp4', 'cover', 'portrait-cover', 'space-cover'})
 _ALLOWED = _FILES | {name + '.part' for name in _FILES}
 
 

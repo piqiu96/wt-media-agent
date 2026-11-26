@@ -53,6 +53,8 @@ from wt_media_agent.runner.publication_check import PublicationCheckJob
 from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
 from wt_media_agent.runner.publication_loop import PublicationLoop
 from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
+from wt_media_agent.platforms.bilibili.publisher import BilibiliPublisher
+from wt_media_agent.platforms.bilibili.publication_check import BilibiliPublicationChecker
 
 
 @dataclass(frozen=True)
@@ -203,14 +205,16 @@ def build_components(config: AgentConfig | None = None) -> Components:
     state = LocalAgentState(agent_id=config.agent_id)
 
     def publisher_factory(platform):
-        if platform != 'baidu':
+        publishers = {'baidu': BaiduPublisher, 'bilibili': BilibiliPublisher}
+        if platform not in publishers:
             raise ValueError('platform publisher is not available')
-        return BaiduPublisher
+        return publishers[platform]
 
     def publication_checker_factory(platform):
-        if platform != 'baidu':
+        checkers = {'baidu': BaiduPublicationChecker, 'bilibili': BilibiliPublicationChecker}
+        if platform not in checkers:
             raise ValueError('platform public checker is not available')
-        return BaiduPublicationChecker
+        return checkers[platform]
 
     publication_job = PublicationJob(
         publication_preparation, bitbrowser, publisher_factory, capacity=publication_capacity,
