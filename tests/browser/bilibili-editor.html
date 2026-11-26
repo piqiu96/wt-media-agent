@@ -45,7 +45,7 @@ $('#upload').onclick=()=>$('#video-file').click();
 $('#video-file').onchange=async e=>{
  const f=e.target.files[0];
  const file=window.fixtureDifferentFile?new File([f],f.name,{type:f.type,lastModified:f.lastModified}):f;
- $('.file-list').__vue__={videoTasks:[{file,cid:window.fixtureDifferentCid?888:777,filename:'fixture-upload',status:3}]};
+ $('.file-list').__vue__={videoTasks:[{file,cid:window.fixtureDifferentCid?888:777,filename:'fixture-upload',status:window.fixtureIncompleteUpload?1:3}]};
  if(window.fixtureMultipleVideos)$('.file-list').__vue__.videoTasks.push({...$('.file-list').__vue__.videoTasks[0]});
  if(!window.fixtureNoUploadReceipt)await fetch('/preupload?name='+encodeURIComponent(f.name)+'&size='+f.size);
  $('main').hidden=false;$('#upload').hidden=true;$('#upload-status').textContent='上传完成';

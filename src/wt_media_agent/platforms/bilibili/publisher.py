@@ -273,7 +273,7 @@ class BrowserPublisher:
                         root.get_by_text('上传失败', exact=False).count())
             logger.info('Bilibili current upload identity: %s', self._upload_inspection)
             self._upload_progress_at = now
-        return self._cid is not None and self.page.get_by_text('上传完成', exact=True).count() >= 1
+        return identity is not None and self.page.get_by_text('上传完成', exact=True).count() >= 1
 
     def _response(self, response):
         from playwright.sync_api import Error as PlaywrightError
@@ -562,7 +562,7 @@ class BrowserPublisher:
         self._check()
         if not self._ready or self._capture['count']:
             raise PlatformFormError('form incomplete or already submitted')
-        if self._editor_identity_verified and self._current_upload_identity() != (self._cid, self._filename):
+        if not self._editor_identity_verified or self._current_upload_identity() != (self._cid, self._filename):
             raise PlatformFormError('当前视频已变化，请回到原任务核对后再提交')
         page, content = self.page, self._payload.content
         options = content['bilibili']

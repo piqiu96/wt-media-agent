@@ -141,6 +141,21 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
+    def _reject_unbound_network_receipt(self, flag):
+        self.page.add_init_script('window.'+flag+'=true')
+        with self.assertRaises(PlatformFormError):
+            self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
+        self.assertEqual(self.sent, 0)
+
+    def test_network_receipt_does_not_accept_another_file_object(self):
+        self._reject_unbound_network_receipt('fixtureDifferentFile')
+
+    def test_network_receipt_does_not_accept_multiple_video_rows(self):
+        self._reject_unbound_network_receipt('fixtureMultipleVideos')
+
+    def test_network_receipt_does_not_accept_incomplete_current_video(self):
+        self._reject_unbound_network_receipt('fixtureIncompleteUpload')
+
     def test_completed_editor_and_network_upload_ids_must_agree(self):
         self.page.add_init_script('window.fixtureDifferentCid=true')
         with self.assertRaises(PlatformFormError):
