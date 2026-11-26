@@ -420,8 +420,16 @@ class BrowserPublisher:
             # Enter while checkCustomTagLoading is true. Wait for the accepted
             # prefix and cleared input before sending the next confirmed tag.
             expected_tags = options['tags'][:index + 1]
-            self._wait(lambda: page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() == expected_tags
-                       and tag_input.input_value() == '', timeout=20)
+            try:
+                self._wait(lambda: page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() == expected_tags
+                           and tag_input.input_value() == '', timeout=20)
+            except PlatformFormError:
+                observed_tags = page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents()
+                logger.warning('Bilibili tag acceptance timeout: index=%s observed_count=%s expected_count=%s input_empty=%s trim_matches=%s casefold_matches=%s',
+                               index, len(observed_tags), len(expected_tags), tag_input.input_value() == '',
+                               [value.strip() for value in observed_tags] == expected_tags,
+                               [value.strip().casefold() for value in observed_tags] == [value.casefold() for value in expected_tags])
+                raise
         statement = page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True)
         statement.click(timeout=5000)
         page.get_by_text(options['statement'], exact=True).filter(visible=True).click(timeout=5000)
