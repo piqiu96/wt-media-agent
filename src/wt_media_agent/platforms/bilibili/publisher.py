@@ -291,7 +291,7 @@ class BrowserPublisher:
                 self._capture.update(status=response.status, json=response.json())
                 return
             url = urlsplit(response.url)
-            if url.netloc in {'member.bilibili.com', 'api.bilibili.com'} and '/tag' in url.path:
+            if url.netloc in {'member.bilibili.com', 'api.bilibili.com'} and url.path.startswith('/x/') and '/tag' in url.path:
                 query = parse_qs(urlsplit(response.request.url).query)
                 values = [value for items in query.values() for value in items]
                 raw = response.request.post_data
@@ -307,11 +307,24 @@ class BrowserPublisher:
                 code = body.get('code') if isinstance(body, dict) else None
                 data = body.get('data') if isinstance(body, dict) else None
                 names = [data.get(key) for key in ('name', 'tag_name')] if isinstance(data, dict) else []
+                fields = sorted(key for key in data if isinstance(key, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,31}', key))[:16] if isinstance(data, dict) else []
+                flags = {key:data[key] for key in ('code','is_error','isError','error_code','errorCode','state','type','tag_type')
+                         if isinstance(data, dict) and type(data.get(key)) in (int,bool)}
+                text = ' '.join(value for row in (body,data) if isinstance(row, dict)
+                                for key in ('message','msg','err_msg','error')
+                                if isinstance(value:=row.get(key), str)).lower()
+                categories = [label for label, words in (
+                    ('duplicate', ('重复','已存在','duplicate','already exist')),
+                    ('length', ('长度','字数','length')),
+                    ('invalid', ('无效','不可用','禁止','invalid','forbidden')),
+                    ('activity', ('活动','activity')),
+                ) if any(word in text for word in words)]
                 logger.info('Bilibili tag response: request_matches=%s http_status=%s code=%s data_kind=%s canonical_matches_input=%s canonical_matches_existing=%s',
                             bool(self._pending_tag and self._pending_tag in values), response.status,
                             code if type(code) is int else 'unavailable', type(data).__name__,
                             bool(self._pending_tag and self._pending_tag in names),
                             any(name in self._accepted_tags for name in names if isinstance(name, str)))
+                logger.info('Bilibili tag business result: fields=%s flags=%s categories=%s', fields, flags, categories)
                 return
             if url.netloc != 'member.bilibili.com':
                 return
@@ -467,11 +480,12 @@ class BrowserPublisher:
                            and self._tag_loading(tag_input) is not True, timeout=20)
             except PlatformFormError:
                 observed_tags = page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents()
-                logger.warning('Bilibili tag acceptance timeout: index=%s observed_count=%s expected_count=%s input_empty=%s trim_matches=%s casefold_matches=%s validation_busy=%s',
+                logger.warning('Bilibili tag acceptance timeout: index=%s observed_count=%s expected_count=%s input_empty=%s trim_matches=%s casefold_matches=%s validation_busy=%s expected_label_visible=%s',
                                index, len(observed_tags), len(expected_tags), tag_input.input_value() == '',
                                [value.strip() for value in observed_tags] == expected_tags,
                                [value.strip().casefold() for value in observed_tags] == [value.casefold() for value in expected_tags],
-                               self._tag_loading(tag_input))
+                               self._tag_loading(tag_input),
+                               tag in page.locator('#tag-container .tag-pre-wrp').inner_text())
                 raise
         statement = page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True)
         statement.click(timeout=5000)

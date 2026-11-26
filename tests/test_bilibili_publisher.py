@@ -136,12 +136,15 @@ import wt_media_agent.bootstrap.app
         response.request.url = response.url
         response.request.post_data = None
         response.status = 200
-        response.json.return_value = {'code': 40045, 'message':'must-not-log', 'data':{'name':'游戏'}}
+        response.json.return_value = {'code': 40045, 'message':'must-not-log',
+            'data':{'name':'游戏','is_error':1,'err_msg':'标签重复：must-not-log'}}
         with self.assertLogs('wt_media_agent.platforms.bilibili.publisher', level='INFO') as logs:
             adapter._response(response)
         self.assertIn('request_matches=True', str(logs.output))
         self.assertIn('code=40045', str(logs.output))
         self.assertIn('canonical_matches_existing=True', str(logs.output))
+        self.assertIn("'is_error': 1", str(logs.output))
+        self.assertIn('duplicate', str(logs.output))
         self.assertNotIn('must-not-log', str(logs.output))
         self.assertIsNone(adapter._cid)
 
