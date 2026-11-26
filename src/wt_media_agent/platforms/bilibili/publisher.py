@@ -426,14 +426,33 @@ class BrowserPublisher:
         # Do not grant the separate video recreation agreement by default.
         recreate = page.get_by_text('允许二创', exact=True)
         if recreate.is_visible():
-            box = page.locator('.video-recreate input[type=checkbox]')
-            if box.is_checked():
-                page.locator('.video-recreate .bcc-checkbox').click(timeout=5000)
-            if box.is_checked():
+            if self._recreate_enabled():
+                page.locator('.video-recreate .bcc-checkbox').filter(has_text='允许二创').click(timeout=5000)
+            if self._recreate_enabled():
                 raise PlatformFormError('无法关闭二创授权，已阻止投稿，请核对原窗口')
         self._fill_covers(payload)
         self._ready = True
         self._assert_form()
+
+    def _recreate_enabled(self):
+        root = self.page.locator('.video-recreate:visible')
+        if root.count() != 1:
+            raise PlatformFormError('无法核实二创授权状态，请核对原窗口')
+        # The official VideoRecreate component binds _recreate to bcc-checkbox.
+        # Its internal inputs are an implementation detail and may be duplicated.
+        state = root.evaluate("""element => {
+          const vm=element.__vue__;
+          if(vm && '_recreate' in vm &&
+             (typeof vm._recreate==='boolean' || vm._recreate===null))
+            return {known:true, enabled:vm._recreate===true};
+          return {known:false};
+        }""")
+        if state['known']:
+            return state['enabled']
+        box = root.locator('input[type=checkbox]')
+        if box.count() != 1:
+            raise PlatformFormError('无法核实二创授权状态，请核对原窗口')
+        return box.is_checked()
 
     def _fill_covers(self, payload):
         self.page.locator('.cover-content .cover-module-main').click(timeout=5000)

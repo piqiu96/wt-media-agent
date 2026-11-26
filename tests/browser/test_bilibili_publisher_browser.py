@@ -162,6 +162,27 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
+    def test_recreate_component_with_multiple_internal_inputs(self):
+        html = FIXTURE.replace('<div class="video-recreate"><label', '<div class="video-recreate"><input type="checkbox" hidden><label')
+        html += """<script>
+        const component=document.querySelector('.video-recreate');
+        const toggle=component.querySelector('.bcc-checkbox input');
+        component.__vue__={_recreate:true};
+        toggle.onchange=()=>component.__vue__._recreate=toggle.checked;
+        </script>"""
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route: route.fulfill(content_type='text/html', body=html))
+        self.fill()
+        self.assertFalse(self.page.locator('.video-recreate').evaluate('(e)=>e.__vue__._recreate'))
+
+    def test_unknown_duplicate_recreate_controls_do_not_grant_rights(self):
+        html = FIXTURE.replace('<div class="video-recreate"><label', '<div class="video-recreate"><input type="checkbox" hidden><label')
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route: route.fulfill(content_type='text/html', body=html))
+        with self.assertRaises(PlatformFormError):
+            self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
+        self.assertEqual(self.sent, 0)
+
     def test_tag_input_is_scoped_to_current_editable_control(self):
         html = FIXTURE.replace('<main hidden>', '<div id="other-tags" hidden><input placeholder="按回车键Enter创建标签"><div class="tag-pre-wrp"><span class="label-item-v2-content">其他表单</span></div></div><main hidden>')
         html = html.replace('<div class="tag-input-wrp">', '<div class="tag-input-wrp" placeholder="按回车键Enter创建标签">', 1)
