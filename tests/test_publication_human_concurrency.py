@@ -22,7 +22,7 @@ class HumanConcurrencyTests(unittest.TestCase):
         for i in self.ids:self.j.register(i,snapshot())
         self.parked={i.task_id:Event() for i in self.ids};self.shown={i.task_id:Event() for i in self.ids}
         self.pulses={i.task_id:Event() for i in self.ids};self.release_report=Event();self.addCleanup(self.release_report.set)
-        self.block_task=None;self.park_ack=True;self.resume_ack=True;self.lose_park=False
+        self.block_task=None;self.blocked_report=Event();self.park_ack=True;self.resume_ack=True;self.lose_park=False
         self.cloud=Mock();self.cloud.report_publication.side_effect=self.report
         self.cloud.publication_human.side_effect=self.human
         self.cloud.original_publication_attempt.side_effect=ConnectionError('not needed')
@@ -55,7 +55,9 @@ class HumanConcurrencyTests(unittest.TestCase):
             return {'stop_requested':False,'allow_submit':False,'scene_parked':self.park_ack}
         if 'stage' not in packet:
             self.pulses[task].set()
-            if task==self.block_task:self.release_report.wait(3)
+            if task==self.block_task:
+                self.blocked_report.set()
+                self.release_report.wait(3)
         return {'stop_requested':False,'allow_submit':packet.get('stage')=='submitting'}
     def human(self,token,task,attempt,revision,*,resume,capacity=None):
         self.assertEqual(capacity,{'automatic_slots':5,'window_slots':10})
@@ -148,7 +150,10 @@ class HumanConcurrencyTests(unittest.TestCase):
         with self.assertRaises(JournalConflict):self.job.handle_human_action('token','3','11','11','5',resume=True)
         self.assertNotEqual(self.results['11']['status'],'reviewing')
     def test_slow_report_of_one_attempt_does_not_block_other_heartbeat(self):
-        self.block_task='11';self.start(self.ids[0]);self.assertTrue(self.pulses['11'].wait(2))
+        # Park first: blocking an earlier heartbeat would hold this attempt's
+        # report lock and prevent start() from reaching its parking barrier.
+        self.start(self.ids[0]);self.block_task='11'
+        self.assertTrue(self.blocked_report.wait(2))
         self.start(self.ids[1]);self.assertTrue(self.pulses['12'].wait(1))
     def test_session_change_closes_all_original_waiting_stacks(self):
         threads=[self.start(i) for i in self.ids]
