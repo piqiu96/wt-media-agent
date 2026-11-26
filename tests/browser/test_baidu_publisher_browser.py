@@ -428,6 +428,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.home='''<meta charset="utf-8"><div id="home-publish-btn" onmouseenter="window.menuShown=true;document.querySelector('a').style.opacity=1;document.querySelector('a').style.pointerEvents='auto'">＋</div><a style="opacity:0;pointer-events:none" href="/builder/rc/edit">发布视频</a>'''
 
     def test_delayed_publish_menu_does_not_capture_home_card_locator(self):
+        self.publisher.timeout = 2
         self.home='''<meta charset="utf-8"><div id="home-statistic-card"><span>发布视频</span></div>
         <div id="home-publish-btn" onmouseenter="setTimeout(()=>document.body.insertAdjacentHTML('beforeend', '<div class=&quot;cheetah-popover-inner&quot;><a href=&quot;/builder/rc/edit&quot;>发布视频</a></div>'),200)">＋</div>'''
         self.publisher.fill_form(self.page,self.payload,stopped=lambda:False)
@@ -436,6 +437,7 @@ class BrowserPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.external, [])
 
     def test_duplicate_home_card_and_menu_labels_select_open_menu(self):
+        self.publisher.timeout = 2
         self.home='''<meta charset="utf-8"><div id="home-statistic-card"><span onclick="window.wrongEntry=true">发布视频</span></div>
         <div id="home-publish-btn" onmouseenter="document.querySelector('.cheetah-popover-inner').hidden=false">＋</div>
         <div class="cheetah-popover-inner" hidden><a href="/builder/rc/edit">发布视频</a></div>'''
