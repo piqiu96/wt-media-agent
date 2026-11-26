@@ -180,9 +180,9 @@ class BrowserPublisher:
         if page.get_by_text('继续编辑', exact=True).is_visible():
             raise PlatformFormError('浏览器中有未提交的视频，请先核对原稿件，勿重复上传或投稿')
         self._check()
-        with page.expect_file_chooser() as chooser:
-            page.get_by_text('上传视频', exact=True).click(timeout=5000)
-        chooser.value.set_files(str(payload.video.resolve()))
+        # The visible upload text has pointer-events:none on the live page.
+        # Fill the actual upload component, never an image/cover file input.
+        page.locator('.upload-wrp .upload input[type=file]').set_input_files(str(payload.video.resolve()))
         self._wait(lambda: self._cid is not None and page.get_by_text('上传完成', exact=True).count() >= 1)
         self._wait(lambda: self._pre is not None and self._types is not None)
         options = payload.content['bilibili']
