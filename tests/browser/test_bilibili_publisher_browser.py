@@ -108,6 +108,32 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.locator('#video-file').evaluate('(e)=>e.files.length'), 0)
         self.assertEqual(self.sent, 0)
 
+    def test_confirmed_description_trailing_newlines_are_preserved(self):
+        self.payload.content['description'] = '演示说明\n\n'
+        self.fill()
+        self.assertEqual(self.adapter._description_text(), '演示说明\n\n')
+        self.assertEqual(self.page.evaluate('window.fixture.description'), '演示说明\n\n')
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id': '123'})
+        self.assertEqual(self.sent, 1)
+
+    def test_quill_and_browser_blank_blocks_preserve_exact_description_lines(self):
+        self.adapter.page = self.page
+        for markup in ('演示说明<div><br></div><div><br></div>',
+                       '<p>演示说明</p><p><br></p><p><br></p>'):
+            self.page.goto('https://member.bilibili.com/platform/upload/video/frame')
+            self.page.locator('main').evaluate('(e)=>e.hidden=false')
+            self.page.locator('.ql-editor').evaluate('(e,html)=>e.innerHTML=html', markup)
+            self.assertEqual(self.adapter._description_text(), '演示说明\n\n')
+
+    def test_removed_confirmed_trailing_newline_blocks_changed_submission(self):
+        self.payload.content['description'] = '演示说明\n'
+        self.fill()
+        self.page.locator('.ql-editor').fill('演示说明')
+        with self.assertRaises(PlatformFormError):
+            self.adapter.submit()
+        self.assertEqual(self.sent, 0)
+
     def test_full_form_covers_tags_and_one_accepted_receipt(self):
         self.fill()
         self.adapter.submit()

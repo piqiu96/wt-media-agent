@@ -2,11 +2,11 @@
 import hashlib
 import json
 import logging
+import re
 import shutil
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
-from playwright.sync_api import Error as PlaywrightError
 from wt_media_agent.clients.bilibili.cover import cover_upload_kind
 
 from wt_media_agent.clients.bilibili.publication import (
@@ -83,6 +83,7 @@ class BrowserPublisher:
         self._request = None
         self._payload = None
         self._cid = None
+        self._upload_progress_at = None
         self._filename = None
         self._statement_id = None
         self._pre = None
@@ -170,8 +171,40 @@ class BrowserPublisher:
             return route.fallback()
         page.route('**/*', guard)
         page.on('response', self._response)
+        page.on('request', self._upload_request)
+        page.on('requestfailed', self._upload_failed)
+
+    def _upload_request(self, request):
+        url = urlsplit(request.url)
+        if url.netloc != 'member.bilibili.com' or url.path != '/preupload':
+            return
+        query = parse_qs(url.query)
+        current = (self._payload is not None and query.get('name') == [self._payload.video.name]
+                   and query.get('size') == [str(self._payload.video.stat().st_size)])
+        logger.info('Bilibili preupload request: method=%s current_video=%s name_present=%s size_present=%s',
+                    request.method, current, 'name' in query, 'size' in query)
+
+    def _upload_failed(self, request):
+        url = urlsplit(request.url)
+        if url.netloc != 'member.bilibili.com' or url.path != '/preupload':
+            return
+        match = re.search(r'net::ERR_[A-Z0-9_]+', request.failure or '')
+        logger.warning('Bilibili preupload transport failed: network_error=%s', match.group(0) if match else 'unknown')
+
+    def _upload_ready(self):
+        now = time.monotonic()
+        if self._upload_progress_at is None or now - self._upload_progress_at >= 10:
+            root = self.page.locator('.file-item-content')
+            logger.info('Bilibili upload UI: pending=%s uploading=%s complete=%s failed=%s',
+                        root.get_by_text('等待上传', exact=False).count(),
+                        root.get_by_text('上传中', exact=False).count(),
+                        root.get_by_text('上传完成', exact=False).count(),
+                        root.get_by_text('上传失败', exact=False).count())
+            self._upload_progress_at = now
+        return self._cid is not None and self.page.get_by_text('上传完成', exact=True).count() >= 1
 
     def _response(self, response):
+        from playwright.sync_api import Error as PlaywrightError
         try:
             if response.request is self._request:
                 self._capture.update(status=response.status, json=response.json())
@@ -255,7 +288,7 @@ class BrowserPublisher:
         # The visible upload text has pointer-events:none on the live page.
         # Fill the actual upload component, never an image/cover file input.
         page.locator('.upload-wrp .upload input[type=file]').set_input_files(str(payload.video.resolve()))
-        self._wait(lambda: self._cid is not None and page.get_by_text('上传完成', exact=True).count() >= 1)
+        self._wait(self._upload_ready)
         self._wait(lambda: self._pre is not None and self._types is not None)
         options = payload.content['bilibili']
         matching_partition(self._types, options['partition_id'], options['partition_name'])
@@ -402,6 +435,26 @@ class BrowserPublisher:
             result.append(digest)
         return result
 
+    def _description_text(self):
+        # Quill paragraphs and Chromium's contenteditable DIVs represent lines;
+        # innerText can double blank lines. Keep entered trailing lines, while
+        # treating an empty block's BR as its placeholder, not a second line.
+        return self.page.locator('.desc-container .ql-editor').evaluate("""root => {
+          function text(n) {
+            if(n.nodeType===Node.TEXT_NODE)return n.nodeValue;
+            if(n.nodeName==='BR')return '\\n';
+            let out='';
+            [...n.childNodes].forEach((c,i)=>{
+              const block=['P','DIV','LI'].includes(c.nodeName);
+              if(block&&i>0)out+='\\n';
+              const value=text(c);
+              out+=block&&c.childNodes.length===1&&c.firstChild.nodeName==='BR'?'':value;
+            });
+            return out;
+          }
+          return text(root);
+        }""")
+
     def _assert_form(self):
         self._check()
         if not self._ready or self._capture['count']:
@@ -411,7 +464,7 @@ class BrowserPublisher:
         visible = page.locator('.vu-only-self .check-radio-v2-container').filter(
             has=page.locator('.check-radio-v2-box-checked')).inner_text().strip()
         if (page.get_by_placeholder('请输入稿件标题', exact=True).input_value() != content['title']
-                or page.locator('.desc-container .ql-editor').inner_text().rstrip('\n') != content.get('description', '')
+                or self._description_text() != content.get('description', '')
                 or page.locator('.video-human-type .select-item-cont').inner_text().strip() != options['partition_name']
                 or page.locator('.tag-pre-wrp .label-item-v2-content').all_text_contents() != options['tags']
                 or page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True).input_value() != options['statement']

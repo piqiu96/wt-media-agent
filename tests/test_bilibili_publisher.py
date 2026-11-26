@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import MagicMock
+from support import LoggingStateTestCase
 
 from wt_media_agent.platforms.bilibili.publisher import (
     BilibiliPublisher, BrowserPublisher, PlatformFormError, image_upload_file, validate_submit_body,
@@ -11,8 +12,9 @@ from wt_media_agent.platforms.bilibili.publisher import (
 from wt_media_agent.platforms.publish import PublicationInputError, PublishControl, PublishPayload
 
 
-class BilibiliPublisherTest(unittest.TestCase):
+class BilibiliPublisherTest(LoggingStateTestCase):
     def setUp(self):
+        super().setUp()
         self.content = {'title': '游戏画中画演示', 'description': '演示说明', 'bilibili': {
             'partition_id': 1008, 'partition_name': '游戏', 'tags': ['游戏', '画中画'],
             'statement': '内容含营销信息', 'visibility': 'public', 'rights_reserved': False}}
@@ -25,6 +27,21 @@ class BilibiliPublisherTest(unittest.TestCase):
 
     def validate(self, body):
         validate_submit_body(body, self.content, cid=777, filename='uploaded-video', statement_id=7, cover_urls={'cover': self.body['cover'], 'cover43': self.body['cover43']})
+
+    def test_cloud_bootstrap_import_does_not_require_playwright(self):
+        import subprocess, sys
+        script = """
+import importlib.abc, sys
+class NoPlaywright(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'playwright' or fullname.startswith('playwright.'):
+            raise ModuleNotFoundError('local-only browser dependency unavailable')
+sys.meta_path.insert(0, NoPlaywright())
+import wt_media_agent.cloud_main
+import wt_media_agent.bootstrap.app
+"""
+        result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_actual_post_must_match_every_confirmed_field_and_one_video(self):
         self.validate(self.body)
@@ -94,6 +111,19 @@ class BilibiliPublisherTest(unittest.TestCase):
             adapter._cid = None
             adapter._response(response)
             self.assertIsNone(adapter._cid)
+
+    def test_upload_transport_diagnostics_do_not_log_private_request_values(self):
+        adapter = BrowserPublisher()
+        request = MagicMock()
+        request.url = 'https://member.bilibili.com/preupload?private=must-not-log'
+        request.method = 'GET'
+        request.failure = 'net::ERR_FAILED https://private.test/must-not-log'
+        with self.assertLogs('wt_media_agent.platforms.bilibili.publisher', level='INFO') as logs:
+            adapter._upload_request(request)
+            adapter._upload_failed(request)
+        self.assertIn('network_error=net::ERR_FAILED', str(logs.output))
+        self.assertNotIn('must-not-log', str(logs.output))
+        self.assertIsNone(adapter._cid)
 
     def test_non_success_upload_is_diagnosed_without_accepting_or_logging_url(self):
         from urllib.parse import urlencode
