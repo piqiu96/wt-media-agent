@@ -126,6 +126,25 @@ import wt_media_agent.bootstrap.app
         self.assertNotIn('must-not-log', str(logs.output))
         self.assertIsNone(adapter._cid)
 
+    def test_tag_response_diagnostics_show_codes_without_private_values(self):
+        from urllib.parse import urlencode
+        adapter = BrowserPublisher()
+        adapter._pending_tag = 'must-not-log'
+        adapter._accepted_tags = ['游戏']
+        response = MagicMock()
+        response.url = 'https://member.bilibili.com/x/vupre/web/tag/check?' + urlencode({'tag_name':'must-not-log'})
+        response.request.url = response.url
+        response.request.post_data = None
+        response.status = 200
+        response.json.return_value = {'code': 40045, 'message':'must-not-log', 'data':{'name':'游戏'}}
+        with self.assertLogs('wt_media_agent.platforms.bilibili.publisher', level='INFO') as logs:
+            adapter._response(response)
+        self.assertIn('request_matches=True', str(logs.output))
+        self.assertIn('code=40045', str(logs.output))
+        self.assertIn('canonical_matches_existing=True', str(logs.output))
+        self.assertNotIn('must-not-log', str(logs.output))
+        self.assertIsNone(adapter._cid)
+
     def test_owned_worker_upload_response_reaches_same_frozen_input_validation(self):
         from urllib.parse import urlencode
         with tempfile.TemporaryDirectory() as folder:

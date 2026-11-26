@@ -99,6 +99,8 @@ class BrowserPublisher:
         self._cover_export_open = False
         self._cover_requests = {}
         self._cover_urls = {}
+        self._pending_tag = ''
+        self._accepted_tags = []
 
     def _check(self):
         if self._stopped() or self.page is None or self.page.is_closed():
@@ -289,6 +291,28 @@ class BrowserPublisher:
                 self._capture.update(status=response.status, json=response.json())
                 return
             url = urlsplit(response.url)
+            if url.netloc in {'member.bilibili.com', 'api.bilibili.com'} and '/tag' in url.path:
+                query = parse_qs(urlsplit(response.request.url).query)
+                values = [value for items in query.values() for value in items]
+                raw = response.request.post_data
+                if isinstance(raw, str):
+                    try:
+                        posted = json.loads(raw)
+                    except ValueError:
+                        values.extend(value for items in parse_qs(raw).values() for value in items)
+                    else:
+                        if isinstance(posted, dict):
+                            values.extend(value for value in posted.values() if isinstance(value, str))
+                body = response.json()
+                code = body.get('code') if isinstance(body, dict) else None
+                data = body.get('data') if isinstance(body, dict) else None
+                names = [data.get(key) for key in ('name', 'tag_name')] if isinstance(data, dict) else []
+                logger.info('Bilibili tag response: request_matches=%s http_status=%s code=%s data_kind=%s canonical_matches_input=%s canonical_matches_existing=%s',
+                            bool(self._pending_tag and self._pending_tag in values), response.status,
+                            code if type(code) is int else 'unavailable', type(data).__name__,
+                            bool(self._pending_tag and self._pending_tag in names),
+                            any(name in self._accepted_tags for name in names if isinstance(name, str)))
+                return
             if url.netloc != 'member.bilibili.com':
                 return
             if url.path == '/preupload':
@@ -429,6 +453,8 @@ class BrowserPublisher:
         for index, tag in enumerate(options['tags']):
             self._check()
             self._wait(lambda: self._tag_loading(tag_input) is not True, timeout=20)
+            self._pending_tag = tag
+            self._accepted_tags = options['tags'][:index]
             tag_input.fill(tag)
             tag_input.press('Enter')
             # The platform validates each custom tag asynchronously and ignores
