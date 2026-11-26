@@ -401,14 +401,22 @@ class BrowserPublisher:
             if not tags.count():
                 break
             self._check()
+            previous_count = tags.count()
             tags.first.click(timeout=5000)
+            self._wait(lambda: tags.count() < previous_count, timeout=5)
         tag_input = page.locator('#tag-container .tag-input-wrp input:visible')
         logger.info('Bilibili tag controls: placeholder_matches=%s editor_inputs=%s',
                     page.get_by_placeholder('按回车键Enter创建标签', exact=True).count(), tag_input.count())
-        for tag in options['tags']:
+        for index, tag in enumerate(options['tags']):
             self._check()
             tag_input.fill(tag)
             tag_input.press('Enter')
+            # The platform validates each custom tag asynchronously and ignores
+            # Enter while checkCustomTagLoading is true. Wait for the accepted
+            # prefix and cleared input before sending the next confirmed tag.
+            expected_tags = options['tags'][:index + 1]
+            self._wait(lambda: page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() == expected_tags
+                       and tag_input.input_value() == '', timeout=20)
         statement = page.get_by_placeholder('请选择符合您视频内容的创作声明', exact=True)
         statement.click(timeout=5000)
         page.get_by_text(options['statement'], exact=True).filter(visible=True).click(timeout=5000)

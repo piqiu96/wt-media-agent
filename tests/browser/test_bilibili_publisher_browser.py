@@ -269,6 +269,26 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
         self.assertEqual(self.sent, 0)
 
+    def test_async_tag_validation_preserves_every_confirmed_tag(self):
+        html=FIXTURE+"""<script>
+        const input=document.querySelector('#tag-container input');
+        const add=input.onkeydown;let checking=false;
+        input.onkeydown=e=>{
+          if(e.key!=='Enter'||checking)return;
+          const value=input.value;checking=true;
+          setTimeout(()=>{input.value=value;add(e);checking=false;},180);
+        };
+        </script>"""
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route:route.fulfill(content_type='text/html',body=html))
+        self.payload.content['bilibili']['tags']=['游戏','画中画','三角洲行动','航天','激光房','闪击']
+        self.fill()
+        self.assertEqual(self.page.locator('#tag-container .label-item-v2-content').all_text_contents(),
+                         self.payload.content['bilibili']['tags'])
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
     def test_tag_input_is_scoped_to_current_editable_control(self):
         html = FIXTURE.replace('<main hidden>', '<div id="other-tags" hidden><input placeholder="按回车键Enter创建标签"><div class="tag-pre-wrp"><span class="label-item-v2-content">其他表单</span></div></div><main hidden>')
         html = html.replace('<div class="tag-input-wrp">', '<div class="tag-input-wrp" placeholder="按回车键Enter创建标签">', 1)
