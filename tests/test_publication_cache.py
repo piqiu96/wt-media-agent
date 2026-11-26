@@ -35,6 +35,17 @@ class PublicationCacheTests(TestCase):
         if delivered:self.j.record_delivery('dev','3',packet,accepted=True)
         if delivered and closed:self.j.settle(self.i,packet['result_hash'],task_status=status)
         return packet
+    def test_known_platform_upload_and_diagnostic_files_follow_cache_lifecycle(self):
+        self.settled()
+        for name in ('cover-upload.png', 'portrait-cover-upload.jpg',
+                     'editor-failure.png', 'editor-failure.json',
+                     'cover-selection-0.png', 'cover-selection-0.json',
+                     'cover-selection-1.png', 'cover-selection-1.json'):
+            (self.folder/name).write_bytes(b'owned attempt artifact')
+        self.cleaner.clean('token', self.i)
+        self.assertFalse(self.folder.exists())
+        self.assertEqual(self.j.get(self.i)['cache_cleanup']['status'], 'complete')
+
     def test_acknowledged_closed_receipt_is_removed_without_erasing_evidence(self):
         self.settled();self.cleaner.clean('token',self.i)
         self.assertFalse(self.folder.exists())

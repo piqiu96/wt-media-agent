@@ -9,7 +9,15 @@ from time import monotonic
 
 logger = logging.getLogger(__name__)
 _FILES = frozenset({'video.mp4', 'cover', 'portrait-cover', 'space-cover'})
-_ALLOWED = _FILES | {name + '.part' for name in _FILES}
+# Only exact filenames produced by the platform adapters belong to this
+# attempt. Unknown entries and links still prevent all removal.
+_AUXILIARY = {
+    *(name + '-upload.' + suffix for name in ('cover', 'portrait-cover', 'space-cover')
+      for suffix in ('png', 'jpg', 'webp')),
+    *(name + '.' + suffix for name in ('editor-failure', 'cover-selection-0', 'cover-selection-1')
+      for suffix in ('png', 'json')),
+}
+_ALLOWED = _FILES | {name + '.part' for name in _FILES} | _AUXILIARY
 
 
 class PublicationCacheCleanup:
