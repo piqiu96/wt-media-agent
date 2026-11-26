@@ -86,6 +86,22 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
             state = self.page.evaluate("({slot, pixels:[...document.querySelectorAll('canvas.lower-canvas')].map(c=>[...c.getContext('2d').getImageData(0,0,1,1).data])})")
             raise AssertionError('isolated cover state: ' + repr(state))
 
+    def test_platform_rejected_tag_is_reported_without_generic_timeout_or_submission(self):
+        from wt_media_agent.platforms.publish import PublicationInputError
+        self.page.route('**/x/vupre/web/tag/check*', lambda route: route.fulfill(
+            json={'code': 0, 'data': {'code': -1, 'content': 'private upstream text must not escape'}}))
+        self.page.add_init_script("""document.addEventListener('DOMContentLoaded',()=>{
+          const input=document.querySelector('#tag-container input');
+          input.onkeydown=async e=>{if(e.key!=='Enter')return;
+            const value=input.value;input.value='';
+            await fetch('/x/vupre/web/tag/check?tag_name='+encodeURIComponent(value));
+          };
+        });""")
+        with self.assertRaisesRegex(PublicationInputError, '第1个标签') as caught:
+            self.adapter.fill_form(self.page,self.payload,stopped=lambda:False)
+        self.assertNotIn('private upstream',str(caught.exception))
+        self.assertEqual(self.sent,0)
+
     def test_service_worker_upload_events_belong_to_context_not_page(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from threading import Thread

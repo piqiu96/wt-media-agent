@@ -23,7 +23,7 @@ from wt_media_agent.runtime.constants import (
 from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
 from wt_media_agent.services.files.verified_download import ResourceVerificationError
 from wt_media_agent.storage.publication import JournalConflict, publication_file_evidence
-from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublishControl, PublishPayload
+from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublicationTagRejected, PublishControl, PublishPayload
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +254,8 @@ class PublicationJob:
                 _browser_error_kind(error), ">".join(failure_path))
             if isinstance(error, ExistingPublicationDraft):
                 preparation_message = '平台恢复了未提交的视频，本次任务未投稿。请核对原账号窗口中的未提交视频后再重试；系统不会自动覆盖或丢弃。'
+            elif isinstance(error, PublicationTagRejected):
+                preparation_message = f'平台未接受第{error.position}个标签，本次尚未投稿。请核对标签配置后重新安排发布。'
             elif isinstance(error, ResourceVerificationError):
                 preparation_message = '成片或封面未完成下载或校验，本次尚未投稿。请检查网络与文件后重试。'
             # Do not persist exception text: platform errors may contain private

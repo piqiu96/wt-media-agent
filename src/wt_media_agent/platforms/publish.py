@@ -10,6 +10,15 @@ class PublicationInputError(RuntimeError):
     """Publication input or execution control does not permit the next action."""
 
 
+class PublicationTagRejected(PublicationInputError):
+    """A matched platform validation rejected one frozen tag; no upstream text."""
+    def __init__(self, position: int):
+        if type(position) is not int or not 1 <= position <= 10:
+            raise ValueError('invalid tag position')
+        self.position = position
+        super().__init__(f'平台未接受第{position}个标签，本次尚未投稿。请核对标签配置后重新安排发布。')
+
+
 class ExistingPublicationDraft(PublicationInputError):
     """A platform restored an unsent video that this attempt cannot own."""
 

@@ -550,6 +550,21 @@ class PublicationJobTests(unittest.TestCase):
         self.assertEqual([packet['stage'] for packet in packets if 'stage' in packet],
                          ['preparing', 'ready', 'submitting'])
 
+    def test_rejected_tag_has_actionable_safe_failure_without_submitting(self):
+        from wt_media_agent.platforms.publish import PublicationTagRejected
+        def reject(*args, **kwargs):
+            error = PublicationTagRejected(5)
+            error.args = ('private upstream validation text',)
+            raise error
+        self.platform.fill_form = reject
+        result = self.run_job()
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['error_code'], 'PUBLICATION_NOT_SUBMITTED')
+        self.assertIn('第5个标签', result['error_message'])
+        self.assertNotIn('private upstream', str(result))
+        self.assertTrue(result['evidence']['not_submitted'])
+        self.assertEqual(self.platform.clicks, 0)
+
     def test_restored_draft_has_actionable_safe_failure_without_submitting(self):
         from wt_media_agent.platforms.publish import ExistingPublicationDraft
         def reject(*args, **kwargs):

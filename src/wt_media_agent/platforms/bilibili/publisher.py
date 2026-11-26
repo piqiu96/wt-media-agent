@@ -14,7 +14,7 @@ from wt_media_agent.clients.bilibili.publication import (
     accepted_receipt, matching_partition, response_data, submission_id,
 )
 from wt_media_agent.platforms.bilibili.identity import read_bilibili_identity
-from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublicationInputError
+from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublicationInputError, PublicationTagRejected
 from wt_media_agent.runtime.constants import PublishMethod
 from wt_media_agent.services.browser.session import BrowserSession
 
@@ -101,6 +101,7 @@ class BrowserPublisher:
         self._cover_urls = {}
         self._pending_tag = ''
         self._accepted_tags = []
+        self._rejected_tags = set()
 
     def _check(self):
         if self._stopped() or self.page is None or self.page.is_closed():
@@ -325,6 +326,9 @@ class BrowserPublisher:
                             bool(self._pending_tag and self._pending_tag in names),
                             any(name in self._accepted_tags for name in names if isinstance(name, str)))
                 logger.info('Bilibili tag business result: fields=%s flags=%s categories=%s', fields, flags, categories)
+                if (self._pending_tag and self._pending_tag in values and isinstance(data, dict)
+                        and type(data.get('code')) is int and data['code'] != 0 and 'content' in data):
+                    self._rejected_tags.add(self._pending_tag)
                 return
             if url.netloc != 'member.bilibili.com':
                 return
@@ -408,6 +412,12 @@ class BrowserPublisher:
           return null;
         }""")
 
+    def _tag_accepted(self, tag_input, expected_tags):
+        if expected_tags[-1] in self._rejected_tags:
+            raise PublicationTagRejected(len(expected_tags))
+        return (self.page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() == expected_tags
+                and tag_input.input_value() == '' and self._tag_loading(tag_input) is not True)
+
     def fill_form(self, page, payload, *, stopped, replace_matching_draft=False, wait_for_human=None):
         if self.page is not None or payload.space_cover is None:
             raise PlatformFormError('one editor and both confirmed covers are required')
@@ -476,9 +486,7 @@ class BrowserPublisher:
             # prefix and cleared input before sending the next confirmed tag.
             expected_tags = options['tags'][:index + 1]
             try:
-                self._wait(lambda: page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents() == expected_tags
-                           and tag_input.input_value() == ''
-                           and self._tag_loading(tag_input) is not True, timeout=20)
+                self._wait(lambda: self._tag_accepted(tag_input, expected_tags), timeout=20)
             except PlatformFormError:
                 observed_tags = page.locator('#tag-container .tag-pre-wrp .label-item-v2-content').all_text_contents()
                 logger.warning('Bilibili tag acceptance timeout: index=%s observed_count=%s expected_count=%s input_empty=%s trim_matches=%s casefold_matches=%s validation_busy=%s expected_label_visible=%s',
