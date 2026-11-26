@@ -217,9 +217,11 @@ class BrowserPublisher:
         # This is an asynchronously mounted micro-app. Its usable upload
         # control is the readiness signal, not unrelated document resources.
         self._wait(lambda: page.get_by_text('上传视频', exact=True).is_visible(), timeout=120)
-        # A local saved upload is separate from this new authorized upload.
-        # Do not restore, discard, edit or submit it on behalf of this task.
-        if page.get_by_text('继续编辑', exact=True).is_visible():
+        # The landing-page 'continue editing' banner is optional recovery,
+        # not an active editor. Leave both recovery/discard actions untouched.
+        # Reject an actually restored video, while allowing the fresh upload
+        # entrance; the captured receipt and one-video POST guard bind this input.
+        if page.get_by_text('上传完成', exact=True).filter(visible=True).count():
             raise ExistingPublicationDraft('restored unsent video is not owned by this attempt')
         self._check()
         # The visible upload text has pointer-events:none on the live page.

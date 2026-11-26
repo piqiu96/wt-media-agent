@@ -85,18 +85,28 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
             state = self.page.evaluate("({slot, pixels:[...document.querySelectorAll('canvas.lower-canvas')].map(c=>[...c.getContext('2d').getImageData(0,0,1,1).data])})")
             raise AssertionError('isolated cover state: ' + repr(state))
 
-    def test_restored_unowned_video_is_preserved_without_upload_or_submission(self):
+    def test_recovery_banner_does_not_block_fresh_authorized_upload(self):
         self.page.route('https://member.bilibili.com/platform/upload/video/frame',
-            lambda route: route.fulfill(content_type='text/html',
-                body=FIXTURE.replace('<meta charset="utf-8">',
-                    '<meta charset="utf-8"><button>继续编辑</button>')))
+            lambda route: route.fulfill(content_type='text/html', body=FIXTURE.replace(
+                '<meta charset="utf-8">', '<meta charset="utf-8"><button onclick="window.recoveryClicked=true">继续编辑</button><button onclick="window.discardClicked=true">不用了</button>')))
+        self.fill()
+        self.assertIsNone(self.page.evaluate('window.recoveryClicked'))
+        self.assertIsNone(self.page.evaluate('window.discardClicked'))
+        self.assertEqual(self.page.locator('#video-file').evaluate('(e)=>e.files[0].size'), self.payload.video.stat().st_size)
+        self.assertEqual(self.sent, 0)
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id': '123'})
+        self.assertEqual(self.sent, 1)
+
+    def test_active_restored_video_is_not_overwritten(self):
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+            lambda route: route.fulfill(content_type='text/html', body=FIXTURE.replace(
+                '<meta charset="utf-8">', '<meta charset="utf-8"><span>上传完成</span>')))
         with self.assertRaises(ExistingPublicationDraft):
             self.adapter.fill_form(self.page, self.payload, stopped=lambda: False,
                                    replace_matching_draft=True)
         self.assertEqual(self.page.locator('#video-file').evaluate('(e)=>e.files.length'), 0)
-        self.assertTrue(self.page.get_by_text('继续编辑', exact=True).is_visible())
         self.assertEqual(self.sent, 0)
-        self.assertEqual(self.adapter._capture['forwarded'], 0)
 
     def test_full_form_covers_tags_and_one_accepted_receipt(self):
         self.fill()
