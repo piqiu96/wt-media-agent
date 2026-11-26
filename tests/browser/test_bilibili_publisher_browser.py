@@ -480,7 +480,7 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.page.wait_for_timeout(100)
         self.assertEqual(self.sent, 0)
 
-    def public_proof(self, *, anonymous_public, media_matches=True, playback_cid=777, use_blob=False, requires_play=False):
+    def public_proof(self, *, anonymous_public, media_matches=True, playback_cid=777, use_blob=False, requires_play=False, bootstrap=False, page_cid=777):
         video = Path(self.temp.name) / 'proof.mp4'
         encoder = shutil.which('ffmpeg')
         if encoder is None: raise RuntimeError('FFmpeg is required for actual browser media proof tests')
@@ -505,8 +505,11 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
                     if use_blob else '<video autoplay muted preload="auto" src="'+selected_url+'"></video>')
                 if requires_play:
                     media = '<video controls preload="none" src="'+selected_url+'"></video><button class="bpx-player-ctrl-play" onclick="document.querySelector(\'video\').play()">播放</button>'
+                page_metadata = {**metadata, 'cid': page_cid}
+                bootstrap_script = ('window.__playinfo__=' + json.dumps({'code': 0, 'data': {'timelength': 1000, 'durl': [{'url': media_url}]}})
+                    if bootstrap else 'fetch('+json.dumps(playback)+')')
                 route.fulfill(content_type='text/html', body='<meta charset="utf-8"><script>window.__INITIAL_STATE__={videoData:'
-                    + json.dumps(metadata, ensure_ascii=False) + '};fetch('+json.dumps(playback)+')</script>'+media)
+                    + json.dumps(page_metadata, ensure_ascii=False) + '};'+bootstrap_script+'</script>'+media)
             elif request.url.startswith('https://api.bilibili.com/x/player/wbi/playurl?'):
                 route.fulfill(json={'code':0,'data':{'durl':[{'url':media_url}]}})
             elif request.url in {media_url, selected_url}:
@@ -530,6 +533,15 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.assertTrue(observed)
         self.assertFalse(any(observed))
         return result
+
+    def test_anonymous_bootstrap_media_without_playurl_request_establishes_public_proof(self):
+        self.assertIsNotNone(self.public_proof(anonymous_public=True, bootstrap=True, use_blob=True))
+
+    def test_bootstrap_media_for_different_page_cid_is_not_public_proof(self):
+        self.assertIsNone(self.public_proof(anonymous_public=True, bootstrap=True, page_cid=778))
+
+    def test_bootstrap_metadata_with_other_loaded_media_is_not_public_proof(self):
+        self.assertIsNone(self.public_proof(anonymous_public=True, bootstrap=True, media_matches=False))
 
     def test_anonymous_loaded_original_media_establishes_public_proof(self):
         self.assertIsNotNone(self.public_proof(anonymous_public=True))

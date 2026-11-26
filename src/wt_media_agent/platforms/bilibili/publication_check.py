@@ -49,7 +49,10 @@ def playback_urls(cid, request_url, body):
     url = urlsplit(request_url)
     if url.scheme != 'https' or url.netloc != 'api.bilibili.com' or parse_qs(url.query).get('cid') != [str(cid)]:
         return set()
-    data = response_data({'status':200, 'json':body})
+    return _media_urls(response_data({'status':200, 'json':body}))
+
+
+def _media_urls(data):
     dash = data.get('dash')
     rows = list(data.get('durl') or [])
     if isinstance(dash, dict): rows.extend(dash.get('video') or [])
@@ -66,6 +69,18 @@ def playback_urls(cid, request_url, body):
             if parsed.scheme == 'https' and parsed.netloc and not parsed.username and not parsed.password:
                 sources.add(value)
     return sources
+
+
+PUBLIC_BOOTSTRAP = """expected => {
+ const m=window.__INITIAL_STATE__?.videoData,p=window.__playinfo__,d=p?.data;
+ if(!m || String(m.aid)!==expected.aid || m.bvid!==expected.bvid
+    || String(m.owner?.mid)!==expected.uid || m.title!==expected.title
+    || Number(m.cid)!==expected.cid || Number(m.pubdate)!==expected.pubdate
+    || !p || p.code!==0 || !d || typeof d.timelength!=='number'
+    || !Number.isFinite(d.timelength) || d.timelength<=0
+    || Math.abs(d.timelength/1000-expected.duration)>=2)return null;
+ return {dash:d.dash,durl:d.durl};
+}"""
 
 
 PUBLIC_MEDIA = """expected => {
@@ -230,9 +245,20 @@ class BilibiliPublicationChecker:
                     or location.path.rstrip('/') not in ('/video/av' + reference.submission_id, '/video/' + data['bvid'])):
                 logger.warning('Bilibili anonymous proof: original_metadata=True public_page=False')
                 return None
+            expected = {'aid': reference.submission_id, 'uid': reference.platform_uid,
+                'bvid': data['bvid'], 'cid': data['cid'], 'title': reference.content['title'],
+                'duration': data['duration'], 'pubdate': data['pubdate']}
             deadline = time.monotonic() + 20
             play_requested = False
             while time.monotonic() < deadline:
+                if not selected:
+                    # The official original page can bootstrap playback without
+                    # issuing another playurl request. Bind its player data to
+                    # the exact page CID/identity and duration before collecting
+                    # URLs; actual media response/decoding proof remains required.
+                    bootstrap = page.evaluate(PUBLIC_BOOTSTRAP, expected)
+                    if isinstance(bootstrap, dict):
+                        selected.update(_media_urls(bootstrap))
                 sources = set().union(*(chain for chain in media_chains if chain & selected))
                 if sources and page.evaluate(PUBLIC_MEDIA, {'aid': reference.submission_id,
                     'uid': reference.platform_uid, 'bvid': data['bvid'], 'cid': data['cid'],
