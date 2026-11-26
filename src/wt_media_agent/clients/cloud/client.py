@@ -56,6 +56,26 @@ class CloudAgentClient:
         # 所以单独用一个返回状态码的 transport。
         self._transfer_transport = transfer_transport or self._http_transfer_transport
 
+    def claim_work_metrics(self, token):
+        response = self._transport('POST', '/api/v1/cloud-agent/work-metrics/claim', {}, _bearer(token))
+        _raise_on_failure(response)
+        if 'data' not in response or (response['data'] is not None and not isinstance(response['data'], Mapping)):
+            raise CloudUnavailableError('work metrics claim malformed')
+        data = response['data']
+        if data is not None:
+            from wt_media_agent.clients.bilibili.metrics import decimal_id
+            if (not all(decimal_id(data.get(k)) for k in ('work_id', 'platform_work_id', 'platform_account_uid'))
+                    or not isinstance(data.get('lease_token'), str) or len(data['lease_token']) != 64
+                    or any(c not in '0123456789abcdef' for c in data['lease_token'])):
+                raise CloudUnavailableError('work metrics identity malformed')
+        return data
+
+    def report_work_metrics(self, token, work_id, body):
+        from wt_media_agent.clients.bilibili.metrics import decimal_id
+        if not decimal_id(work_id):
+            raise ValueError('invalid work identity')
+        return _expect_data(self._transport('POST', f'/api/v1/cloud-agent/work-metrics/{work_id}/report', body, _bearer(token)))
+
     # ---- 准入与绑定 ----
 
     def bind_bit_account(

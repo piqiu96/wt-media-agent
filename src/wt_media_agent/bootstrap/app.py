@@ -52,6 +52,7 @@ from wt_media_agent.runner.publication_job import PublicationJob
 from wt_media_agent.runner.publication_check import PublicationCheckJob
 from wt_media_agent.platforms.baidu.publication_check import BaiduPublicationChecker
 from wt_media_agent.runner.publication_loop import PublicationLoop
+from wt_media_agent.runner.work_metrics import WorkMetricsLoop
 from wt_media_agent.platforms.baidu.publisher import BaiduPublisher
 from wt_media_agent.platforms.bilibili.publisher import BilibiliPublisher
 from wt_media_agent.platforms.bilibili.publication_check import BilibiliPublicationChecker
@@ -75,11 +76,13 @@ class Components:
     publication_preparation: PublicationPreparation
     publications: PublicationLoop
     database: Database
+    work_metrics: WorkMetricsLoop
     threads: list[threading.Thread] = field(default_factory=list, compare=False, repr=False)
 
     def close(self):
         self.transfers.stop()
         self.publications.stop()
+        self.work_metrics.stop()
         for thread in self.threads:
             thread.join()
         self.database.close()
@@ -107,7 +110,11 @@ def start_publication_loop(components: Components) -> list[threading.Thread]:
                             name='agent-publications', daemon=True)
     components.threads.append(loop)
     loop.start()
-    return [loop]
+    metrics = threading.Thread(target=components.work_metrics.start,
+                               name='agent-work-metrics', daemon=True)
+    components.threads.append(metrics)
+    metrics.start()
+    return [loop, metrics]
 
 
 def build_components(config: AgentConfig | None = None) -> Components:
@@ -259,5 +266,6 @@ def build_components(config: AgentConfig | None = None) -> Components:
         publication_execution=publication_execution,
         database=database,
         publications=publications,
+        work_metrics=WorkMetricsLoop(cloud, agent_token),
         publication_preparation=publication_preparation,
     )
