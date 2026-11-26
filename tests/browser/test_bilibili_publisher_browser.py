@@ -85,6 +85,49 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
             state = self.page.evaluate("({slot, pixels:[...document.querySelectorAll('canvas.lower-canvas')].map(c=>[...c.getContext('2d').getImageData(0,0,1,1).data])})")
             raise AssertionError('isolated cover state: ' + repr(state))
 
+    def test_service_worker_upload_events_belong_to_context_not_page(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        worker = """
+self.addEventListener('activate',e=>e.waitUntil(clients.claim()));
+self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&size=22')
+  .then(r=>r.json()).then(data=>e.source.postMessage(data))));
+"""
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                body = worker if self.path == '/sw.js' else ('{"biz_id":777}' if self.path.startswith('/preupload?') else '<html>isolated worker</html>')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/javascript' if self.path == '/sw.js' else 'text/html')
+                self.end_headers()
+                self.wfile.write(body.encode())
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.page.unroute('**/*')
+            page_responses, context_responses = [], []
+            self.page.on('response', lambda r: page_responses.append(r) if '/preupload?' in r.url else None)
+            self.page.context.on('response', lambda r: context_responses.append(r) if '/preupload?' in r.url else None)
+            self.page.goto('http://127.0.0.1:' + str(server.server_port))
+            result = self.page.evaluate("""async () => {
+              await navigator.serviceWorker.register('/sw.js');
+              await navigator.serviceWorker.ready;
+              if(!navigator.serviceWorker.controller)await new Promise(resolve=>navigator.serviceWorker.addEventListener('controllerchange',resolve,{once:true}));
+              return await new Promise(resolve=>{
+                navigator.serviceWorker.addEventListener('message',e=>resolve(e.data),{once:true});
+                navigator.serviceWorker.controller.postMessage('upload');
+              });
+            }""")
+            self.assertEqual(result, {'biz_id': 777})
+            self.assertEqual(page_responses, [])
+            self.assertEqual(len(context_responses), 1)
+            self.assertIsNotNone(context_responses[0].request.service_worker)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_recovery_banner_does_not_block_fresh_authorized_upload(self):
         self.page.route('https://member.bilibili.com/platform/upload/video/frame',
             lambda route: route.fulfill(content_type='text/html', body=FIXTURE.replace(

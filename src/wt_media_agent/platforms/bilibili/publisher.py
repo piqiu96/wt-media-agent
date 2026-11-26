@@ -84,6 +84,7 @@ class BrowserPublisher:
         self._payload = None
         self._cid = None
         self._upload_progress_at = None
+        self._seen_upload_responses = set()
         self._filename = None
         self._statement_id = None
         self._pre = None
@@ -173,6 +174,34 @@ class BrowserPublisher:
         page.on('response', self._response)
         page.on('request', self._upload_request)
         page.on('requestfailed', self._upload_failed)
+        # Service Worker requests have no Page owner. Observe and protect the
+        # same platform worker at context level, without disabling the worker
+        # or accepting receipts for a different frozen input.
+        page.context.route('**/*', lambda route: guard(route) if self._owned_worker(route.request) else route.fallback())
+        page.context.on('response', self._context_upload_response)
+        page.context.on('request', lambda request: self._upload_request(request) if self._owned_worker(request) else None)
+        page.context.on('requestfailed', lambda request: self._upload_failed(request) if self._owned_worker(request) else None)
+
+    @staticmethod
+    def _owned_worker(request):
+        worker = getattr(request, 'service_worker', None)
+        address = getattr(worker, 'url', '')
+        if not isinstance(address, str):
+            return False
+        url = urlsplit(address)
+        return url.scheme == 'https' and url.netloc == 'member.bilibili.com'
+
+    def _context_upload_response(self, response):
+        url = urlsplit(response.url)
+        if url.netloc != 'member.bilibili.com' or url.path != '/preupload':
+            return
+        worker = getattr(response.request, 'service_worker', None)
+        if worker is not None and not self._owned_worker(response.request):
+            return
+        # SDK background requests need not have a Page owner. The exact frozen
+        # file still gates receipt capture; the owned editor's final CID and
+        # filename must independently match that same receipt before forwarding.
+        self._response(response)
 
     def _upload_request(self, request):
         url = urlsplit(request.url)
@@ -213,6 +242,9 @@ class BrowserPublisher:
             if url.netloc != 'member.bilibili.com':
                 return
             if url.path == '/preupload':
+                if response.request in self._seen_upload_responses:
+                    return
+                self._seen_upload_responses.add(response.request)
                 q = parse_qs(urlsplit(response.request.url).query)
                 current = (self._payload is not None and q.get('name') == [self._payload.video.name]
                            and q.get('size') == [str(self._payload.video.stat().st_size)])

@@ -109,6 +109,7 @@ import wt_media_agent.bootstrap.app
             self.assertEqual(adapter._filename, 'current-video')
             response.request.url = response.url + '?' + urlencode({'name': 'other.mp4', 'size': video.stat().st_size})
             adapter._cid = None
+            adapter._seen_upload_responses.clear()
             adapter._response(response)
             self.assertIsNone(adapter._cid)
 
@@ -124,6 +125,40 @@ import wt_media_agent.bootstrap.app
         self.assertIn('network_error=net::ERR_FAILED', str(logs.output))
         self.assertNotIn('must-not-log', str(logs.output))
         self.assertIsNone(adapter._cid)
+
+    def test_owned_worker_upload_response_reaches_same_frozen_input_validation(self):
+        from urllib.parse import urlencode
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / 'video.mp4'
+            video.write_bytes(b'fixed video')
+            adapter = BrowserPublisher()
+            page = MagicMock()
+            adapter.protect_scene(page)
+            adapter._payload = MagicMock(video=video)
+            callbacks = {call.args[0]: call.args[1] for call in page.context.on.call_args_list}
+            response = MagicMock()
+            response.url = 'https://member.bilibili.com/preupload'
+            response.status = 200
+            response.request.url = response.url + '?' + urlencode({'name': video.name, 'size': video.stat().st_size})
+            response.request.method = 'GET'
+            response.request.service_worker.url = 'https://member.bilibili.com/service-worker.js'
+            response.json.return_value = {'biz_id': 777, 'upos_uri': 'upos://current-video.mp4'}
+            callbacks['response'](response)
+            self.assertEqual(adapter._cid, 777)
+            adapter._cid = None
+            response.request.url = response.url + '?' + urlencode({'name': 'another.mp4', 'size': video.stat().st_size})
+            adapter._seen_upload_responses.clear()
+            callbacks['response'](response)
+            self.assertIsNone(adapter._cid)
+            response.request.service_worker.url = 'https://unrelated.test/sw.js'
+            callbacks['response'](response)
+            self.assertIsNone(adapter._cid)
+            # Dedicated/background SDK requests may have no service worker.
+            response.request.service_worker = None
+            response.request.url = response.url + '?' + urlencode({'name': video.name, 'size': video.stat().st_size})
+            adapter._seen_upload_responses.clear()
+            callbacks['response'](response)
+            self.assertEqual(adapter._cid, 777)
 
     def test_non_success_upload_is_diagnosed_without_accepting_or_logging_url(self):
         from urllib.parse import urlencode
