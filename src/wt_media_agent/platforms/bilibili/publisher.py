@@ -1,6 +1,7 @@
 """One owned Bilibili editor, frozen fields, one authorized final POST."""
 import hashlib
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -15,6 +16,9 @@ from wt_media_agent.platforms.bilibili.identity import read_bilibili_identity
 from wt_media_agent.platforms.publish import PublicationInputError
 from wt_media_agent.runtime.constants import PublishMethod
 from wt_media_agent.services.browser.session import BrowserSession
+
+
+logger = logging.getLogger(__name__)
 
 
 class PlatformFormError(PublicationInputError):
@@ -111,6 +115,8 @@ class BrowserPublisher:
             if value:
                 return value
             if time.monotonic() >= deadline:
+                logger.warning('Bilibili preparation timeout: upload_receipt=%s pre=%s partition_catalog=%s',
+                               self._cid is not None, self._pre is not None, self._types is not None)
                 raise PlatformFormError('平台上传或表单准备超时，请核对原窗口，勿手动投稿')
             self.page.wait_for_timeout(100)
 
@@ -183,6 +189,9 @@ class BrowserPublisher:
                     self._types = data
             if url.path == '/preupload' and self._payload is not None:
                 query = parse_qs(url.query)
+                logger.info('Bilibili preupload observed: name_matches=%s size_matches=%s',
+                            query.get('name') == [self._payload.video.name],
+                            query.get('size') == [str(self._payload.video.stat().st_size)])
                 if query.get('name') != [self._payload.video.name] or query.get('size') != [str(self._payload.video.stat().st_size)]:
                     return
                 body = response.json()
@@ -191,8 +200,12 @@ class BrowserPublisher:
                 if not isinstance(uri, str) or not uri.startswith('upos://'):
                     return
                 self._cid, self._filename = cid, Path(uri).stem
-        except (ValueError, TypeError, KeyError, AttributeError):
-            pass  # Missing proof is a hard stop, never permission to guess.
+                logger.info('Bilibili matching upload receipt captured')
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
+            logger.warning('Bilibili response proof rejected: kind=%s error_type=%s',
+                           'preupload' if urlsplit(response.url).path == '/preupload' else 'editor',
+                           type(error).__name__)
+            # Missing proof is a hard stop, never permission to guess.
 
     def fill_form(self, page, payload, *, stopped, replace_matching_draft=False, wait_for_human=None):
         if self.page is not None or payload.space_cover is None:
