@@ -12,6 +12,7 @@ from wt_media_agent.platforms.bilibili.publisher import BrowserPublisher, Platfo
 from wt_media_agent.platforms.publish import PublishPayload
 from wt_media_agent.services.browser.session import BrowserSession
 from wt_media_agent.platforms.bilibili.publication_check import BilibiliPublicationChecker
+from wt_media_agent.clients.bilibili.cover import cover_upload_kind
 from wt_media_agent.platforms.publication_check import PublicationReference
 
 FIXTURE = Path(__file__).with_name('bilibili-editor.html').read_text()
@@ -65,6 +66,9 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
             elif url == 'https://member.bilibili.com/x/vu/web/add/v3':
                 self.sent += 1
                 route.fulfill(json={'code': 0, 'data': {'aid': 123, 'bvid': 'BVfixture'}})
+            elif url == 'https://member.bilibili.com/x/vu/web/cover/up':
+                kind = cover_upload_kind(route.request.header_value('content-type'), route.request.post_data_buffer)
+                route.fulfill(json={'code': 0, 'data': {'url': 'https://i0.hdslb.com/bfs/archive/' + kind + '.jpg'}})
             else:
                 self.unexpected.append(url)
                 route.abort()
@@ -74,6 +78,7 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
     def fill(self):
         try:
             self.adapter.fill_form(self.page, self.payload, stopped=lambda: False)
+            self.assertEqual(list(Path(self.temp.name).glob('*-upload.*')), [])
         except Exception:
             if self.page_errors:
                 raise AssertionError('isolated editor errors: ' + repr(self.page_errors)) from None
@@ -87,6 +92,23 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
         with self.assertRaises(PlatformFormError): self.adapter.submit()
         self.assertEqual(self.sent, 1)
         self.assertEqual(self.unexpected, [])
+
+    def test_usable_editor_does_not_wait_for_unrelated_document_resource(self):
+        # The live creator is a micro-app. A late resource must not prevent
+        # an already usable editor from handling the authorized upload.
+        pending = []
+        self.page.route('**/late-resource.js', lambda route: pending.append(route))
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+            lambda route: route.fulfill(content_type='text/html',
+                body=FIXTURE.replace('<meta charset="utf-8">',
+                    '<meta charset="utf-8"><script src="/late-resource.js" defer></script>')))
+        self.fill()
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id': '123'})
+        self.assertNotEqual(self.page.evaluate('document.readyState'), 'complete')
+        self.assertEqual(self.sent, 1)
+        self.assertEqual(len(pending), 1)
+        pending[0].fulfill(content_type='application/javascript', body='')
 
     def test_changed_form_after_permission_never_sends(self):
         self.fill()
@@ -106,6 +128,20 @@ class BilibiliPublisherBrowserTests(unittest.TestCase):
         self.fill()
         self.page.evaluate("document.querySelector('#editor_16_9 canvas').getContext('2d').fillRect(0,0,30,30)")
         with self.assertRaises(PlatformFormError): self.adapter.submit()
+        self.assertEqual(self.sent, 0)
+
+    def test_swapped_final_cover_urls_are_blocked(self):
+        self.fill()
+        self.page.evaluate('window.fixture.swapCovers=true')
+        self.adapter.submit()
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.sent, 0)
+
+    def test_unrelated_cdn_cover_url_is_blocked(self):
+        self.fill()
+        self.page.evaluate('window.fixture.staleCover=true')
+        self.adapter.submit()
+        self.page.wait_for_timeout(100)
         self.assertEqual(self.sent, 0)
 
     def public_proof(self, *, anonymous_public):

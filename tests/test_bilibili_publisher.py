@@ -24,7 +24,7 @@ class BilibiliPublisherTest(unittest.TestCase):
             'cover43': 'https://i0.hdslb.com/bfs/archive/main.jpg'}
 
     def validate(self, body):
-        validate_submit_body(body, self.content, cid=777, filename='uploaded-video', statement_id=7)
+        validate_submit_body(body, self.content, cid=777, filename='uploaded-video', statement_id=7, cover_urls={'cover': self.body['cover'], 'cover43': self.body['cover43']})
 
     def test_actual_post_must_match_every_confirmed_field_and_one_video(self):
         self.validate(self.body)
@@ -34,7 +34,9 @@ class BilibiliPublisherTest(unittest.TestCase):
             {'dtime': 123}, {'aid': 999}, {'mission_id': 8}, {'porder': {'id': 7}},
             {'charging_pay': True}, {'cover': 'https://evil.example/cover.jpg'},
             {'videos': [{'cid': 778, 'filename': 'uploaded-video'}]},
-            {'videos': self.body['videos'] * 2}, {'cover43': ''}):
+            {'videos': self.body['videos'] * 2}, {'cover43': ''},
+            {'cover': self.body['cover43'], 'cover43': self.body['cover']},
+            {'cover': 'https://i0.hdslb.com/bfs/archive/unrelated.jpg'}):
             with self.subTest(change=change), self.assertRaises(PlatformFormError):
                 self.validate({**self.body, **change})
 
@@ -45,6 +47,7 @@ class BilibiliPublisherTest(unittest.TestCase):
         guard = page.route.call_args.args[1]
         adapter._payload = MagicMock(content=self.content)
         adapter._cid, adapter._filename, adapter._statement_id = 777, 'uploaded-video', 7
+        adapter._cover_urls = {k: self.body[k] for k in ('cover', 'cover43')}
         import json
         def request(body=None, path='/x/vu/web/add/v3'):
             route = MagicMock()
@@ -63,6 +66,7 @@ class BilibiliPublisherTest(unittest.TestCase):
         fresh = BrowserPublisher()
         fresh.protect_scene(MagicMock())
         fresh._payload, fresh._cid, fresh._filename, fresh._statement_id = adapter._payload, 777, 'uploaded-video', 7
+        fresh._cover_urls = adapter._cover_urls
         fresh._submitted = True
         guard = fresh._protected.route.call_args.args[1]
         only = request()
@@ -112,6 +116,23 @@ class BilibiliPublisherTest(unittest.TestCase):
             self.assertEqual(result.stat().st_mode & 0o777, 0o600)
             source.write_bytes(b'RIFF0000WEBPimage')
             with self.assertRaises(PlatformFormError): image_upload_file(source)
+
+    def test_cover_upload_failure_removes_only_its_temporary_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'cover'
+            source.write_bytes(b'\x89PNG\r\n\x1a\nimage')
+            adapter = BrowserPublisher()
+            adapter.page = MagicMock()
+            dialog = adapter.page.locator.return_value
+            dialog.locator.return_value.count.return_value = 1
+            dialog.locator.return_value.is_checked.return_value = False
+            dialog.locator.return_value.set_input_files.side_effect = OSError('upload failed')
+            adapter._check = lambda: None
+            adapter._cover_canvas = lambda _: None
+            payload = PublishPayload(Path('/video'), source, self.content, '456', space_cover=source)
+            with self.assertRaises(OSError): adapter._fill_covers(payload)
+            self.assertTrue(source.exists())
+            self.assertEqual(list(Path(directory).glob('*-upload.*')), [])
 
 
 if __name__ == '__main__': unittest.main()

@@ -5,6 +5,7 @@ import shutil
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from wt_media_agent.clients.bilibili.cover import cover_upload_kind
 
 from wt_media_agent.clients.bilibili.publication import (
     ADD_PATH, CREATOR_ORIGIN, PRE_PATH, TYPE_PATH, BilibiliPublicationError,
@@ -32,7 +33,7 @@ def image_upload_file(source):
     return target
 
 
-def validate_submit_body(body, content, *, cid, filename, statement_id):
+def validate_submit_body(body, content, *, cid, filename, statement_id, cover_urls=None):
     """Compare the actual one-video POST, never patch the platform's request."""
     options = content['bilibili']
     videos = body.get('videos')
@@ -58,7 +59,8 @@ def validate_submit_body(body, content, *, cid, filename, statement_id):
         value = body.get(key)
         parsed = urlsplit(value) if isinstance(value, str) else None
         if (parsed is None or parsed.scheme not in {'http', 'https'}
-                or not (parsed.hostname or '').endswith('.hdslb.com') or parsed.username):
+                or not (parsed.hostname or '').endswith('.hdslb.com') or parsed.username
+                or not cover_urls or value != cover_urls.get(key)):
             raise PlatformFormError('两张已确认封面尚未完成上传，已阻止投稿')
 
 
@@ -81,6 +83,9 @@ class BrowserPublisher:
         self._types = None
         self._cover_fingerprint = None
         self._canvas_fingerprints = None
+        self._cover_export_open = False
+        self._cover_requests = {}
+        self._cover_urls = {}
 
     def _check(self):
         if self._stopped() or self.page is None or self.page.is_closed():
@@ -120,6 +125,18 @@ class BrowserPublisher:
             url = urlsplit(request.url)
             if request.method != 'POST' or url.netloc != 'member.bilibili.com':
                 return route.fallback()
+            if url.path == '/x/vu/web/cover/up':
+                try:
+                    if not self._cover_export_open:
+                        raise ValueError('cover export outside confirmed editor save')
+                    kind = cover_upload_kind(request.header_value('content-type'), request.post_data_buffer)
+                    if kind in self._cover_requests.values():
+                        raise ValueError('duplicate cover export')
+                    self._cover_requests[request] = kind
+                except (ValueError, TypeError, UnicodeError):
+                    route.abort()
+                    return
+                return route.fallback()
             if url.path == ADD_PATH:
                 self._capture['count'] += 1
                 try:
@@ -127,7 +144,8 @@ class BrowserPublisher:
                         raise PlatformFormError('submission not authorized or already attempted')
                     body = json.loads(request.post_data or '')
                     validate_submit_body(body, self._payload.content, cid=self._cid,
-                                         filename=self._filename, statement_id=self._statement_id)
+                                         filename=self._filename, statement_id=self._statement_id,
+                                         cover_urls=self._cover_urls)
                 except (ValueError, KeyError, TypeError, AttributeError, PlatformFormError):
                     route.abort()
                     return
@@ -148,6 +166,14 @@ class BrowserPublisher:
                 return
             url = urlsplit(response.url)
             if url.netloc != 'member.bilibili.com' or response.status != 200:
+                return
+            if response.request in self._cover_requests:
+                data = response_data({'status': response.status, 'json': response.json()})
+                value = data.get('url')
+                parsed = urlsplit(value) if isinstance(value, str) else None
+                if (parsed and parsed.scheme in {'http', 'https'}
+                        and (parsed.hostname or '').endswith('.hdslb.com') and not parsed.username):
+                    self._cover_urls[self._cover_requests[response.request]] = value
                 return
             if url.path in {PRE_PATH, TYPE_PATH}:
                 data = response_data({'status': response.status, 'json': response.json()})
@@ -173,8 +199,10 @@ class BrowserPublisher:
             raise PlatformFormError('one editor and both confirmed covers are required')
         self.page, self._payload, self._stopped, self._human = page, payload, stopped, wait_for_human
         self.protect_scene(page)
-        page.goto(CREATOR_ORIGIN + '/platform/upload/video/frame', wait_until='domcontentloaded')
-        self._wait(lambda: page.get_by_text('上传视频', exact=True).is_visible())
+        page.goto(CREATOR_ORIGIN + '/platform/upload/video/frame', wait_until='commit', timeout=60000)
+        # This is an asynchronously mounted micro-app. Its usable upload
+        # control is the readiness signal, not unrelated document resources.
+        self._wait(lambda: page.get_by_text('上传视频', exact=True).is_visible(), timeout=120)
         # A local saved upload is separate from this new authorized upload.
         # Do not restore, discard, edit or submit it on behalf of this task.
         if page.get_by_text('继续编辑', exact=True).is_visible():
@@ -265,25 +293,34 @@ class BrowserPublisher:
             previous = self._cover_canvas(root)
             file_input = dialog.locator('.cover-upload input[type=file]')
             upload = image_upload_file(source)
-            file_input.set_input_files(str(upload.resolve()))
-            expected_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-            selected = file_input.evaluate("""async e => {
-              if(e.files.length!==1)return '';const b=await e.files[0].arrayBuffer();
-              return [...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('');
-            }""")
-            if selected != expected_hash:
-                raise PlatformFormError('所选封面与任务冻结文件不一致，已阻止投稿')
-            def decoded():
-                value = self._cover_canvas(root)
-                return value if value and value != previous else None
-            current = self._wait(decoded, timeout=30)
+            try:
+                file_input.set_input_files(str(upload.resolve()))
+                expected_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+                selected = file_input.evaluate("""async e => {
+                  if(e.files.length!==1)return '';const b=await e.files[0].arrayBuffer();
+                  return [...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('');
+                }""")
+                if selected != expected_hash:
+                    raise PlatformFormError('所选封面与任务冻结文件不一致，已阻止投稿')
+                def decoded():
+                    value = self._cover_canvas(root)
+                    return value if value and value != previous else None
+                current = self._wait(decoded, timeout=30)
+            finally:
+                upload.unlink(missing_ok=True)
             if selector == '#editor_4_3':
                 confirmed_main = current
         self._canvas_fingerprints = self._cover_canvases(dialog)
         if self._canvas_fingerprints[0] != confirmed_main:
             raise PlatformFormError('空间封面覆盖了推荐封面，请关闭双比例同步并重新核对')
-        dialog.get_by_text('完成', exact=True).click(timeout=10000)
-        self._wait(lambda: not dialog.is_visible(), timeout=30)
+        self._cover_export_open = True
+        try:
+            dialog.get_by_text('完成', exact=True).click(timeout=10000)
+            self._wait(lambda: not dialog.is_visible() and len(self._cover_urls) == 2, timeout=30)
+        finally:
+            self._cover_export_open = False
+        if self._cover_urls['cover'] == self._cover_urls['cover43']:
+            raise PlatformFormError('两张封面上传结果相同，已阻止投稿，请重新核对')
         self._cover_fingerprint = self._cover_state()
         if not self._cover_fingerprint:
             raise PlatformFormError('两张封面预览未能完整读取，请重新核对')
@@ -410,7 +447,7 @@ class BilibiliPublisher:
             implementation.protect_scene(session.page)
             while not ready:
                 control.check_stopped()
-                session.page.goto(CREATOR_ORIGIN + '/platform/upload/video/frame', wait_until='domcontentloaded')
+                session.page.goto(CREATOR_ORIGIN + '/platform/upload/video/frame', wait_until='commit', timeout=60000)
                 control.wait_for_human(session.page.bring_to_front)
                 control.check_stopped()
                 self._verify(payload.platform_uid, session.page)
