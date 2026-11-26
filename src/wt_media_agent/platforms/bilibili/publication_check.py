@@ -2,7 +2,8 @@
 from datetime import datetime, timezone
 from math import isfinite
 import re
-from urllib.parse import urlsplit
+import time
+from urllib.parse import parse_qs, urlsplit
 
 from wt_media_agent.clients.bilibili.publication import (
     BilibiliPublicationClient, BilibiliPublicationError, VIEW_URL,
@@ -41,15 +42,40 @@ def verify_metadata(reference, data, *, now):
         return None
 
 
+def playback_urls(cid, request_url, body):
+    url = urlsplit(request_url)
+    if url.scheme != 'https' or url.netloc != 'api.bilibili.com' or parse_qs(url.query).get('cid') != [str(cid)]:
+        return set()
+    data = response_data({'status':200, 'json':body})
+    dash = data.get('dash')
+    rows = list(data.get('durl') or [])
+    if isinstance(dash, dict): rows.extend(dash.get('video') or [])
+    sources = set()
+    for row in rows:
+        if not isinstance(row, dict): continue
+        values = [row.get(key) for key in ('url','baseUrl','base_url')]
+        for key in ('backup_url','backupUrl'):
+            if isinstance(row.get(key), list): values.extend(row[key])
+        for value in values:
+            if not isinstance(value, str): continue
+            if value.startswith('//'): value = 'https:' + value
+            parsed = urlsplit(value)
+            if parsed.scheme == 'https' and parsed.netloc and not parsed.username and not parsed.password:
+                sources.add(value)
+    return sources
+
+
 PUBLIC_MEDIA = """expected => {
  const m=window.__INITIAL_STATE__?.videoData;
  if(!m || String(m.aid)!==expected.aid || m.bvid!==expected.bvid
     || String(m.owner?.mid)!==expected.uid || m.title!==expected.title
     || Number(m.cid)!==expected.cid || Number(m.pubdate)!==expected.pubdate)return false;
+ const sources=new Set(expected.media_urls||[]);
  const media=[...document.querySelectorAll('video')].filter(v=>{
    const r=v.getBoundingClientRect();return r.width>0 && r.height>0
     && v.readyState>=2 && v.videoWidth>0 && v.videoHeight>0
-    && Number.isFinite(v.duration) && Math.abs(v.duration-expected.duration)<2;
+    && Number.isFinite(v.duration) && Math.abs(v.duration-expected.duration)<2
+    && (sources.has(v.currentSrc) || (v.currentSrc.startsWith('blob:') && expected.blob_media_loaded===true));
  });
  return media.length===1;
 }"""
@@ -164,7 +190,7 @@ class BilibiliPublicationChecker:
                     page.close()
 
     def _anonymous_proof(self, browser, reference):
-        from playwright.sync_api import TimeoutError as BrowserTimeout
+        from playwright.sync_api import Error as BrowserError
         anonymous = browser.new_context(storage_state={'cookies': [], 'origins': []}, service_workers='block')
         try:
             page = anonymous.new_page()
@@ -175,20 +201,41 @@ class BilibiliPublicationChecker:
             stamp = verify_metadata(reference, data, now=datetime.now(timezone.utc))
             if not stamp:
                 return None
+            selected, media_chains = set(), []
+            def observe(response):
+                try:
+                    request = response.request
+                    if response.status not in (200,206): return
+                    request_url = urlsplit(request.url)
+                    if request_url.netloc == 'api.bilibili.com' and parse_qs(request_url.query).get('cid') == [str(data['cid'])]:
+                        selected.update(playback_urls(data['cid'], request.url, response.json()))
+                    elif request.resource_type in ('media','xhr','fetch') and len(media_chains) < 256:
+                        chain = {response.url}
+                        for _ in range(8):
+                            if request is None: break
+                            chain.add(request.url)
+                            request = request.redirected_from
+                        media_chains.append(chain)
+                except (BrowserError, BilibiliPublicationError, ValueError, TypeError, AttributeError):
+                    return
+            page.on('response', observe)
             response = page.goto(work_url(reference.submission_id), wait_until='domcontentloaded', timeout=20000)
             location = urlsplit(page.url)
             if (response is None or response.status != 200 or location.scheme != 'https'
                     or location.netloc != 'www.bilibili.com' or location.query or location.fragment
                     or location.path.rstrip('/') not in ('/video/av' + reference.submission_id, '/video/' + data['bvid'])):
                 return None
-            try:
-                page.wait_for_function(PUBLIC_MEDIA, arg={'aid': reference.submission_id,
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                sources = set().union(*(chain for chain in media_chains if chain & selected))
+                if sources and page.evaluate(PUBLIC_MEDIA, {'aid': reference.submission_id,
                     'uid': reference.platform_uid, 'bvid': data['bvid'], 'cid': data['cid'],
-                    'title': reference.content['title'], 'duration': data['duration'], 'pubdate': data['pubdate']}, timeout=20000)
-                return stamp
-            except BrowserTimeout:
-                return None
-        except BilibiliPublicationError:
+                    'title': reference.content['title'], 'duration': data['duration'], 'pubdate': data['pubdate'],
+                    'media_urls':list(sources), 'blob_media_loaded':True}):
+                    return stamp
+                page.wait_for_timeout(100)
+            return None
+        except (BilibiliPublicationError, BrowserError):
             return None
         finally:
             anonymous.close()

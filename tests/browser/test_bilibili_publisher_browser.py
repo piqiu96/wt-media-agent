@@ -270,7 +270,7 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.page.wait_for_timeout(100)
         self.assertEqual(self.sent, 0)
 
-    def public_proof(self, *, anonymous_public):
+    def public_proof(self, *, anonymous_public, media_matches=True, playback_cid=777, use_blob=False):
         video = Path(self.temp.name) / 'proof.mp4'
         encoder = Path('/opt/homebrew/bin/ffmpeg')
         if not encoder.is_file(): raise RuntimeError('FFmpeg is required for actual browser media proof tests')
@@ -280,6 +280,7 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
                     'state': 0, 'cid': 777, 'pubdate': 1795169573, 'duration': 1}
         observed = []
         media_url = 'https://www.bilibili.com/fixture/proof.mp4'
+        selected_url = media_url if media_matches else media_url + '?unrelated=1'
         def isolated(route):
             request = route.request
             authenticated = 'fixture_session=private' in request.all_headers().get('cookie', '')
@@ -289,9 +290,14 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             elif request.url == 'https://api.bilibili.com/x/web-interface/view?aid=123':
                 route.fulfill(json={'code': 0, 'data': metadata})
             elif request.url == 'https://www.bilibili.com/video/av123':
+                playback='https://api.bilibili.com/x/player/wbi/playurl?cid='+str(playback_cid)
+                media = ('<video autoplay muted preload="auto"></video><script>fetch('+json.dumps(selected_url)+').then(r=>r.blob()).then(b=>document.querySelector("video").src=URL.createObjectURL(b))</script>'
+                    if use_blob else '<video autoplay muted preload="auto" src="'+selected_url+'"></video>')
                 route.fulfill(content_type='text/html', body='<meta charset="utf-8"><script>window.__INITIAL_STATE__={videoData:'
-                    + json.dumps(metadata, ensure_ascii=False) + '}</script><video autoplay muted preload="auto" src="' + media_url + '"></video>')
-            elif request.url == media_url:
+                    + json.dumps(metadata, ensure_ascii=False) + '};fetch('+json.dumps(playback)+')</script>'+media)
+            elif request.url.startswith('https://api.bilibili.com/x/player/wbi/playurl?'):
+                route.fulfill(json={'code':0,'data':{'durl':[{'url':media_url}]}})
+            elif request.url in {media_url, selected_url}:
                 route.fulfill(content_type='video/mp4', body=video.read_bytes())
             else:
                 route.abort()
@@ -315,6 +321,15 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
 
     def test_anonymous_loaded_original_media_establishes_public_proof(self):
         self.assertIsNotNone(self.public_proof(anonymous_public=True))
+
+    def test_matching_metadata_with_other_playing_media_is_not_public_proof(self):
+        self.assertIsNone(self.public_proof(anonymous_public=True, media_matches=False))
+
+    def test_blob_media_loaded_from_matching_cid_response_is_public_proof(self):
+        self.assertIsNotNone(self.public_proof(anonymous_public=True, use_blob=True))
+
+    def test_playback_response_for_other_cid_is_not_public_proof(self):
+        self.assertIsNone(self.public_proof(anonymous_public=True, playback_cid=778))
 
     def test_logged_in_only_media_is_not_public_proof(self):
         self.assertIsNone(self.public_proof(anonymous_public=False))

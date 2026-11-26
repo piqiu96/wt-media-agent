@@ -2,7 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import unittest
 
-from wt_media_agent.platforms.bilibili.publication_check import BilibiliPublicationChecker, verify_metadata
+from wt_media_agent.platforms.bilibili.publication_check import BilibiliPublicationChecker, verify_metadata, playback_urls
 from wt_media_agent.platforms.publication_check import PublicationReference, PublicationCheckControl, PublicationCheckError
 
 
@@ -28,6 +28,15 @@ class BilibiliCheckTest(unittest.TestCase):
             yield
         self.checker = BilibiliPublicationChecker(client_factory=Client)
         self.control = PublicationCheckControl(lambda: True, False, lambda: {}, browser)
+
+    def test_playback_sources_require_trusted_api_and_exact_cid(self):
+        body={'code':0,'data':{'dash':{'video':[{'baseUrl':'https://media.test/original.m4s','backup_url':['https://backup.test/original.m4s']}]},
+                              'durl':[{'url':'https://media.test/original.mp4'}]}}
+        expected={'https://media.test/original.m4s','https://backup.test/original.m4s','https://media.test/original.mp4'}
+        self.assertEqual(playback_urls(777,'https://api.bilibili.com/x/player/wbi/playurl?cid=777',body),expected)
+        self.assertEqual(playback_urls(777,'https://api.bilibili.com/x/player/wbi/playurl?cid=778',body),set())
+        self.assertEqual(playback_urls(777,'https://unrelated.test/playurl?cid=777',body),set())
+        self.assertEqual(playback_urls(777,'https://api.bilibili.com/x/player/wbi/playurl?cid=777&cid=778',body),set())
 
     def test_reviewing_is_exact_original_and_never_published(self):
         result = self.checker.check(self.reference, self.control)
