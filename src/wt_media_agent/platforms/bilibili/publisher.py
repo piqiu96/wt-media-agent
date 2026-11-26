@@ -250,6 +250,13 @@ class BrowserPublisher:
         self.page.locator('.cover-content .cover-module-main').click(timeout=5000)
         dialog = self.page.locator('.cover-editor:visible')
         dialog.wait_for(state='visible', timeout=10000)
+        sync = dialog.locator('.sync-checkbox input[type=checkbox]')
+        if sync.count() != 1:
+            raise PlatformFormError('无法核实双封面同步设置，已阻止投稿')
+        if sync.is_checked():
+            dialog.locator('.sync-checkbox').click(timeout=5000)
+        if sync.is_checked():
+            raise PlatformFormError('双封面仍处于同步状态，请在原窗口核对')
         confirmed_main = None
         for selector, source in (('#editor_4_3', payload.cover), ('#editor_16_9', payload.space_cover)):
             self._check()
