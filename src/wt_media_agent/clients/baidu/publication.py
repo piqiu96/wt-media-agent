@@ -1,6 +1,9 @@
 """Read-only Baidu publication protocol, request scope and observed links."""
 from urllib.parse import urlencode, parse_qs, urlsplit, urlunsplit
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 from wt_media_agent.clients.baidu.identity import read_identity
 from wt_media_agent.services.browser.http import ProfileHttpSession
@@ -41,6 +44,11 @@ def find_submission(fetch, submission_id, *, current):
         response = fetch(list_url(number))
         body = response.get('json')
         if response.get('status') != 200 or not isinstance(body, dict) or type(body.get('errno')) is not int or body['errno'] != 0:
+            status = response.get('status')
+            errno = body.get('errno') if isinstance(body, dict) else None
+            logger.info('baidu_publication_list rejected http_status=%s errno=%s json_object=%s',
+                        status if type(status) is int else None,
+                        errno if type(errno) is int else None, isinstance(body, dict))
             raise BaiduPublicationApiError()
         data = body.get('data')
         if not isinstance(data, dict) or not isinstance(data.get('page'), dict) or not isinstance(data.get('list'), list):

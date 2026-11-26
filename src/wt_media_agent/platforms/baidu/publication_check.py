@@ -1,6 +1,9 @@
 """Read one exact original Baidu submission; never upload, edit or submit."""
 from datetime import datetime, timezone
 from math import isfinite
+import logging
+
+logger = logging.getLogger(__name__)
 
 from wt_media_agent.clients.baidu.publication import (
     is_submission_id, is_exact_target_url, read_public_work_id, observed_target,
@@ -77,7 +80,9 @@ class BaiduPublicationChecker:
             return self._read_api(reference, control)
         except _BrowserReadRequired as required:
             public_proof = required.reason == 'public_proof'
+            logger.info('baidu_publication_check api_fallback_reason=%s browser_allowed=%s', required.reason, control.browser_fallback_allowed)
         except BaiduPublicationApiError:
+            logger.info('baidu_publication_check api_fallback_reason=list_response browser_allowed=%s', control.browser_fallback_allowed)
             public_proof = False
         if not control.browser_fallback_allowed and not public_proof:
             return PublicWorkObservation('uncertain', '接口读取需人工核对，已停止自动核验',
@@ -97,13 +102,14 @@ class BaiduPublicationChecker:
         try:
             client = self.client_factory(control.read_environment())
         except ProfileHttpError:
-            raise _BrowserReadRequired() from None
+            logger.info('baidu_publication_check api_environment=unavailable')
+            raise _BrowserReadRequired('environment') from None
         try:
             if not current():
                 raise PublicationCheckError('publication identity changed')
             identity = client.read_identity()
             if identity['login_status'] != 'normal':
-                raise _BrowserReadRequired()
+                raise _BrowserReadRequired('identity')
             uid = identity['platform_account_id']
             if uid != reference.platform_uid:
                 return PublicWorkObservation('uncertain', '账号身份不一致，请核对原账号',
