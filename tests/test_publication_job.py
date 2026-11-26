@@ -563,6 +563,16 @@ class PublicationJobTests(unittest.TestCase):
         self.assertTrue(result['evidence']['not_submitted'])
         self.assertEqual(self.platform.clicks, 0)
 
+    def test_browser_failure_categories_never_include_call_log_content(self):
+        from wt_media_agent.runner.publication_job import _browser_error_kind
+        for marker, expected in [('strict mode violation', 'multiple_controls'),
+                                 ('intercepts pointer events', 'pointer_intercepted'),
+                                 ('not a checkbox or radio button', 'not_checkbox'),
+                                 ('element is not visible', 'not_visible')]:
+            with self.subTest(marker=marker):
+                error=RuntimeError(marker+' https://private.example/?token=secret publication text')
+                self.assertEqual(_browser_error_kind(error), expected)
+
     def test_failure_log_identifies_code_site_without_private_exception_text(self):
         def private_failure(*args, **kwargs):
             raise ValueError('Page.goto: net::ERR_ABORTED at https://private.example/?token=secret private publication text')

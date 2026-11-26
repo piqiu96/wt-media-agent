@@ -27,6 +27,27 @@ from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublishCo
 logger = logging.getLogger(__name__)
 
 
+def _browser_error_kind(error):
+    message = str(error)
+    network = re.search(r"net::ERR_[A-Z_]+\b", message)
+    if network:
+        return network.group(0)
+    # Fixed categories only: Playwright call logs can contain user content,
+    # private browser endpoints and credentials.
+    for marker, kind in (
+        ('strict mode violation', 'multiple_controls'),
+        ('intercepts pointer events', 'pointer_intercepted'),
+        ('not a checkbox or radio button', 'not_checkbox'),
+        ('not visible', 'not_visible'),
+        ('not enabled', 'not_enabled'),
+        ('not stable', 'not_stable'),
+        ('has been closed', 'closed'),
+    ):
+        if marker in message:
+            return kind
+    return 'timeout' if type(error).__name__ == 'TimeoutError' else 'unknown'
+
+
 class PublicationJob:
     def __init__(self, preparation, bitbrowser, platform_factory, *, heartbeat_interval=DEFAULT_PUBLICATION_HEARTBEAT_SECONDS, cache_cleanup=None, capacity=None):
         self.cache_cleanup = cache_cleanup
@@ -226,11 +247,10 @@ class PublicationJob:
                     break
                 location=location.tb_next
             code = location.tb_frame.f_code
-            network_error = re.search(r"net::ERR_[A-Z_]+\b", str(error))
             logger.warning("publication stopped before a credible result: phase=%s error_type=%s failure_site=%s:%s:%s browser_error=%s failure_path=%s",
                 self.journal.get(identity)['phase'], type(error).__name__,
                 Path(code.co_filename).name, code.co_name, location.tb_lineno,
-                network_error.group(0) if network_error else "unknown", ">".join(failure_path))
+                _browser_error_kind(error), ">".join(failure_path))
             if isinstance(error, ExistingPublicationDraft):
                 preparation_message = '平台恢复了未提交的视频，本次任务未投稿。请核对原账号窗口中的未提交视频后再重试；系统不会自动覆盖或丢弃。'
             # Do not persist exception text: platform errors may contain private
