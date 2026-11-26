@@ -124,6 +124,11 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
             self.assertEqual(len(context_responses), 1)
             self.assertIsNotNone(context_responses[0].request.service_worker)
         finally:
+            # This localhost worker belongs only to this fixture. Leaving it
+            # registered in the shared test Chrome can stall later CDP routing
+            # updates after the fixture server has gone away.
+            if not self.page.is_closed():
+                self.page.evaluate("async()=>{const registrations=await navigator.serviceWorker.getRegistrations();await Promise.all(registrations.map(r=>r.unregister()));}")
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
@@ -175,6 +180,46 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.page.add_init_script('window.fixtureNoUploadReceipt=true;window.fixtureMultipleVideos=true')
         with self.assertRaises(PlatformFormError):
             self.adapter.fill_form(self.page, self.payload, stopped=lambda:False)
+        self.assertEqual(self.sent, 0)
+
+    def test_reopened_cover_canvases_wait_for_the_editor_to_restore_images(self):
+        html=FIXTURE+"""<script>
+        const open=document.querySelector('.cover-module-main').onclick;
+        document.querySelector('.cover-module-main').onclick=()=>{
+          open();if(!window.fixture.cover43)return;
+          const canvases=[...document.querySelectorAll('canvas.lower-canvas')];
+          const images=canvases.map(c=>c.getContext('2d').getImageData(0,0,c.width,c.height));
+          canvases.forEach(c=>c.getContext('2d').clearRect(0,0,c.width,c.height));
+          setTimeout(()=>canvases.forEach((c,i)=>c.getContext('2d').putImageData(images[i],0,0)),150);
+        };
+        </script>"""
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route:route.fulfill(content_type='text/html',body=html))
+        self.fill()
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
+    def test_current_cover_slot_uses_css_background_and_waits_for_preview(self):
+        html=FIXTURE.replace('<img id="preview">', '<div id="preview" class="cover-img" style="width:200px;height:150px"></div>')
+        html=html.replace("$('#preview').src=$('#editor_4_3 canvas').toDataURL()",
+            "setTimeout(()=>{$('#preview').style.backgroundImage='url('+$('#editor_4_3 canvas').toDataURL()+')';},150)")
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route:route.fulfill(content_type='text/html',body=html))
+        self.fill()
+        self.adapter.submit()
+        self.assertEqual(self.adapter.read_receipt(), {'platform_work_id':'123'})
+        self.assertEqual(self.sent, 1)
+
+    def test_changed_css_cover_preview_is_not_submitted(self):
+        html=FIXTURE.replace('<img id="preview">', '<div id="preview" class="cover-img" style="width:200px;height:150px"></div>')
+        html=html.replace("$('#preview').src=$('#editor_4_3 canvas').toDataURL()",
+                          "$('#preview').style.backgroundImage='url('+$('#editor_4_3 canvas').toDataURL()+')'")
+        self.page.route('https://member.bilibili.com/platform/upload/video/frame',
+                        lambda route:route.fulfill(content_type='text/html',body=html))
+        self.fill()
+        self.page.locator('#preview').evaluate("e=>e.style.backgroundImage='url('+document.querySelector('#editor_16_9 canvas').toDataURL()+')'")
+        with self.assertRaises(PlatformFormError): self.adapter.submit()
         self.assertEqual(self.sent, 0)
 
     def test_official_export_receipt_urls_survive_the_final_post(self):

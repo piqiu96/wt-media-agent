@@ -534,15 +534,33 @@ class BrowserPublisher:
             self._cover_export_open = False
         if self._cover_urls['cover'] == self._cover_urls['cover43']:
             raise PlatformFormError('两张封面上传结果相同，已阻止投稿，请重新核对')
-        self._cover_fingerprint = self._cover_state()
-        if not self._cover_fingerprint:
-            raise PlatformFormError('两张封面预览未能完整读取，请重新核对')
+        self._cover_fingerprint = self._wait(self._cover_state, timeout=15)
 
     def _cover_state(self):
         # Data/blob sources are local to the owned editor, never logged/reported.
-        return self.page.locator('.cover-content .cover-module-main img').evaluate_all("""es => {
-          const a=es.filter(e=>e.complete&&e.naturalWidth>100&&e.naturalHeight>100);
-          return a.length===1 ? a.map(e=>e.src) : null;
+        return self.page.locator('.cover-content .cover-module-main').evaluate("""async root => {
+          const slots=[...root.querySelectorAll('.cover-img')];
+          if(slots.length){
+            if(slots.length!==1)return null;
+            const css=getComputedStyle(slots[0]).backgroundImage;
+            if(!css.startsWith('url(')||!css.endsWith(')'))return null;
+            let source=css.slice(4,-1).trim();
+            if((source.startsWith('"')&&source.endsWith('"')) ||
+               (source.startsWith("'")&&source.endsWith("'")))source=source.slice(1,-1);
+            if(!source)return null;
+            const image=new Image();image.src=source;
+            let timer;
+            const decoded=await Promise.race([
+              image.decode().then(()=>image.naturalWidth>0&&image.naturalHeight>0).catch(()=>false),
+              new Promise(resolve=>{timer=setTimeout(()=>resolve(false),2000);})
+            ]);
+            clearTimeout(timer);
+            return decoded ? [source] : null;
+          }
+          const images=[...root.querySelectorAll('img')].filter(e=>
+            !e.closest('.cover-empty,.cover-delete-btn') && e.complete &&
+            e.naturalWidth>0 && e.naturalHeight>0);
+          return images.length===1 ? images.map(e=>e.src) : null;
         }""")
 
     @staticmethod
@@ -559,7 +577,7 @@ class BrowserPublisher:
               return [c.width,c.height,geometry,[...new Uint8Array(await crypto.subtle.digest('SHA-256',b))].map(x=>x.toString(16).padStart(2,'0')).join('')];
             }""")
 
-    def _cover_canvases(self, dialog):
+    def _cover_canvases(self, dialog, *, allow_pending=False):
         result = []
         for selector in ('#editor_4_3', '#editor_16_9'):
             self._check()
@@ -567,6 +585,8 @@ class BrowserPublisher:
             root.click(timeout=5000)
             digest = self._cover_canvas(root)
             if not digest:
+                if allow_pending:
+                    return None
                 raise PlatformFormError('无法核实独立封面画面，已阻止投稿，请检查原窗口')
             result.append(digest)
         return result
@@ -613,8 +633,8 @@ class BrowserPublisher:
         page.locator('.cover-content .cover-module-main').click(timeout=5000)
         dialog = page.locator('.cover-editor:visible')
         dialog.wait_for(state='visible', timeout=10000)
-        if self._cover_canvases(dialog) != self._canvas_fingerprints:
-            raise PlatformFormError('提交前封面画面已变化，已阻止投稿，请重新核对')
+        self._wait(lambda: self._cover_canvases(dialog, allow_pending=True) == self._canvas_fingerprints,
+                   timeout=15)
         dialog.get_by_text('取消', exact=True).click(timeout=5000)
         self._wait(lambda: not dialog.is_visible(), timeout=10)
 
