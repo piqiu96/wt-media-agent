@@ -269,6 +269,22 @@ import wt_media_agent.bootstrap.app
             source.write_bytes(b'RIFF0000WEBPimage')
             with self.assertRaises(PlatformFormError): image_upload_file(source)
 
+    def test_context_cover_response_is_bound_to_its_confirmed_export(self):
+        adapter = BrowserPublisher()
+        response = MagicMock()
+        response.url='https://member.bilibili.com/x/vu/web/cover/up'
+        response.status=200
+        response.json.return_value={'code':0,'data':{'url':self.body['cover43']}}
+        adapter._cover_requests[response.request]='cover43'
+        adapter._context_upload_response(response)
+        self.assertEqual(adapter._cover_urls, {'cover43':self.body['cover43']})
+        other=MagicMock()
+        other.url=response.url
+        other.status=200
+        other.json.return_value={'code':0,'data':{'url':self.body['cover']}}
+        adapter._context_upload_response(other)
+        self.assertEqual(adapter._cover_urls, {'cover43':self.body['cover43']})
+
     def test_cover_upload_failure_removes_only_its_temporary_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'cover'

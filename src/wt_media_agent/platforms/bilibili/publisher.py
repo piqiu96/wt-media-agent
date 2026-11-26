@@ -150,7 +150,9 @@ class BrowserPublisher:
                     if kind in self._cover_requests.values():
                         raise ValueError('duplicate cover export')
                     self._cover_requests[request] = kind
+                    logger.info('Bilibili cover export: accepted=True ratio=%s', kind)
                 except (ValueError, TypeError, UnicodeError):
+                    logger.info('Bilibili cover export: accepted=False pending_exports=%s', len(self._cover_requests))
                     route.abort()
                     return
                 return route.fallback()
@@ -195,6 +197,9 @@ class BrowserPublisher:
         return url.scheme == 'https' and url.netloc == 'member.bilibili.com'
 
     def _context_upload_response(self, response):
+        if response.request in self._cover_requests:
+            self._response(response)
+            return
         url = urlsplit(response.url)
         if url.netloc != 'member.bilibili.com' or url.path != '/preupload':
             return
@@ -292,6 +297,8 @@ class BrowserPublisher:
                 current = (self._payload is not None and q.get('name') == [self._payload.video.name]
                            and q.get('size') == [str(self._payload.video.stat().st_size)])
                 logger.info('Bilibili preupload response: http_status=%s current_video=%s', response.status, current)
+            if response.request in self._cover_requests:
+                logger.info('Bilibili cover response: http_status=%s ratio=%s', response.status, self._cover_requests[response.request])
             if response.status != 200:
                 return
             if response.request in self._cover_requests:
@@ -518,6 +525,10 @@ class BrowserPublisher:
         try:
             dialog.get_by_text('完成', exact=True).click(timeout=10000)
             self._wait(lambda: not dialog.is_visible() and len(self._cover_urls) == 2, timeout=30)
+        except PlatformFormError:
+            logger.warning('Bilibili cover save incomplete: dialog_visible=%s exports=%s receipts=%s',
+                           dialog.is_visible(), len(self._cover_requests), len(self._cover_urls))
+            raise
         finally:
             self._cover_export_open = False
         if self._cover_urls['cover'] == self._cover_urls['cover43']:
