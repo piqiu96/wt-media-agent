@@ -429,7 +429,7 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
         self.page.wait_for_timeout(100)
         self.assertEqual(self.sent, 0)
 
-    def public_proof(self, *, anonymous_public, media_matches=True, playback_cid=777, use_blob=False):
+    def public_proof(self, *, anonymous_public, media_matches=True, playback_cid=777, use_blob=False, requires_play=False):
         video = Path(self.temp.name) / 'proof.mp4'
         encoder = shutil.which('ffmpeg')
         if encoder is None: raise RuntimeError('FFmpeg is required for actual browser media proof tests')
@@ -452,6 +452,8 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
                 playback='https://api.bilibili.com/x/player/wbi/playurl?cid='+str(playback_cid)
                 media = ('<video autoplay muted preload="auto"></video><script>fetch('+json.dumps(selected_url)+').then(r=>r.blob()).then(b=>document.querySelector("video").src=URL.createObjectURL(b))</script>'
                     if use_blob else '<video autoplay muted preload="auto" src="'+selected_url+'"></video>')
+                if requires_play:
+                    media = '<video controls preload="none" src="'+selected_url+'"></video><button class="bpx-player-ctrl-play" onclick="document.querySelector(\'video\').play()">播放</button>'
                 route.fulfill(content_type='text/html', body='<meta charset="utf-8"><script>window.__INITIAL_STATE__={videoData:'
                     + json.dumps(metadata, ensure_ascii=False) + '};fetch('+json.dumps(playback)+')</script>'+media)
             elif request.url.startswith('https://api.bilibili.com/x/player/wbi/playurl?'):
@@ -480,6 +482,9 @@ self.addEventListener('message',e=>e.waitUntil(fetch('/preupload?name=video.mp4&
 
     def test_anonymous_loaded_original_media_establishes_public_proof(self):
         self.assertIsNotNone(self.public_proof(anonymous_public=True))
+
+    def test_anonymous_player_requiring_play_still_proves_original_media(self):
+        self.assertIsNotNone(self.public_proof(anonymous_public=True, requires_play=True))
 
     def test_matching_metadata_with_other_playing_media_is_not_public_proof(self):
         self.assertIsNone(self.public_proof(anonymous_public=True, media_matches=False))

@@ -1,6 +1,7 @@
 """Exact original aid + owner readback, followed by anonymous playable proof."""
 from datetime import datetime, timezone
 from math import isfinite
+import logging
 import re
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -15,6 +16,8 @@ from wt_media_agent.platforms.publication_check import (
 )
 from wt_media_agent.services.browser.http import ProfileHttpError
 from wt_media_agent.services.browser.session import BrowserSession
+
+logger = logging.getLogger(__name__)
 
 
 def _read_only(route):
@@ -200,6 +203,7 @@ class BilibiliPublicationChecker:
                                   'json': response.json() if response and response.status == 200 else None})
             stamp = verify_metadata(reference, data, now=datetime.now(timezone.utc))
             if not stamp:
+                logger.warning('Bilibili anonymous proof: original_metadata=False')
                 return None
             selected, media_chains = set(), []
             def observe(response):
@@ -224,8 +228,10 @@ class BilibiliPublicationChecker:
             if (response is None or response.status != 200 or location.scheme != 'https'
                     or location.netloc != 'www.bilibili.com' or location.query or location.fragment
                     or location.path.rstrip('/') not in ('/video/av' + reference.submission_id, '/video/' + data['bvid'])):
+                logger.warning('Bilibili anonymous proof: original_metadata=True public_page=False')
                 return None
             deadline = time.monotonic() + 20
+            play_requested = False
             while time.monotonic() < deadline:
                 sources = set().union(*(chain for chain in media_chains if chain & selected))
                 if sources and page.evaluate(PUBLIC_MEDIA, {'aid': reference.submission_id,
@@ -233,9 +239,20 @@ class BilibiliPublicationChecker:
                     'title': reference.content['title'], 'duration': data['duration'], 'pubdate': data['pubdate'],
                     'media_urls':list(sources), 'blob_media_loaded':True}):
                     return stamp
+                # A public player may defer both media requests and decoding
+                # until a user gesture. Start its normal playback control once;
+                # clicking never substitutes for the original CID/media proof.
+                play = page.locator('.bpx-player-ctrl-play').filter(visible=True)
+                if (not play_requested and play.count() == 1
+                        and page.evaluate('() => [...document.querySelectorAll("video")].some(v => v.paused && v.readyState < 2)')):
+                    play.click(timeout=2000)
+                    play_requested = True
                 page.wait_for_timeout(100)
+            logger.warning('Bilibili anonymous proof timeout: selected_sources=%s media_responses=%s bound_sources=%s play_requested=%s',
+                           len(selected), len(media_chains), len(sources), play_requested)
             return None
-        except (BilibiliPublicationError, BrowserError):
+        except (BilibiliPublicationError, BrowserError) as error:
+            logger.warning('Bilibili anonymous proof failed: error_type=%s', type(error).__name__)
             return None
         finally:
             anonymous.close()
