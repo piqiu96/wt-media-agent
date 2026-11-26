@@ -21,6 +21,7 @@ from wt_media_agent.runtime.constants import (
     PublishMethod,
 )
 from wt_media_agent.runner.publication_preparation import CloudExecutionStopped
+from wt_media_agent.services.files.verified_download import ResourceVerificationError
 from wt_media_agent.storage.publication import JournalConflict, publication_file_evidence
 from wt_media_agent.platforms.publish import ExistingPublicationDraft, PublishControl, PublishPayload
 
@@ -253,6 +254,8 @@ class PublicationJob:
                 _browser_error_kind(error), ">".join(failure_path))
             if isinstance(error, ExistingPublicationDraft):
                 preparation_message = '平台恢复了未提交的视频，本次任务未投稿。请核对原账号窗口中的未提交视频后再重试；系统不会自动覆盖或丢弃。'
+            elif isinstance(error, ResourceVerificationError):
+                preparation_message = '成片或封面未完成下载或校验，本次尚未投稿。请检查网络与文件后重试。'
             # Do not persist exception text: platform errors may contain private
             # addresses or credentials. Keep the exact local phase and evidence.
             receipt = {}
@@ -265,6 +268,14 @@ class PublicationJob:
         if prepared is not None:
             try:
                 closed = self.bitbrowser.close_profile_verified(identity.bit_profile_id, prepared.endpoint)
+            except Exception:
+                pass
+        else:
+            # Preparation may fail before an editor exists. A read-only check
+            # can prove the reserved Profile is closed without opening or
+            # closing an unrelated browser scene.
+            try:
+                closed = self.bitbrowser.is_profile_closed(identity.bit_profile_id) is True
             except Exception:
                 pass
         evidence['scene_closed'] = closed is True

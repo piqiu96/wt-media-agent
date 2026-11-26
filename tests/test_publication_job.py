@@ -563,6 +563,31 @@ class PublicationJobTests(unittest.TestCase):
         self.assertTrue(result['evidence']['not_submitted'])
         self.assertEqual(self.platform.clicks, 0)
 
+    def test_resource_failure_with_verified_closed_profile_is_retryable_without_browser(self):
+        from wt_media_agent.services.files.verified_download import ResourceVerificationError
+        from unittest.mock import Mock
+        self.prep.prepare = lambda *args, **kwargs: (_ for _ in ()).throw(ResourceVerificationError('private signed URL'))
+        self.bit.is_profile_closed = lambda profile: True
+        self.bit.close_profile_verified = Mock()
+        result = self.run_job()
+        self.assertEqual(result['status'], 'failed')
+        self.assertTrue(result['evidence']['scene_closed'])
+        self.assertTrue(result['evidence']['not_submitted'])
+        self.assertEqual(self.platform.fills, 0)
+        self.assertEqual(self.platform.clicks, 0)
+        self.bit.close_profile_verified.assert_not_called()
+        self.assertNotIn('private signed URL', str(result))
+
+    def test_resource_failure_with_open_profile_keeps_uncertain_protection(self):
+        from wt_media_agent.services.files.verified_download import ResourceVerificationError
+        self.prep.prepare = lambda *args, **kwargs: (_ for _ in ()).throw(ResourceVerificationError('private signed URL'))
+        self.bit.is_profile_closed = lambda profile: False
+        result = self.run_job()
+        self.assertEqual(result['status'], 'uncertain')
+        self.assertFalse(result['evidence']['scene_closed'])
+        self.assertEqual(self.platform.fills, 0)
+        self.assertEqual(self.platform.clicks, 0)
+
     def test_browser_failure_categories_never_include_call_log_content(self):
         from wt_media_agent.runner.publication_job import _browser_error_kind
         for marker, expected in [('strict mode violation', 'multiple_controls'),

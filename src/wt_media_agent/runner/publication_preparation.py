@@ -41,7 +41,7 @@ class PreparedPublication:
 
 
 class PublicationPreparation:
-    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str, capacity=None, preparation_timeout=900.0):
+    def __init__(self, cloud, bitbrowser, journal, claims, directory, *, cloud_env: str, capacity=None, preparation_timeout=3600.0):
         self.cloud_env=_environment(cloud_env)
         self.cloud=cloud;self.bitbrowser=bitbrowser;self.journal=journal;self.claims=claims;self.directory=Path(directory);self._fresh=set();self._prepared=set();self._report_locks={};self._locks_guard=RLock()
         if type(preparation_timeout) not in (int, float) or not math.isfinite(preparation_timeout) or preparation_timeout <= 0:
